@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SRP Visit Counts Snapshot</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f1eb;
+      --panel: #fffdf9;
+      --line: #d8cfbf;
+      --text: #1f2a2f;
+      --muted: #5d696b;
+      --accent: #0b6e69;
+      --accent-soft: #dff2ef;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 32px;
+      background: linear-gradient(180deg, #f7f3ec 0%, #efe7d8 100%);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(31, 42, 47, 0.08);
+    }
+
+    .hero {
+      padding: 36px 40px 28px;
+      background: linear-gradient(135deg, #11343d 0%, #0b6e69 100%);
+      color: #f9faf8;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      opacity: 0.78;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 36px;
+      line-height: 1.1;
+      font-weight: 600;
+    }
+
+    .subtitle {
+      margin: 14px 0 0;
+      max-width: 760px;
+      font-size: 16px;
+      line-height: 1.6;
+      color: rgba(249, 250, 248, 0.84);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+      padding: 24px 40px;
+      background: #f8f5ee;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .metric {
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .metric-label {
+      margin: 0 0 8px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .metric-value {
+      margin: 0;
+      font-size: 30px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .content {
+      padding: 28px 40px 40px;
+    }
+
+    .note {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 960px;
+      background: white;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      padding: 14px 16px;
+      background: var(--accent-soft);
+      color: #18423f;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+    }
+
+    tbody td {
+      padding: 13px 16px;
+      border-bottom: 1px solid #eee7da;
+      vertical-align: top;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #fcfaf6;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eef6f5;
+      color: #195a57;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 16px;
+      }
+
+      .hero,
+      .summary,
+      .content {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <p class="eyebrow">Spine Rehab Partners</p>
+      <h1>Visit Counts Snapshot</h1>
+      <p class="subtitle">
+        Quick preview of SRP visit activity based on <strong>public.srp_visit_counts_from_csv</strong>.
+        This page is meant to prove the first metadata-backed HTML artifact flow before we add richer layouts and delivery attachments.
+      </p>
+    </section>
+
+    <section class="summary">
+      <article class="metric">
+        <p class="metric-label">Rows Returned</p>
+        <p class="metric-value">{{ rows|length }}</p>
+      </article>
+      <article class="metric">
+        <p class="metric-label">Columns Available</p>
+        <p class="metric-value">{{ columns|length }}</p>
+      </article>
+      <article class="metric">
+        <p class="metric-label">Preview Size</p>
+        <p class="metric-value">{{ [rows|length, 100]|min }}</p>
+      </article>
+      <article class="metric">
+        <p class="metric-label">Primary Dataset</p>
+        <p class="metric-value">SRP</p>
+      </article>
+    </section>
+
+    <section class="content">
+      <p class="note">
+        Showing the first {{ [rows|length, 100]|min }} rows. The goal here is a fast, readable first page rather than a complete production report.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Facility</th>
+              <th>Provider Specialty</th>
+              <th>Provider</th>
+              <th>Appointment Date</th>
+              <th>Visit Type</th>
+              <th>Billable</th>
+              <th>Patients</th>
+              <th>Visits</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows[:100] %}
+            <tr>
+              <td>{{ row["Facility"] }}</td>
+              <td>{{ row["Appointment / Servicing Provider Specialty"] }}</td>
+              <td>{{ row["Appointment / Servicing Provider"] }}</td>
+              <td><span class="pill">{{ row["Appointment Date"] }}</span></td>
+              <td>{{ row["Visit Type"] }}</td>
+              <td>{{ row["Billable Visit Count"] }}</td>
+              <td>{{ row["Patient Count"] }}</td>
+              <td>{{ row["Visit Count"] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

@@ -17,11 +17,49 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/run/{client_key}/{artifact_key}?mode=email\|preview\|dry-run` | Trigger a run |
-| `GET`  | `/run/{run_id}` | Get run status |
+| `POST` | `/artifacts` | Create or update an artifact definition in metadata |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
+| `POST` | `/artifact-executions` | Create an artifact execution |
+| `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
 
-### `POST /run/{client_key}/{artifact_key}`
+Legacy compatibility routes still exist for `/run/{client_key}/{artifact_key}` and `/run/{run_id}`, but they are no longer the primary API surface.
+
+### `POST /artifacts`
+
+Creates or updates the metadata-backed definition for a client artifact.
+
+Current phase support includes:
+
+- client upsert
+- template upsert
+- artifact upsert
+- static recipient replacement for the artifact
+- artifact body/attachment references in metadata
+
+### `GET /artifacts/{client_key}/{artifact_key}`
+
+Renders the artifact and returns HTML on the normal display path.
+
+### `POST /artifact-executions`
+
+Creates an execution request for an artifact.
+
+**Request body:**
+```json
+{
+  "client_key": "srp",
+  "artifact_key": "visit-counts-quick-email",
+  "behavior": "deliver"
+}
+```
+
+Supported behaviors:
+- `deliver` — render and deliver if the artifact metadata allows it
+- `display` — render and log while returning HTML in `preview_html`
+- `dry-run` — render and log without sending
+
+### Legacy `POST /run/{client_key}/{artifact_key}`
 
 **Query params:**
 - `mode=email` (default) — render + send (respects `delivery_mode`)
