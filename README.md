@@ -93,6 +93,8 @@ Supported behaviors:
 | `DATA_DB_USER` | Postgres user |
 | `DATA_DB_PASSWORD` | Postgres password |
 | `EMAIL_SERVICE_URL` | Base URL of bci-email-service (default: `http://email-service:8200`) |
+| `EMAIL_SERVICE_TIMEOUT_SECONDS` | Timeout for bci-email-service requests in seconds (default: `90`) |
+| `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |
 | `PORT` | Port to listen on (default: 8300) |
 
 See `.env.example` for a complete list.
