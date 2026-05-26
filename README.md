@@ -103,8 +103,18 @@ See `.env.example` for a complete list.
 
 ```bash
 # from bci-container-orch
-cd stacks/query-engine-testing
-podman compose up --build
+cd stacks/srp-local
+docker compose up -d --build postgres credential-helper email-service query-engine
+```
+
+The SRP local stack exposes query-engine at `http://127.0.0.1:18300`.
+The seeded `srp / visit-counts-quick-email` artifact sends to
+`daniel@bicyclebi.com` and `jeanre@bicyclebi.com`.
+
+```bash
+curl -X POST http://127.0.0.1:18300/artifact-executions \
+  -H 'Content-Type: application/json' \
+  -d '{"client_key":"srp","artifact_key":"visit-counts-quick-email","behavior":"deliver"}'
 ```
 
 ## Sibling repos required
@@ -112,5 +122,6 @@ podman compose up --build
 ```
 ../bci-postgres-service/
 ../bci-email-service/
+../bci-container-orch/
 ../vault-credentials/
 ```

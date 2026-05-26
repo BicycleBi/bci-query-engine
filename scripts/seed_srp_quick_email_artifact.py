@@ -15,6 +15,11 @@ def main() -> None:
                 "email": "daniel@bicyclebi.com",
                 "delivery_type": "to",
                 "active": True,
+            },
+            {
+                "email": "jeanre@bicyclebi.com",
+                "delivery_type": "to",
+                "active": True,
             }
         ],
         "references": [
