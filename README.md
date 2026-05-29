@@ -86,12 +86,14 @@ Supported behaviors:
 | `METADATA_DB_PORT` | Postgres port (default: 5432) |
 | `METADATA_DB_NAME` | Metadata database name |
 | `METADATA_DB_USER` | Postgres user |
-| `METADATA_DB_PASSWORD` | Postgres password |
+| `METADATA_DB_PASSWORD` | Postgres password. Prefer `METADATA_DB_PASSWORD_FILE` for container secrets. |
+| `METADATA_DB_PASSWORD_FILE` | Path to a file containing the Postgres password |
 | `DATA_DB_HOST` | Postgres host (usually same as METADATA) |
 | `DATA_DB_PORT` | Postgres port |
 | `DATA_DB_NAME` | Data database name |
 | `DATA_DB_USER` | Postgres user |
-| `DATA_DB_PASSWORD` | Postgres password |
+| `DATA_DB_PASSWORD` | Postgres password. Prefer `DATA_DB_PASSWORD_FILE` for container secrets. |
+| `DATA_DB_PASSWORD_FILE` | Path to a file containing the Postgres password |
 | `EMAIL_SERVICE_URL` | Base URL of bci-email-service (default: `http://email-service:8200`) |
 | `EMAIL_SERVICE_TIMEOUT_SECONDS` | Timeout for bci-email-service requests in seconds (default: `90`) |
 | `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |

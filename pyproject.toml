@@ -1,6 +1,6 @@
 [project]
 name = "bci-query-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bicycle Cloud Intelligence — Postgres-driven report renderer and artifact runner."
 requires-python = ">=3.11"
 dependencies = [

@@ -7,9 +7,22 @@ Two databases run on the same host/port:
 """
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Generator
 
 import psycopg
+
+
+def _password(prefix: str) -> str:
+    password = os.environ.get(f"{prefix}_PASSWORD", "")
+    if password:
+        return password
+
+    password_file = os.environ.get(f"{prefix}_PASSWORD_FILE", "")
+    if password_file:
+        return Path(password_file).read_text(encoding="utf-8").strip()
+
+    raise KeyError(f"{prefix}_PASSWORD")
 
 
 def _dsn(prefix: str) -> str:
@@ -17,7 +30,7 @@ def _dsn(prefix: str) -> str:
     port = os.environ.get(f"{prefix}_PORT", "5432")
     name = os.environ[f"{prefix}_NAME"]
     user = os.environ[f"{prefix}_USER"]
-    password = os.environ[f"{prefix}_PASSWORD"]
+    password = _password(prefix)
     sslmode = os.environ.get(f"{prefix}_SSLMODE", "disable")
     return (
         f"host={host} port={port} dbname={name} "
