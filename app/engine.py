@@ -249,6 +249,10 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
 
         meta.commit()
 
+    from .cache import invalidate_artifact_cache
+
+    invalidate_artifact_cache(definition["client_key"], definition["artifact_key"])
+
     return {
         "artifact_id": artifact_id,
         "template_id": template_id,
@@ -263,7 +267,7 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
 def execute_artifact(
     client_key: str,
     artifact_key: str,
-        behavior: str = "deliver",
+    behavior: str = "deliver",
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -279,6 +283,13 @@ def execute_artifact(
     artifact_id: Optional[str] = None
     from .renderer import render
     from . import mailer as _mailer
+    from .cache import (
+        build_render_cache_params,
+        get_artifact_cache,
+        get_cache_settings,
+        get_cached_render,
+        set_cached_render,
+    )
 
     try:
         with get_metadata_conn() as meta:
@@ -297,15 +308,49 @@ def execute_artifact(
             render_artifact = _resolve_render_artifact(meta, artifact)
             view_name = render_artifact["view_name"]
             template_body = render_artifact["template_body"]
+            render_artifact_id = render_artifact["artifact_id"]
+            render_template_id = render_artifact["template_id"]
+
+            cache_settings = get_cache_settings()
+            cacheable_render = behavior in {"display", "preview"}
+            cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
+            cache_params = build_render_cache_params(
+                behavior=behavior,
+                view_name=view_name,
+                template_body=template_body,
+                template_id=render_template_id,
+                render_artifact_id=render_artifact_id,
+            )
+            cached_render = (
+                get_cached_render(cache, client_key, artifact_key, cache_params)
+                if cache is not None and cache_settings.cache_rendered
+                else None
+            )
 
             # ── 2. Query data DB ───────────────────────────────────────
-            with get_data_conn() as data:
-                cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                cols = [d[0] for d in cur.description]
-                data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            if cached_render is not None:
+                html = cached_render["html"]
+                row_count = int(cached_render.get("row_count", 0))
+            else:
+                with get_data_conn() as data:
+                    cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
+                    cols = [d[0] for d in cur.description]
+                    data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            # ── 3. Render ──────────────────────────────────────────────
-            html = render(template_body, data_rows)
+            if cached_render is None:
+                # 3. Render
+                html = render(template_body, data_rows)
+                row_count = len(data_rows)
+                if cache is not None and cache_settings.cache_rendered:
+                    set_cached_render(
+                        cache,
+                        client_key,
+                        artifact_key,
+                        cache_params,
+                        html=html,
+                        row_count=row_count,
+                        ttl_seconds=cache_settings.ttl_seconds,
+                    )
 
             # ── 4. Legacy preview mode — return HTML without logging or sending
             if behavior == "preview":
@@ -363,7 +408,7 @@ def execute_artifact(
                     (
                         artifact_id, artifact_key, client_key,
                         "api", "completed", delivery_mode,
-                        len(data_rows), recipient_count,
+                        row_count, recipient_count,
                         started_at, completed_at,
                     ),
                 ).fetchone()[0]
