@@ -75,6 +75,14 @@ def require_internal_identity(authorization: Optional[str] = Header(default=None
     return _verify_internal_token(token)
 
 
+def require_client_access(identity: dict[str, Any], client_key: str) -> None:
+    token_client_key = identity.get("client_key")
+    if not token_client_key:
+        raise HTTPException(status_code=403, detail="Internal token is missing client scope")
+    if token_client_key != client_key:
+        raise HTTPException(status_code=403, detail="Client access denied")
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -83,6 +91,7 @@ def health():
 @app.post("/artifacts", response_model=ArtifactWriteResponse, status_code=201)
 def save_artifact(definition: ArtifactWriteRequest, identity: dict[str, Any] = Depends(require_internal_identity)):
     """Create or update an artifact definition in metadata."""
+    require_client_access(identity, definition.client_key)
     result = write_artifact_definition(definition.model_dump())
     return ArtifactWriteResponse(**result)
 
@@ -95,6 +104,7 @@ def get_artifact_html(
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Render and return the artifact HTML for display retrieval."""
+    require_client_access(identity, client_key)
     result = execute_artifact(
         client_key,
         artifact_key,
@@ -142,6 +152,7 @@ def _cache_headers(cache: dict) -> dict[str, str]:
 @app.post("/artifact-executions", response_model=ArtifactExecutionResponse, status_code=202)
 def create_artifact_execution(request: ArtifactExecutionRequest, identity: dict[str, Any] = Depends(require_internal_identity)):
     """Create an execution request for an artifact."""
+    require_client_access(identity, request.client_key)
     result = execute_artifact(
         request.client_key,
         request.artifact_key,
@@ -182,6 +193,7 @@ def trigger_run(
         RunMode.preview: "preview",
         RunMode.dry_run: "dry-run",
     }
+    require_client_access(identity, client_key)
     result = execute_artifact(client_key, artifact_key, behavior=legacy_behavior[mode])
 
     if result.get("status") == "error":

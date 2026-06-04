@@ -105,6 +105,12 @@ Supported behaviors:
 | `EMAIL_SERVICE_URL` | Base URL of bci-email-service (default: `http://email-service:8200`) |
 | `EMAIL_SERVICE_TIMEOUT_SECONDS` | Timeout for bci-email-service requests in seconds (default: `90`) |
 | `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |
+| `SECURITY_TOKEN_SECRET` | Shared signing secret for internal BCI bearer tokens accepted on protected query-engine routes |
+| `QUERY_ENGINE_SECURITY_TOKEN_SECRET` | Optional query-engine-specific override for `SECURITY_TOKEN_SECRET` |
+| `SECURITY_TOKEN_ISSUER` | Expected internal token issuer (default: `bci-security`) |
+| `QUERY_ENGINE_SECURITY_TOKEN_ISSUER` | Optional query-engine-specific override for `SECURITY_TOKEN_ISSUER` |
+| `SECURITY_TOKEN_AUDIENCE` | Expected internal token audience (default: `bci-client`) |
+| `QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE` | Optional query-engine-specific override for `SECURITY_TOKEN_AUDIENCE` |
 | `REDIS_ENABLED` | Enables Redis-backed render caching when `true` (default: `false`) |
 | `REDIS_HOST` | Redis host (default: `redis`) |
 | `REDIS_PORT` | Redis port (default: `6379`) |
@@ -120,6 +126,11 @@ Supported behaviors:
 | `PORT` | Port to listen on (default: 8300) |
 
 See `.env.example` for a complete list.
+
+Protected artifact routes require a valid signed internal token whose
+`client_key` claim matches the requested artifact client. Tokens with a missing
+or mismatched `client_key` are rejected before artifact write, render, or
+execution logic runs.
 
 ## Running locally (with compose)
 

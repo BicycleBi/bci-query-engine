@@ -103,3 +103,54 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     )
     assert response.status_code == 202
     assert response.json()["preview_html"] == "<p>ok</p>"
+
+
+def test_protected_routes_reject_wrong_client_token(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "other-client",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers=_auth_headers(token),
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "display",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_protected_routes_reject_token_without_client_scope(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers=_auth_headers(token),
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "display",
+        },
+    )
+    assert response.status_code == 403
