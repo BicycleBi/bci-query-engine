@@ -9,7 +9,15 @@ Flow:
   5. Write log.artifact_runs
   6. Return run_id + status
 """
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from .db import get_data_conn, get_metadata_conn
@@ -17,6 +25,194 @@ from .db import get_data_conn, get_metadata_conn
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _safe_filename_part(value: Any, fallback: str = "artifact") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9 ._-]+", "", str(value or fallback)).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned[:120] or fallback
+
+
+def _row_slice_label(row: dict[str, Any], fallback: str) -> str:
+    for key in ("facility_name", "practice_name", "slice_name", "slice_key", "facility_id"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    return fallback
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _artifact_output_dir() -> Path:
+    return Path(os.getenv("ARTIFACT_OUTPUT_DIR", "/tmp/bci-query-engine/artifact-outputs"))
+
+
+def _chromium_executable() -> str:
+    configured = os.getenv("PDF_CHROMIUM_EXECUTABLE")
+    candidates = [configured] if configured else []
+    candidates.extend(["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"])
+    for candidate in candidates:
+        if candidate and shutil.which(candidate):
+            return candidate
+    raise RuntimeError(
+        "PDF output requested, but no Chromium executable was found. "
+        "Set PDF_CHROMIUM_EXECUTABLE or install chromium in the query-engine image."
+    )
+
+
+def _render_pdf_from_html(html: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    executable = _chromium_executable()
+    with tempfile.NamedTemporaryFile("w", suffix=".html", encoding="utf-8", delete=False) as handle:
+        handle.write(html)
+        html_path = Path(handle.name)
+    try:
+        subprocess.run(
+            [
+                executable,
+                "--headless",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                f"--print-to-pdf={output_path}",
+                str(html_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=int(os.getenv("PDF_RENDER_TIMEOUT_SECONDS", "120")),
+        )
+    finally:
+        html_path.unlink(missing_ok=True)
+
+
+def _ensure_artifact_outputs_table(meta) -> None:
+    meta.execute(
+        """
+        CREATE TABLE IF NOT EXISTS log.artifact_outputs (
+            output_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            run_id UUID NOT NULL,
+            artifact_id UUID,
+            artifact_key TEXT NOT NULL,
+            client_key TEXT NOT NULL,
+            output_format TEXT NOT NULL,
+            output_role TEXT,
+            slice_key TEXT,
+            slice_label TEXT,
+            filename TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            file_size_bytes BIGINT NOT NULL,
+            sha256 TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    meta.execute(
+        """
+        CREATE INDEX IF NOT EXISTS artifact_outputs_run_idx
+        ON log.artifact_outputs (run_id)
+        """
+    )
+    meta.execute(
+        """
+        CREATE INDEX IF NOT EXISTS artifact_outputs_artifact_idx
+        ON log.artifact_outputs (client_key, artifact_key, created_at DESC)
+        """
+    )
+
+
+def _generate_pdf_outputs(
+    *,
+    run_id: str,
+    artifact_id: str,
+    client_key: str,
+    artifact_key: str,
+    subject: str,
+    template_body: str,
+    data_rows: list[dict[str, Any]],
+    render,
+    rendered_at: datetime,
+) -> list[dict[str, Any]]:
+    output_root = _artifact_output_dir() / client_key / artifact_key / run_id
+    render_date = rendered_at.strftime("%Y-%m-%d")
+    outputs: list[dict[str, Any]] = []
+    rows_for_output = data_rows or [{}]
+
+    for index, row in enumerate(rows_for_output, start=1):
+        slice_label = _row_slice_label(row, fallback=f"slice-{index}")
+        slice_key = row.get("slice_key") or row.get("facility_id") or slice_label
+        filename = (
+            f"{_safe_filename_part(subject or artifact_key)} - "
+            f"{_safe_filename_part(slice_label, fallback=f'slice-{index}')} - "
+            f"{render_date}.pdf"
+        )
+        pdf_path = output_root / filename
+        html = render(template_body, [row])
+        _render_pdf_from_html(html, pdf_path)
+        outputs.append(
+            {
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "artifact_key": artifact_key,
+                "client_key": client_key,
+                "output_format": "pdf",
+                "output_role": "attachment",
+                "slice_key": str(slice_key),
+                "slice_label": str(slice_label),
+                "filename": filename,
+                "storage_path": str(pdf_path),
+                "content_type": "application/pdf",
+                "file_size_bytes": pdf_path.stat().st_size,
+                "sha256": _sha256_file(pdf_path),
+                "status": "completed",
+            }
+        )
+
+    return outputs
+
+
+def _insert_artifact_outputs(meta, outputs: list[dict[str, Any]]) -> None:
+    if not outputs:
+        return
+    _ensure_artifact_outputs_table(meta)
+    for output in outputs:
+        meta.execute(
+            """
+            INSERT INTO log.artifact_outputs
+                (run_id, artifact_id, artifact_key, client_key, output_format,
+                 output_role, slice_key, slice_label, filename, storage_path,
+                 content_type, file_size_bytes, sha256, status)
+            VALUES
+                (%s::uuid, %s::uuid, %s, %s, %s,
+                 %s, %s, %s, %s, %s,
+                 %s, %s, %s, %s)
+            """,
+            (
+                output["run_id"],
+                output["artifact_id"],
+                output["artifact_key"],
+                output["client_key"],
+                output["output_format"],
+                output.get("output_role"),
+                output.get("slice_key"),
+                output.get("slice_label"),
+                output["filename"],
+                output["storage_path"],
+                output["content_type"],
+                output["file_size_bytes"],
+                output["sha256"],
+                output["status"],
+            ),
+        )
 
 
 def _fetch_artifact(
@@ -263,7 +459,8 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
 def execute_artifact(
     client_key: str,
     artifact_key: str,
-        behavior: str = "deliver",
+    behavior: str = "deliver",
+    output_formats: Optional[list[str]] = None,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -275,8 +472,9 @@ def execute_artifact(
             preview  — render only, return HTML, no log (legacy compatibility)
     """
     started_at = _now()
-    run_id: Optional[str] = None
+    run_id: Optional[str] = str(uuid.uuid4())
     artifact_id: Optional[str] = None
+    output_formats = output_formats or []
     from .renderer import render
     from . import mailer as _mailer
 
@@ -317,9 +515,27 @@ def execute_artifact(
                     "started_at": started_at,
                     "completed_at": _now(),
                     "preview_html": html,
+                    "outputs": [],
                 }
 
-            # ── 5. Send email if applicable ────────────────────────────
+            # ── 5. Generate requested file outputs ─────────────────────
+            outputs: list[dict[str, Any]] = []
+            if "pdf" in output_formats:
+                outputs.extend(
+                    _generate_pdf_outputs(
+                        run_id=run_id,
+                        artifact_id=artifact_id,
+                        client_key=client_key,
+                        artifact_key=artifact_key,
+                        subject=subject,
+                        template_body=template_body,
+                        data_rows=data_rows,
+                        render=render,
+                        rendered_at=started_at,
+                    )
+                )
+
+            # ── 6. Send email if applicable ────────────────────────────
             return_html = behavior == "display"
             send_email = behavior == "deliver" and delivery_mode in ("email", "both")
             recipient_count = 0
@@ -347,27 +563,28 @@ def execute_artifact(
                     artifact_key=artifact_key,
                 )
 
-            # ── 6. Log the run ─────────────────────────────────────────
+            # ── 7. Log the run and generated outputs ───────────────────
             completed_at = _now()
-            run_id = str(
-                meta.execute(
-                    """
-                    INSERT INTO log.artifact_runs
-                        (artifact_id, artifact_key, client_key,
-                         triggered_by, status, delivery_mode,
-                         row_count, recipient_count,
-                         started_at, completed_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING run_id
-                    """,
-                    (
-                        artifact_id, artifact_key, client_key,
-                        "api", "completed", delivery_mode,
-                        len(data_rows), recipient_count,
-                        started_at, completed_at,
-                    ),
-                ).fetchone()[0]
+            meta.execute(
+                """
+                INSERT INTO log.artifact_runs
+                    (run_id, artifact_id, artifact_key, client_key,
+                     triggered_by, status, delivery_mode,
+                     row_count, slice_count, recipient_count,
+                     started_at, completed_at)
+                VALUES (%s::uuid, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s)
+                """,
+                (
+                    run_id, artifact_id, artifact_key, client_key,
+                    "api", "completed", delivery_mode,
+                    len(data_rows), len(outputs) if outputs else None, recipient_count,
+                    started_at, completed_at,
+                ),
             )
+            _insert_artifact_outputs(meta, outputs)
             meta.commit()
 
             return {
@@ -378,6 +595,7 @@ def execute_artifact(
                 "started_at": started_at,
                 "completed_at": completed_at,
                 "preview_html": html if return_html else None,
+                "outputs": outputs,
             }
 
     except Exception as exc:
@@ -392,14 +610,14 @@ def execute_artifact(
                         meta.execute(
                             """
                             INSERT INTO log.artifact_runs
-                                (artifact_id, artifact_key, client_key,
+                                (run_id, artifact_id, artifact_key, client_key,
                                  triggered_by, status,
                                  started_at, completed_at, error_message)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
                             RETURNING run_id
                             """,
                             (
-                                aid, artifact_key, client_key,
+                                run_id, aid, artifact_key, client_key,
                                 "api", "failed",
                                 started_at, completed_at, str(exc),
                             ),
@@ -417,6 +635,7 @@ def execute_artifact(
             "started_at": started_at,
             "completed_at": completed_at,
             "error_message": str(exc),
+            "outputs": [],
         }
 
 
@@ -460,10 +679,46 @@ def get_run(run_id: str) -> Optional[dict]:
             """,
             (run_id,),
         ).fetchone()
+        _ensure_artifact_outputs_table(meta)
+        outputs = meta.execute(
+            """
+            SELECT
+                output_format,
+                output_role,
+                slice_key,
+                slice_label,
+                filename,
+                storage_path,
+                content_type,
+                file_size_bytes,
+                sha256,
+                status,
+                created_at
+            FROM log.artifact_outputs
+            WHERE run_id = %s
+            ORDER BY created_at, filename
+            """,
+            (run_id,),
+        ).fetchall()
 
     if row is None:
         return None
 
     keys = ["run_id", "client_key", "artifact_key", "status",
             "started_at", "completed_at", "error_message"]
-    return dict(zip(keys, row))
+    output_keys = [
+        "output_format",
+        "output_role",
+        "slice_key",
+        "slice_label",
+        "filename",
+        "storage_path",
+        "content_type",
+        "file_size_bytes",
+        "sha256",
+        "status",
+        "created_at",
+    ]
+    result = dict(zip(keys, row))
+    result["outputs"] = [dict(zip(output_keys, output)) for output in outputs]
+    return result

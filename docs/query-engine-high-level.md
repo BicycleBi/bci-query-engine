@@ -17,7 +17,9 @@ An artifact is a metadata-backed definition that describes:
 4. output formats
 5. execution behavior
 
-Most artifacts are HTML-first. For the current target model, display output is HTML-only, while PDF, XLSX, CSV, and TXT are generated only for email delivery attachments.
+Most artifacts are HTML-first. Display output is HTML by default. Execution
+requests can also ask Query Engine to generate PDF file outputs; XLSX, CSV, and
+TXT remain future output formats.
 Delivery should be treated as a function over an artifact, not as a separate content type.
 
 ## Functional Flow
@@ -87,7 +89,8 @@ flowchart TD
 ## Working Assumptions For Now
 
 1. Security and access control are intentionally deferred in this design pass.
-2. HTML is the display payload. PDF, XLSX, CSV, and TXT are currently delivery-only attachment formats.
+2. HTML is the display payload. PDF is available as an explicit generated file
+   output. XLSX, CSV, and TXT are still future output formats.
 3. Artifact references are valid, resolvable, and non-cyclic.
 4. Delivery and display are separate behaviors, even when they reuse the same rendered content.
 5. Execution logging lives in the metadata database.

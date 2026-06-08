@@ -52,6 +52,7 @@ def create_artifact_execution(request: ArtifactExecutionRequest):
         request.client_key,
         request.artifact_key,
         behavior=request.behavior.value,
+        output_formats=[output_format.value for output_format in request.output_formats],
     )
 
     if result.get("status") == "error":

@@ -126,7 +126,10 @@ Most artifacts are HTML-first.
 Current output rules:
 
 1. Display artifacts return HTML only.
-2. Delivery execution may produce HTML email body plus optional PDF, XLSX, CSV, or TXT attachments.
+2. Execution requests may generate PDF file outputs when `output_formats`
+   includes `pdf`.
+3. Delivery execution may produce HTML email body plus optional PDF, XLSX, CSV,
+   or TXT attachments as the attachment model matures.
 
 Recommended abstraction:
 
@@ -194,6 +197,9 @@ The repository currently implements a narrower vertical slice:
 Current code does not yet represent the full target model described above.
 In particular, the current `mode` query parameter is implementation-era behavior rather than the intended long-term API shape.
 The current code also still treats delivery more like an artifact-mode split than an execution function over a referenced artifact.
+PDF file output is now implemented as a first output slice: Query Engine renders
+one PDF per artifact data row, stores files under `ARTIFACT_OUTPUT_DIR`, and
+logs them in `log.artifact_outputs`.
 
 ## 8. Immediate Implementation Start
 
@@ -208,7 +214,8 @@ Priority order:
 
 ## 9. Known Gaps
 
-1. File outputs beyond HTML are not implemented yet.
+1. PDF file output is implemented for explicit execution requests; XLSX, CSV,
+   and TXT file outputs are not implemented yet.
 2. Burst-recipient resolution rules are not yet fully modeled in metadata.
 3. Logging is currently simpler than the target audit model.
 

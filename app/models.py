@@ -120,6 +120,7 @@ class ArtifactExecutionRequest(BaseModel):
     client_key: str
     artifact_key: str
     behavior: ArtifactExecutionBehavior = ArtifactExecutionBehavior.deliver
+    output_formats: list[ArtifactOutputFormat] = Field(default_factory=list)
 
 
 class ArtifactExecutionResponse(BaseModel):
@@ -131,6 +132,7 @@ class ArtifactExecutionResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     preview_html: Optional[str] = None
+    outputs: list[dict] = Field(default_factory=list)
 
 
 class RunResponse(ArtifactExecutionResponse):

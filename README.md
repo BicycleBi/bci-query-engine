@@ -11,7 +11,9 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
    - `email` — POSTs to `bci-email-service` which sends via Microsoft Graph
    - `web`   — returns rendered HTML for front-end consumption (caching deferred)
    - `both`  — email + web
-5. Logs every run to `log.artifact_runs`
+5. Optionally generates requested file outputs such as PDF
+6. Logs every run to `log.artifact_runs` and generated files to
+   `log.artifact_outputs`
 
 ## HTTP API
 
@@ -50,7 +52,8 @@ Creates an execution request for an artifact.
 {
   "client_key": "srp",
   "artifact_key": "visit-counts-quick-email",
-  "behavior": "deliver"
+  "behavior": "deliver",
+  "output_formats": []
 }
 ```
 
@@ -58,6 +61,28 @@ Supported behaviors:
 - `deliver` — render and deliver if the artifact metadata allows it
 - `display` — render and log while returning HTML in `preview_html`
 - `dry-run` — render and log without sending
+
+Supported optional output formats:
+- `pdf` — render one PDF per data row returned by the artifact view
+
+When PDF output is requested, Query Engine renders the artifact template once
+per returned data row and writes files under `ARTIFACT_OUTPUT_DIR`, defaulting
+to `/tmp/bci-query-engine/artifact-outputs`. Filenames use the render date, not
+the report data as-of date. Generated file metadata is written to
+`log.artifact_outputs` and returned in the execution response.
+
+Example PDF display execution:
+
+```bash
+curl -X POST http://127.0.0.1:18300/artifact-executions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_key": "srp",
+    "artifact_key": "srp-practice-publication",
+    "behavior": "display",
+    "output_formats": ["pdf"]
+  }'
+```
 
 ### Legacy `POST /run/{client_key}/{artifact_key}`
 
@@ -98,6 +123,9 @@ Supported behaviors:
 | `EMAIL_SERVICE_TIMEOUT_SECONDS` | Timeout for bci-email-service requests in seconds (default: `90`) |
 | `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |
 | `PORT` | Port to listen on (default: 8300) |
+| `ARTIFACT_OUTPUT_DIR` | Directory where generated file outputs are written. Defaults to `/tmp/bci-query-engine/artifact-outputs`. |
+| `PDF_CHROMIUM_EXECUTABLE` | Optional path/name for the Chromium executable used for PDF rendering. |
+| `PDF_RENDER_TIMEOUT_SECONDS` | Timeout for a single PDF render. Defaults to `120`. |
 
 See `.env.example` for a complete list.
 
