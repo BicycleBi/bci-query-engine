@@ -9,11 +9,19 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
 3. Renders an HTML report via Jinja2
 4. Delivers the report based on `delivery_mode`:
    - `email` — POSTs to `bci-email-service` which sends via Microsoft Graph
-   - `web`   — returns rendered HTML for front-end consumption (caching deferred)
+   - `web`   — returns rendered HTML for front-end consumption
    - `both`  — email + web
 5. Optionally generates requested file outputs such as PDF
 6. Logs every run to `log.artifact_runs` and generated files to
    `log.artifact_outputs`
+
+Redis cache support is optional and disabled by default. When enabled, Query
+Engine caches rendered HTML only for display/preview paths. Delivery and
+dry-run executions still run through Postgres and the normal render path every
+time so Redis never becomes the source of truth and never owns side effects.
+
+If Redis is unavailable, Query Engine logs a warning and falls back to the
+normal Postgres-backed execution path.
 
 ## HTTP API
 
@@ -122,12 +130,35 @@ curl -X POST http://127.0.0.1:18300/artifact-executions \
 | `EMAIL_SERVICE_URL` | Base URL of bci-email-service (default: `http://email-service:8200`) |
 | `EMAIL_SERVICE_TIMEOUT_SECONDS` | Timeout for bci-email-service requests in seconds (default: `90`) |
 | `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |
+| `SECURITY_TOKEN_SECRET` | Shared signing secret for internal BCI bearer tokens accepted on protected query-engine routes |
+| `QUERY_ENGINE_SECURITY_TOKEN_SECRET` | Optional query-engine-specific override for `SECURITY_TOKEN_SECRET` |
+| `SECURITY_TOKEN_ISSUER` | Expected internal token issuer (default: `bci-security`) |
+| `QUERY_ENGINE_SECURITY_TOKEN_ISSUER` | Optional query-engine-specific override for `SECURITY_TOKEN_ISSUER` |
+| `SECURITY_TOKEN_AUDIENCE` | Expected internal token audience (default: `bci-client`) |
+| `QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE` | Optional query-engine-specific override for `SECURITY_TOKEN_AUDIENCE` |
+| `REDIS_ENABLED` | Enables Redis-backed render caching when `true` (default: `false`) |
+| `REDIS_HOST` | Redis host (default: `redis`) |
+| `REDIS_PORT` | Redis port (default: `6379`) |
+| `REDIS_DB` | Redis logical database number (default: `0`) |
+| `REDIS_PASSWORD` | Redis password. Prefer `REDIS_PASSWORD_FILE` for container secrets. |
+| `REDIS_PASSWORD_FILE` | Path to a file containing the Redis password |
+| `REDIS_SSL` | Enables TLS for Redis when `true` (default: `false`) |
+| `REDIS_SSL_CA_CERTS` | Optional CA certificate path for Redis TLS |
+| `REDIS_CONNECT_TIMEOUT_SECONDS` | Redis connect timeout in seconds (default: `2`) |
+| `REDIS_SOCKET_TIMEOUT_SECONDS` | Redis socket timeout in seconds (default: `2`) |
+| `CACHE_TTL_SECONDS` | Render cache TTL in seconds (default: `3600`) |
+| `CACHE_RENDERED` | Enables rendered HTML cache reads/writes when Redis is enabled (default: `true`) |
 | `PORT` | Port to listen on (default: 8300) |
 | `ARTIFACT_OUTPUT_DIR` | Directory where generated file outputs are written. Defaults to `/tmp/bci-query-engine/artifact-outputs`. |
 | `PDF_CHROMIUM_EXECUTABLE` | Optional path/name for the Chromium executable used for PDF rendering. |
 | `PDF_RENDER_TIMEOUT_SECONDS` | Timeout for a single PDF render. Defaults to `120`. |
 
 See `.env.example` for a complete list.
+
+Protected artifact routes require a valid signed internal token whose
+`client_key` claim matches the requested artifact client. Tokens with a missing
+or mismatched `client_key` are rejected before artifact write, render, or
+execution logic runs.
 
 ## Running locally (with compose)
 

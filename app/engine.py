@@ -18,6 +18,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Optional
 
 from .db import get_data_conn, get_metadata_conn
@@ -445,6 +446,10 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
 
         meta.commit()
 
+    from .cache import invalidate_artifact_cache
+
+    invalidate_artifact_cache(definition["client_key"], definition["artifact_key"])
+
     return {
         "artifact_id": artifact_id,
         "template_id": template_id,
@@ -461,6 +466,7 @@ def execute_artifact(
     artifact_key: str,
     behavior: str = "deliver",
     output_formats: Optional[list[str]] = None,
+    refresh_cache: bool = False,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -473,10 +479,18 @@ def execute_artifact(
     """
     started_at = _now()
     run_id: Optional[str] = str(uuid.uuid4())
+    started_perf = perf_counter()
     artifact_id: Optional[str] = None
     output_formats = output_formats or []
     from .renderer import render
     from . import mailer as _mailer
+    from .cache import (
+        build_render_cache_params,
+        get_artifact_cache,
+        get_cache_settings,
+        get_cached_render,
+        set_cached_render,
+    )
 
     try:
         with get_metadata_conn() as meta:
@@ -495,15 +509,66 @@ def execute_artifact(
             render_artifact = _resolve_render_artifact(meta, artifact)
             view_name = render_artifact["view_name"]
             template_body = render_artifact["template_body"]
+            render_artifact_id = render_artifact["artifact_id"]
+            render_template_id = render_artifact["template_id"]
+
+            cache_settings = get_cache_settings()
+            cacheable_render = behavior in {"display", "preview"} and not output_formats
+            cache_status = "bypass"
+            cache_read_ms: Optional[float] = None
+            data_query_ms: Optional[float] = None
+            render_ms: Optional[float] = None
+            cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
+            if not cacheable_render:
+                cache_status = "bypass"
+            elif not cache_settings.enabled or not cache_settings.cache_rendered:
+                cache_status = "disabled"
+            elif cache is None:
+                cache_status = "unavailable"
+            elif refresh_cache:
+                cache_status = "refresh"
+            cache_params = build_render_cache_params(
+                behavior=behavior,
+                view_name=view_name,
+                template_body=template_body,
+                template_id=render_template_id,
+                render_artifact_id=render_artifact_id,
+            )
+            cached_render = None
+            if cache is not None and cache_settings.cache_rendered and not refresh_cache:
+                cache_read_started = perf_counter()
+                cached_render = get_cached_render(cache, client_key, artifact_key, cache_params)
+                cache_read_ms = (perf_counter() - cache_read_started) * 1000
+                cache_status = "hit" if cached_render is not None else "miss"
 
             # ── 2. Query data DB ───────────────────────────────────────
-            with get_data_conn() as data:
-                cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                cols = [d[0] for d in cur.description]
-                data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            if cached_render is not None:
+                html = cached_render["html"]
+                row_count = int(cached_render.get("row_count", 0))
+            else:
+                data_query_started = perf_counter()
+                with get_data_conn() as data:
+                    cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
+                    cols = [d[0] for d in cur.description]
+                    data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                data_query_ms = (perf_counter() - data_query_started) * 1000
 
-            # ── 3. Render ──────────────────────────────────────────────
-            html = render(template_body, data_rows)
+            if cached_render is None:
+                # 3. Render
+                render_started = perf_counter()
+                html = render(template_body, data_rows)
+                render_ms = (perf_counter() - render_started) * 1000
+                row_count = len(data_rows)
+                if cache is not None and cache_settings.cache_rendered:
+                    set_cached_render(
+                        cache,
+                        client_key,
+                        artifact_key,
+                        cache_params,
+                        html=html,
+                        row_count=row_count,
+                        ttl_seconds=cache_settings.ttl_seconds,
+                    )
 
             # ── 4. Legacy preview mode — return HTML without logging or sending
             if behavior == "preview":
@@ -516,6 +581,15 @@ def execute_artifact(
                     "completed_at": _now(),
                     "preview_html": html,
                     "outputs": [],
+                    "cache": {
+                        "status": cache_status,
+                        "enabled": cache_settings.enabled,
+                        "row_count": row_count,
+                        "cache_read_ms": cache_read_ms,
+                        "data_query_ms": data_query_ms,
+                        "render_ms": render_ms,
+                        "total_ms": (perf_counter() - started_perf) * 1000,
+                    },
                 }
 
             # ── 5. Generate requested file outputs ─────────────────────
@@ -580,7 +654,7 @@ def execute_artifact(
                 (
                     run_id, artifact_id, artifact_key, client_key,
                     "api", "completed", delivery_mode,
-                    len(data_rows), len(outputs) if outputs else None, recipient_count,
+                    row_count, len(outputs) if outputs else None, recipient_count,
                     started_at, completed_at,
                 ),
             )
@@ -596,6 +670,15 @@ def execute_artifact(
                 "completed_at": completed_at,
                 "preview_html": html if return_html else None,
                 "outputs": outputs,
+                "cache": {
+                    "status": cache_status,
+                    "enabled": cache_settings.enabled,
+                    "row_count": row_count,
+                    "cache_read_ms": cache_read_ms,
+                    "data_query_ms": data_query_ms,
+                    "render_ms": render_ms,
+                    "total_ms": (perf_counter() - started_perf) * 1000,
+                },
             }
 
     except Exception as exc:
