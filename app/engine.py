@@ -635,6 +635,8 @@ def execute_artifact(
                     bcc=bcc,
                     client_key=client_key,
                     artifact_key=artifact_key,
+                    run_id=run_id,
+                    attachments=outputs,
                 )
 
             # ── 7. Log the run and generated outputs ───────────────────

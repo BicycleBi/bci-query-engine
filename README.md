@@ -79,6 +79,10 @@ to `/tmp/bci-query-engine/artifact-outputs`. Filenames use the render date, not
 the report data as-of date. Generated file metadata is written to
 `log.artifact_outputs` and returned in the execution response.
 
+If `behavior` is `deliver` and the artifact delivery mode allows email,
+generated PDF outputs are sent to email-service as attachments on the delivery
+request.
+
 Example PDF display execution:
 
 ```bash
