@@ -1,7 +1,9 @@
 """
 mailer.py — Sends rendered HTML via the bci-email-service REST API.
 """
+import base64
 import os
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -21,6 +23,7 @@ def send(
     client_key: Optional[str] = None,
     artifact_key: Optional[str] = None,
     run_id: Optional[str] = None,
+    attachments: Optional[list[dict]] = None,
 ) -> dict:
     """
     POST the rendered report to the email service.
@@ -42,6 +45,7 @@ def send(
         "client_key": client_key,
         "artifact_key": artifact_key,
         "run_id": run_id,
+        "attachments": [_attachment_payload(attachment) for attachment in attachments or []],
     }
     headers = {"Authorization": f"Bearer {service_token}"}
     resp = requests.post(
@@ -52,3 +56,14 @@ def send(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _attachment_payload(attachment: dict) -> dict:
+    path = Path(attachment["storage_path"])
+    content_bytes = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {
+        "name": attachment["filename"],
+        "content_type": attachment.get("content_type") or "application/octet-stream",
+        "content_bytes": content_bytes,
+        "size_bytes": attachment.get("file_size_bytes") or path.stat().st_size,
+    }
