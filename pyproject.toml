@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 redis = [
-  "bci-redis-cache @ git+https://github.com/BicycleBi/bci-redis.git@v0.1.0",
+  "redis>=5.0.0",
 ]
 dev = [
   "pytest>=8.0.0",
@@ -27,4 +27,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["app*", "bci_redis_cache*"]

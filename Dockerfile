@@ -14,8 +14,9 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY bci_redis_cache ./bci_redis_cache
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[redis]"
 
 RUN useradd --no-create-home --shell /bin/false appuser
 RUN mkdir -p /tmp/bci-query-engine/.config /tmp/bci-query-engine/.cache \

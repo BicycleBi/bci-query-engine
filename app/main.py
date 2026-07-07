@@ -133,6 +133,7 @@ def _cache_headers(cache: dict) -> dict[str, str]:
 
     for source, header in (
         ("row_count", "X-BCI-Cache-Row-Count"),
+        ("data_freshness_timestamp", "X-BCI-Data-Freshness"),
         ("cache_read_ms", "X-BCI-Cache-Read-Ms"),
         ("data_query_ms", "X-BCI-Data-Query-Ms"),
         ("render_ms", "X-BCI-Render-Ms"),

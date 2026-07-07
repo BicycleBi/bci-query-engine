@@ -112,6 +112,7 @@ def build_render_cache_params(
     template_body: str,
     template_id: Optional[str],
     render_artifact_id: str,
+    data_freshness_timestamp: Optional[str] = None,
 ) -> dict[str, Any]:
     template_hash = hashlib.sha256(template_body.encode("utf-8")).hexdigest()
     return {
@@ -121,6 +122,7 @@ def build_render_cache_params(
         "template_id": template_id,
         "template_hash": template_hash,
         "render_artifact_id": render_artifact_id,
+        "data_freshness_timestamp": data_freshness_timestamp,
     }
 
 
@@ -150,7 +152,15 @@ def set_cached_render(
 ) -> None:
     try:
         key = cache.build_key(client_key, artifact_key, "rendered", params)
-        cache.set(key, {"html": html, "row_count": row_count}, ttl_seconds=ttl_seconds)
+        cache.set(
+            key,
+            {
+                "html": html,
+                "row_count": row_count,
+                "data_freshness_timestamp": params.get("data_freshness_timestamp"),
+            },
+            ttl_seconds=ttl_seconds,
+        )
         logger.info("Redis cache set for artifact render client=%s artifact=%s", client_key, artifact_key)
     except Exception as exc:
         logger.warning("Redis cache write failed; continuing without cache write: %s", exc)

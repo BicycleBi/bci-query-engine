@@ -60,11 +60,17 @@ class FakeMeta:
 
 
 class FakeData:
-    def __init__(self, *, fail_on_execute=False):
+    def __init__(self, *, fail_on_execute=False, freshness_timestamp=None):
         self.calls = 0
         self.fail_on_execute = fail_on_execute
+        self.freshness_timestamp = freshness_timestamp
 
-    def execute(self, sql):
+    def execute(self, sql, params=None):
+        if "to_regprocedure('public.bci_artifact_cache_freshness(text,text)')" in sql:
+            return FakeResult(row=(self.freshness_timestamp is not None,))
+        if "public.bci_artifact_cache_freshness" in sql:
+            return FakeResult(row=(self.freshness_timestamp,))
+
         self.calls += 1
         if self.fail_on_execute:
             raise AssertionError("Data DB should not be queried on cache hit")
@@ -82,7 +88,8 @@ class FakeCache:
 
     @staticmethod
     def build_key(client_key, artifact_key, cache_type, params):
-        return f"{client_key}:{artifact_key}:{cache_type}:{params['behavior']}"
+        freshness = params.get("data_freshness_timestamp") or "none"
+        return f"{client_key}:{artifact_key}:{cache_type}:{params['behavior']}:{freshness}"
 
     def get(self, key):
         if self.fail_get:
@@ -145,6 +152,28 @@ def test_display_cache_hit_skips_data_query(monkeypatch):
     assert meta.log_params[6] == 4
 
 
+def test_display_cache_key_includes_data_freshness_timestamp(monkeypatch):
+    _, data = _patch_connections(
+        monkeypatch,
+        data=FakeData(freshness_timestamp="2026-07-07 10:00:00+00"),
+    )
+    fake_cache = FakeCache(payload=None)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.execute_artifact("srp", "visit-counts", behavior="display")
+
+    assert result["cache"]["data_freshness_timestamp"] == "2026-07-07 10:00:00+00"
+    assert data.calls == 1
+    assert fake_cache.set_calls[0][0] == (
+        "srp:visit-counts:rendered:display:2026-07-07 10:00:00+00"
+    )
+
+
 def test_display_cache_miss_queries_and_sets_render(monkeypatch):
     _, data = _patch_connections(monkeypatch)
     fake_cache = FakeCache(payload=None)
@@ -161,8 +190,8 @@ def test_display_cache_miss_queries_and_sets_render(monkeypatch):
     assert data.calls == 1
     assert fake_cache.set_calls == [
         (
-            "srp:visit-counts:rendered:display",
-            {"html": "<p>2</p>", "row_count": 2},
+            "srp:visit-counts:rendered:display:none",
+            {"html": "<p>2</p>", "row_count": 2, "data_freshness_timestamp": None},
             42,
         )
     ]

@@ -461,6 +461,26 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _artifact_cache_freshness_timestamp(data, client_key: str, artifact_key: str) -> Optional[str]:
+    """Return an optional client-defined freshness timestamp for cache keys."""
+    try:
+        exists = data.execute(
+            "SELECT to_regprocedure('public.bci_artifact_cache_freshness(text,text)') IS NOT NULL"
+        ).fetchone()
+        if not exists or not bool(exists[0]):
+            return None
+
+        row = data.execute(
+            "SELECT public.bci_artifact_cache_freshness(%s, %s)::text",
+            (client_key, artifact_key),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
+    except Exception:
+        return None
+
+
 def execute_artifact(
     client_key: str,
     artifact_key: str,
@@ -518,6 +538,10 @@ def execute_artifact(
             cache_read_ms: Optional[float] = None
             data_query_ms: Optional[float] = None
             render_ms: Optional[float] = None
+            data_freshness_timestamp: Optional[str] = None
+            if cacheable_render and cache_settings.enabled:
+                with get_data_conn() as data:
+                    data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
                 cache_status = "bypass"
@@ -533,6 +557,7 @@ def execute_artifact(
                 template_body=template_body,
                 template_id=render_template_id,
                 render_artifact_id=render_artifact_id,
+                data_freshness_timestamp=data_freshness_timestamp,
             )
             cached_render = None
             if cache is not None and cache_settings.cache_rendered and not refresh_cache:
@@ -586,6 +611,7 @@ def execute_artifact(
                         "enabled": cache_settings.enabled,
                         "row_count": row_count,
                         "cache_read_ms": cache_read_ms,
+                        "data_freshness_timestamp": data_freshness_timestamp,
                         "data_query_ms": data_query_ms,
                         "render_ms": render_ms,
                         "total_ms": (perf_counter() - started_perf) * 1000,
@@ -677,6 +703,7 @@ def execute_artifact(
                     "enabled": cache_settings.enabled,
                     "row_count": row_count,
                     "cache_read_ms": cache_read_ms,
+                    "data_freshness_timestamp": data_freshness_timestamp,
                     "data_query_ms": data_query_ms,
                     "render_ms": render_ms,
                     "total_ms": (perf_counter() - started_perf) * 1000,
