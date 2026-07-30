@@ -164,6 +164,20 @@ Protected artifact routes require a valid signed internal token whose
 or mismatched `client_key` are rejected before artifact write, render, or
 execution logic runs.
 
+For data views that implement authenticated scoping, Query Engine also requires
+the token `sub` claim and binds it to the data transaction with:
+
+```sql
+SELECT set_config('bci.authenticated_subject', $1, true);
+```
+
+The setting is transaction-local and comes only from the already validated
+internal token. A data view can read it with
+`current_setting('bci.authenticated_subject', true)` and resolve its own access
+mapping in SQL. Rendered cache keys include a SHA-256 hash of the subject so
+HTML produced for one subject cannot be served from another subject's cache
+entry.
+
 ## Running locally (with compose)
 
 ```bash
@@ -175,6 +189,12 @@ docker compose up -d --build postgres credential-helper email-service query-engi
 The SRP local stack exposes query-engine at `http://127.0.0.1:18300`.
 The seeded `srp / visit-counts-quick-email` artifact sends to
 `daniel@bicyclebi.com` and `jeanre@bicyclebi.com`.
+
+SRP Dev runtime changes use the governed BCI Promote specification at
+`deployment/promotions/dev-srp-query-engine-runtime.yml`. The Dev service
+runtime lane stages the exact committed source revision, builds only
+`query-engine`, recreates it with no dependencies, and validates Compose plus
+service health.
 
 ```bash
 curl -X POST http://127.0.0.1:18300/artifact-executions \

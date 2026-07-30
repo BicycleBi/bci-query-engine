@@ -63,10 +63,18 @@ def test_protected_routes_require_internal_token(monkeypatch):
 def test_protected_routes_accept_valid_internal_token(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)
-    monkeypatch.setattr(
-        main,
-        "execute_artifact",
-        lambda client_key, artifact_key, behavior: {
+    captured = {}
+
+    def fake_execute_artifact(
+        client_key,
+        artifact_key,
+        behavior,
+        output_formats,
+        authenticated_subject,
+    ):
+        captured["authenticated_subject"] = authenticated_subject
+        captured["output_formats"] = output_formats
+        return {
             "run_id": "run-1",
             "status": "success",
             "client_key": client_key,
@@ -75,7 +83,12 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
             "completed_at": datetime.now(tz=timezone.utc),
             "behavior": behavior,
             "preview_html": "<p>ok</p>",
-        },
+        }
+
+    monkeypatch.setattr(
+        main,
+        "execute_artifact",
+        fake_execute_artifact,
     )
     token = _encode_token(
         {
@@ -103,6 +116,33 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     )
     assert response.status_code == 202
     assert response.json()["preview_html"] == "<p>ok</p>"
+    assert captured["authenticated_subject"] == "user-1"
+    assert captured["output_formats"] == []
+
+
+def test_protected_routes_reject_token_without_subject(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers=_auth_headers(token),
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "display",
+        },
+    )
+    assert response.status_code == 403
 
 
 def test_protected_routes_reject_wrong_client_token(monkeypatch):
