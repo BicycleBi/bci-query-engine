@@ -481,12 +481,27 @@ def _artifact_cache_freshness_timestamp(data, client_key: str, artifact_key: str
         return None
 
 
+def _subject_hash(authenticated_subject: Optional[str]) -> Optional[str]:
+    if not authenticated_subject:
+        return None
+    return hashlib.sha256(authenticated_subject.encode("utf-8")).hexdigest()
+
+
+def _set_authenticated_subject(data, authenticated_subject: Optional[str]) -> None:
+    """Bind the trusted Security subject to the current data transaction."""
+    data.execute(
+        "SELECT set_config('bci.authenticated_subject', %s, true)",
+        (authenticated_subject or "",),
+    )
+
+
 def execute_artifact(
     client_key: str,
     artifact_key: str,
     behavior: str = "deliver",
     output_formats: Optional[list[str]] = None,
     refresh_cache: bool = False,
+    authenticated_subject: Optional[str] = None,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -541,6 +556,7 @@ def execute_artifact(
             data_freshness_timestamp: Optional[str] = None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
+                    _set_authenticated_subject(data, authenticated_subject)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
@@ -557,6 +573,7 @@ def execute_artifact(
                 template_body=template_body,
                 template_id=render_template_id,
                 render_artifact_id=render_artifact_id,
+                authenticated_subject_hash=_subject_hash(authenticated_subject),
                 data_freshness_timestamp=data_freshness_timestamp,
             )
             cached_render = None
@@ -573,6 +590,7 @@ def execute_artifact(
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
+                    _set_authenticated_subject(data, authenticated_subject)
                     cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
                     cols = [d[0] for d in cur.description]
                     data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]

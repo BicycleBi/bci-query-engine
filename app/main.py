@@ -83,6 +83,13 @@ def require_client_access(identity: dict[str, Any], client_key: str) -> None:
         raise HTTPException(status_code=403, detail="Client access denied")
 
 
+def authenticated_subject(identity: dict[str, Any]) -> str:
+    subject = identity.get("sub")
+    if not isinstance(subject, str) or not subject.strip():
+        raise HTTPException(status_code=403, detail="Internal token is missing subject identity")
+    return subject.strip()
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -110,6 +117,7 @@ def get_artifact_html(
         artifact_key,
         behavior="display",
         refresh_cache=refresh,
+        authenticated_subject=authenticated_subject(identity),
     )
 
     if result.get("status") == "error":
@@ -159,6 +167,7 @@ def create_artifact_execution(request: ArtifactExecutionRequest, identity: dict[
         request.artifact_key,
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
+        authenticated_subject=authenticated_subject(identity),
     )
 
     if result.get("status") == "error":
@@ -196,7 +205,12 @@ def trigger_run(
         RunMode.dry_run: "dry-run",
     }
     require_client_access(identity, client_key)
-    result = execute_artifact(client_key, artifact_key, behavior=legacy_behavior[mode])
+    result = execute_artifact(
+        client_key,
+        artifact_key,
+        behavior=legacy_behavior[mode],
+        authenticated_subject=authenticated_subject(identity),
+    )
 
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("error_message"))

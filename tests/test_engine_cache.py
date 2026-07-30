@@ -64,8 +64,12 @@ class FakeData:
         self.calls = 0
         self.fail_on_execute = fail_on_execute
         self.freshness_timestamp = freshness_timestamp
+        self.authenticated_subjects = []
 
     def execute(self, sql, params=None):
+        if "set_config('bci.authenticated_subject'" in sql:
+            self.authenticated_subjects.append(params[0])
+            return FakeResult(row=("",))
         if "to_regprocedure('public.bci_artifact_cache_freshness(text,text)')" in sql:
             return FakeResult(row=(self.freshness_timestamp is not None,))
         if "public.bci_artifact_cache_freshness" in sql:
@@ -89,7 +93,11 @@ class FakeCache:
     @staticmethod
     def build_key(client_key, artifact_key, cache_type, params):
         freshness = params.get("data_freshness_timestamp") or "none"
-        return f"{client_key}:{artifact_key}:{cache_type}:{params['behavior']}:{freshness}"
+        subject_hash = params.get("authenticated_subject_hash") or "anonymous"
+        return (
+            f"{client_key}:{artifact_key}:{cache_type}:"
+            f"{params['behavior']}:{subject_hash}:{freshness}"
+        )
 
     def get(self, key):
         if self.fail_get:
@@ -131,7 +139,7 @@ def test_redis_disabled_preserves_display_execution(monkeypatch):
     assert result["status"] == "success"
     assert result["preview_html"] == "<p>2</p>"
     assert data.calls == 1
-    assert meta.log_params[6] == 2
+    assert meta.log_params[7] == 2
 
 
 def test_display_cache_hit_skips_data_query(monkeypatch):
@@ -149,7 +157,7 @@ def test_display_cache_hit_skips_data_query(monkeypatch):
     assert result["status"] == "success"
     assert result["preview_html"] == "<p>cached</p>"
     assert data.calls == 0
-    assert meta.log_params[6] == 4
+    assert meta.log_params[7] == 4
 
 
 def test_display_cache_key_includes_data_freshness_timestamp(monkeypatch):
@@ -170,7 +178,7 @@ def test_display_cache_key_includes_data_freshness_timestamp(monkeypatch):
     assert result["cache"]["data_freshness_timestamp"] == "2026-07-07 10:00:00+00"
     assert data.calls == 1
     assert fake_cache.set_calls[0][0] == (
-        "srp:visit-counts:rendered:display:2026-07-07 10:00:00+00"
+        "srp:visit-counts:rendered:display:anonymous:2026-07-07 10:00:00+00"
     )
 
 
@@ -190,7 +198,36 @@ def test_display_cache_miss_queries_and_sets_render(monkeypatch):
     assert data.calls == 1
     assert fake_cache.set_calls == [
         (
-            "srp:visit-counts:rendered:display:none",
+            "srp:visit-counts:rendered:display:anonymous:none",
+            {"html": "<p>2</p>", "row_count": 2, "data_freshness_timestamp": None},
+            42,
+        )
+    ]
+
+
+def test_authenticated_subject_is_bound_to_data_query_and_cache(monkeypatch):
+    _, data = _patch_connections(monkeypatch)
+    fake_cache = FakeCache(payload=None)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.execute_artifact(
+        "srp",
+        "visit-counts",
+        behavior="display",
+        authenticated_subject="user-1",
+    )
+
+    expected_hash = cache_module.hashlib.sha256(b"user-1").hexdigest()
+    assert result["status"] == "success"
+    assert data.authenticated_subjects == ["user-1", "user-1"]
+    assert fake_cache.set_calls == [
+        (
+            f"srp:visit-counts:rendered:display:{expected_hash}:none",
             {"html": "<p>2</p>", "row_count": 2, "data_freshness_timestamp": None},
             42,
         )
