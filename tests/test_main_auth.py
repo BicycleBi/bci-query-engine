@@ -109,7 +109,10 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
 
     response = client.post(
         "/artifact-executions",
-        headers=_auth_headers(token),
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "srp_pnl_scope_b,srp_pnl_scope_a",
+        },
         json={
             "client_key": "srp",
             "artifact_key": "visit-counts",
@@ -119,7 +122,7 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     assert response.status_code == 202
     assert response.json()["preview_html"] == "<p>ok</p>"
     assert captured["authenticated_subject"] == "user-1"
-    assert captured["authorized_roles"] == ["developer"]
+    assert captured["authorized_roles"] == ["srp_pnl_scope_a", "srp_pnl_scope_b"]
     assert captured["output_formats"] == []
 
 

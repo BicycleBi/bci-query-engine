@@ -90,8 +90,15 @@ def authenticated_subject(identity: dict[str, Any]) -> str:
     return subject.strip()
 
 
-def authorized_roles(identity: dict[str, Any]) -> list[str]:
-    roles = identity.get("roles", [])
+def authorized_roles(
+    identity: dict[str, Any],
+    forwarded_roles: Optional[str] = None,
+) -> list[str]:
+    roles: Any
+    if forwarded_roles is not None:
+        roles = [role.strip() for role in forwarded_roles.split(",") if role.strip()]
+    else:
+        roles = identity.get("roles", [])
     if not isinstance(roles, list):
         raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
     if any(not isinstance(role, str) or not role.strip() for role in roles):
@@ -117,6 +124,7 @@ def get_artifact_html(
     client_key: str,
     artifact_key: str,
     refresh: bool = False,
+    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Render and return the artifact HTML for display retrieval."""
@@ -127,7 +135,7 @@ def get_artifact_html(
         behavior="display",
         refresh_cache=refresh,
         authenticated_subject=authenticated_subject(identity),
-        authorized_roles=authorized_roles(identity),
+        authorized_roles=authorized_roles(identity, x_identity_roles),
     )
 
     if result.get("status") == "error":
@@ -206,7 +214,11 @@ def _cache_headers(cache: dict) -> dict[str, str]:
 
 
 @app.post("/artifact-executions", response_model=ArtifactExecutionResponse, status_code=202)
-def create_artifact_execution(request: ArtifactExecutionRequest, identity: dict[str, Any] = Depends(require_internal_identity)):
+def create_artifact_execution(
+    request: ArtifactExecutionRequest,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
     """Create an execution request for an artifact."""
     require_client_access(identity, request.client_key)
     result = execute_artifact(
@@ -215,7 +227,7 @@ def create_artifact_execution(request: ArtifactExecutionRequest, identity: dict[
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
         authenticated_subject=authenticated_subject(identity),
-        authorized_roles=authorized_roles(identity),
+        authorized_roles=authorized_roles(identity, x_identity_roles),
     )
 
     if result.get("status") == "error":
@@ -238,6 +250,7 @@ def trigger_run(
     client_key: str,
     artifact_key: str,
     mode: RunMode = RunMode.email,
+    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """
@@ -258,7 +271,7 @@ def trigger_run(
         artifact_key,
         behavior=legacy_behavior[mode],
         authenticated_subject=authenticated_subject(identity),
-        authorized_roles=authorized_roles(identity),
+        authorized_roles=authorized_roles(identity, x_identity_roles),
     )
 
     if result.get("status") == "error":
