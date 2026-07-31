@@ -488,11 +488,26 @@ def _subject_hash(authenticated_subject: Optional[str]) -> Optional[str]:
     return hashlib.sha256(authenticated_subject.encode("utf-8")).hexdigest()
 
 
-def _set_authenticated_subject(data, authenticated_subject: Optional[str]) -> None:
-    """Bind the trusted Security subject to the current data transaction."""
+def _authorization_context_hash(authorized_roles: Optional[list[str]]) -> Optional[str]:
+    if not authorized_roles:
+        return None
+    normalized = json.dumps(sorted(set(authorized_roles)), separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _set_authorization_context(
+    data,
+    authenticated_subject: Optional[str],
+    authorized_roles: Optional[list[str]],
+) -> None:
+    """Bind the trusted Security subject and freshly resolved roles to the transaction."""
     data.execute(
         "SELECT set_config('bci.authenticated_subject', %s, true)",
         (authenticated_subject or "",),
+    )
+    data.execute(
+        "SELECT set_config('bci.authorized_roles', %s, true)",
+        (json.dumps(sorted(set(authorized_roles or [])), separators=(",", ":")),),
     )
 
 
@@ -687,6 +702,7 @@ def execute_artifact(
     output_formats: Optional[list[str]] = None,
     refresh_cache: bool = False,
     authenticated_subject: Optional[str] = None,
+    authorized_roles: Optional[list[str]] = None,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -741,7 +757,7 @@ def execute_artifact(
             data_freshness_timestamp: Optional[str] = None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
-                    _set_authenticated_subject(data, authenticated_subject)
+                    _set_authorization_context(data, authenticated_subject, authorized_roles)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
@@ -759,6 +775,7 @@ def execute_artifact(
                 template_id=render_template_id,
                 render_artifact_id=render_artifact_id,
                 authenticated_subject_hash=_subject_hash(authenticated_subject),
+                authorization_context_hash=_authorization_context_hash(authorized_roles),
                 data_freshness_timestamp=data_freshness_timestamp,
             )
             cached_render = None
@@ -775,7 +792,7 @@ def execute_artifact(
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
-                    _set_authenticated_subject(data, authenticated_subject)
+                    _set_authorization_context(data, authenticated_subject, authorized_roles)
                     cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
                     cols = [d[0] for d in cur.description]
                     data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]

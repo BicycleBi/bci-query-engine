@@ -65,10 +65,14 @@ class FakeData:
         self.fail_on_execute = fail_on_execute
         self.freshness_timestamp = freshness_timestamp
         self.authenticated_subjects = []
+        self.authorized_roles = []
 
     def execute(self, sql, params=None):
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
+            return FakeResult(row=("",))
+        if "set_config('bci.authorized_roles'" in sql:
+            self.authorized_roles.append(params[0])
             return FakeResult(row=("",))
         if "to_regprocedure('public.bci_artifact_cache_freshness(text,text)')" in sql:
             return FakeResult(row=(self.freshness_timestamp is not None,))
@@ -94,9 +98,13 @@ class FakeCache:
     def build_key(client_key, artifact_key, cache_type, params):
         freshness = params.get("data_freshness_timestamp") or "none"
         subject_hash = params.get("authenticated_subject_hash") or "anonymous"
+        authorization_context_hash = params.get("authorization_context_hash")
+        authorization_suffix = (
+            f":{authorization_context_hash}" if authorization_context_hash else ""
+        )
         return (
             f"{client_key}:{artifact_key}:{cache_type}:"
-            f"{params['behavior']}:{subject_hash}:{freshness}"
+            f"{params['behavior']}:{subject_hash}{authorization_suffix}:{freshness}"
         )
 
     def get(self, key):
@@ -220,14 +228,22 @@ def test_authenticated_subject_is_bound_to_data_query_and_cache(monkeypatch):
         "visit-counts",
         behavior="display",
         authenticated_subject="user-1",
+        authorized_roles=["srp_pnl_scope_b", "srp_pnl_scope_a"],
     )
 
     expected_hash = cache_module.hashlib.sha256(b"user-1").hexdigest()
+    expected_scope_hash = cache_module.hashlib.sha256(
+        b'["srp_pnl_scope_a","srp_pnl_scope_b"]'
+    ).hexdigest()
     assert result["status"] == "success"
     assert data.authenticated_subjects == ["user-1", "user-1"]
+    assert data.authorized_roles == [
+        '["srp_pnl_scope_a","srp_pnl_scope_b"]',
+        '["srp_pnl_scope_a","srp_pnl_scope_b"]',
+    ]
     assert fake_cache.set_calls == [
         (
-            f"srp:visit-counts:rendered:display:{expected_hash}:none",
+            f"srp:visit-counts:rendered:display:{expected_hash}:{expected_scope_hash}:none",
             {"html": "<p>2</p>", "row_count": 2, "data_freshness_timestamp": None},
             42,
         )

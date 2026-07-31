@@ -90,6 +90,15 @@ def authenticated_subject(identity: dict[str, Any]) -> str:
     return subject.strip()
 
 
+def authorized_roles(identity: dict[str, Any]) -> list[str]:
+    roles = identity.get("roles", [])
+    if not isinstance(roles, list):
+        raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
+    if any(not isinstance(role, str) or not role.strip() for role in roles):
+        raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
+    return sorted(set(role.strip() for role in roles))
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -118,6 +127,7 @@ def get_artifact_html(
         behavior="display",
         refresh_cache=refresh,
         authenticated_subject=authenticated_subject(identity),
+        authorized_roles=authorized_roles(identity),
     )
 
     if result.get("status") == "error":
@@ -205,6 +215,7 @@ def create_artifact_execution(request: ArtifactExecutionRequest, identity: dict[
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
         authenticated_subject=authenticated_subject(identity),
+        authorized_roles=authorized_roles(identity),
     )
 
     if result.get("status") == "error":
@@ -247,6 +258,7 @@ def trigger_run(
         artifact_key,
         behavior=legacy_behavior[mode],
         authenticated_subject=authenticated_subject(identity),
+        authorized_roles=authorized_roles(identity),
     )
 
     if result.get("status") == "error":
