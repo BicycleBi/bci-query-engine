@@ -1,0 +1,21 @@
+schema_version: 1
+client: rag
+environment: dev
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/ragdev
+  compose_project: ragdev
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: RAG Dev authenticated paginated artifact data endpoint and Redis page caching
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine

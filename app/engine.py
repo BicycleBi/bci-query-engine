@@ -10,6 +10,7 @@ Flow:
   6. Return run_id + status
 """
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -493,6 +494,159 @@ def _set_authenticated_subject(data, authenticated_subject: Optional[str]) -> No
         "SELECT set_config('bci.authenticated_subject', %s, true)",
         (authenticated_subject or "",),
     )
+
+
+_PRICING_FILTER_COLUMNS = {
+    "type": "group_name",
+    "subtype": "category",
+    "sourceCategory": "category_name",
+    "vehicleYear": "item_year",
+    "vehicleMake": "item_make",
+    "vehicleModel": "item_model",
+    "age": "CASE WHEN NULLIF(item_age_at_sale, '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN CONCAT(FLOOR(NULLIF(item_age_at_sale, '')::numeric / 5) * 5, ' to ', FLOOR(NULLIF(item_age_at_sale, '')::numeric / 5) * 5 + 4, ' years') END",
+    "usage": "item_usage_type",
+    "mileageBand": "item_mileage_band",
+    "hoursBand": "item_hours_band",
+    "measurement": "measurement",
+    "amount": "amount",
+}
+
+
+def _safe_view_name(view_name: str) -> str:
+    """Allow only schema-qualified identifiers from trusted metadata."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", view_name or ""):
+        raise ValueError("Artifact data view name is not a safe identifier")
+    return view_name
+
+
+def _normalise_data_filters(filters: Optional[dict[str, Any]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in (filters or {}).items():
+        if key not in _PRICING_FILTER_COLUMNS:
+            continue
+        text = str(value or "").strip()
+        if text and text != "All":
+            result[key] = text[:200]
+    return result
+
+
+def _filter_sql(filters: dict[str, str]) -> tuple[str, list[str]]:
+    clauses = ["row_type = 'detail'"]
+    params: list[str] = []
+    for key, column in _PRICING_FILTER_COLUMNS.items():
+        if key in filters:
+            clauses.append(f"{column} = %s")
+            params.append(filters[key])
+    return " AND ".join(clauses), params
+
+
+def fetch_artifact_data(
+    client_key: str,
+    artifact_key: str,
+    *,
+    filters: Optional[dict[str, Any]] = None,
+    limit: int = 300,
+    offset: int = 0,
+    sort_key: str = "confidence",
+    sort_direction: str = "asc",
+    authenticated_subject: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return a bounded, server-filtered artifact data response."""
+    limit = max(1, min(int(limit), 300))
+    offset = max(0, int(offset))
+    sort_columns = {
+        "confidence": "CASE demo_confidence WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END",
+        "date": "auction_end_time",
+        "price": "gross_transaction_value",
+        "age": "item_age_at_sale",
+        "usage": "item_usage_value",
+        "lot": "lot_id",
+    }
+    order_expression = sort_columns.get(sort_key, sort_columns["confidence"])
+    direction = "DESC" if str(sort_direction).lower() == "desc" else "ASC"
+    selected_filters = _normalise_data_filters(filters)
+
+    with get_metadata_conn() as meta:
+        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+        if artifact is None:
+            raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
+        render_artifact = _resolve_render_artifact(meta, artifact)
+        view_name = _safe_view_name(render_artifact["view_name"])
+
+    from .cache import get_artifact_cache, get_cache_settings
+
+    cache_settings = get_cache_settings()
+    with get_data_conn() as data:
+        _set_authenticated_subject(data, authenticated_subject)
+        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
+        cache_params = {
+            "cache_version": 1,
+            "data_freshness_timestamp": freshness,
+            "filters": selected_filters,
+            "limit": limit,
+            "offset": offset,
+            "sort_key": sort_key,
+            "sort_direction": direction,
+        }
+        cache_key = cache.build_key(client_key, artifact_key, "data-page", cache_params) if cache else None
+        if cache and cache_key:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        where_sql, params = _filter_sql(selected_filters)
+        detail_sql = f"""
+            SELECT *
+            FROM {view_name}
+            WHERE {where_sql}
+            ORDER BY {order_expression} {direction}, auction_end_time DESC, lot_id
+            LIMIT %s OFFSET %s
+        """
+        detail_params = [*params, limit + 1, offset]
+        detail_cursor = data.execute(detail_sql, detail_params)
+        columns = [description[0] for description in detail_cursor.description]
+        raw_rows = detail_cursor.fetchall()
+        has_more = len(raw_rows) > limit
+        detail_rows = [dict(zip(columns, row)) for row in raw_rows[:limit]]
+
+        count_row = data.execute(
+            f"SELECT COUNT(*) FROM {view_name} WHERE {where_sql}",
+            params,
+        ).fetchone()
+        total_count = int(count_row[0])
+
+        summary_cursor = data.execute(
+            f"SELECT * FROM {view_name} WHERE row_type <> 'detail' ORDER BY section_sort_order, summary_detail_key"
+        )
+        summary_columns = [description[0] for description in summary_cursor.description]
+        summary_rows = [dict(zip(summary_columns, row)) for row in summary_cursor.fetchall()]
+
+        filter_options: dict[str, list[dict[str, Any]]] = {}
+        options_view = "public.rag_pricing_first_artifact_filter_options"
+        options_exists = data.execute("SELECT to_regclass(%s)", (options_view,)).fetchone()[0]
+        if options_exists is not None:
+            option_rows = data.execute(
+                f"SELECT filter_key, filter_value, option_count FROM {options_view} ORDER BY filter_key, filter_value"
+            ).fetchall()
+            for filter_key, filter_value, option_count in option_rows:
+                filter_options.setdefault(filter_key, []).append({"value": filter_value, "count": int(option_count)})
+
+        result = {
+            "data_version": freshness,
+            "rows": detail_rows,
+            "summary_rows": summary_rows,
+            "filter_options": filter_options,
+            "total_count": total_count,
+            "has_more": has_more,
+            "next_offset": offset + len(detail_rows) if has_more else None,
+        }
+        # psycopg may return Decimal/date/UUID values; normalize before the
+        # shared Redis JSON cache serializes the response.
+        result = json.loads(json.dumps(result, default=str))
+        if cache and cache_key:
+            cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+        return result
 
 
 def execute_artifact(

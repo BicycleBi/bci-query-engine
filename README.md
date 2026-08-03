@@ -178,6 +178,22 @@ mapping in SQL. Rendered cache keys include a SHA-256 hash of the subject so
 HTML produced for one subject cannot be served from another subject's cache
 entry.
 
+## Interactive artifact data pages
+
+Interactive artifacts can expose a bounded, server-filtered data contract at:
+
+```text
+GET /artifacts/{client_key}/{artifact_key}/data
+```
+
+The endpoint accepts `filters` as a JSON object plus `limit`, `offset`, `sort`,
+and `direction` query parameters. It returns the current data version, a
+bounded `rows` page, `summary_rows`, database-provided `filter_options`,
+`total_count`, and `next_offset`. Query Engine binds the authenticated subject
+to the data transaction and caches the complete response by filter, page,
+sort, and data version. It does not cache or return the full detail dataset
+for this contract.
+
 ## Running locally (with compose)
 
 ```bash
