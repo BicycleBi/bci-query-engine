@@ -22,7 +22,7 @@ service_runtime:
     source: .
     service: query-engine
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    release_id: service-runtime-srp-production-query-engine-role-context-20260804-v1
+    release_id: service-runtime-srp-production-query-engine-role-context-20260804-v2
     purpose: Propagate trusted authenticated subject and role context to client-owned artifact SQL
 
 validate:
