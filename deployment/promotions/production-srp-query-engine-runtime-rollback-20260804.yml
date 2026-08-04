@@ -8,6 +8,15 @@ targets:
   stack_dir: /home/shared/bci-clients/srp
   compose_project: bci-srp-production
 
+runtime_config:
+  services:
+    query-engine:
+      env:
+        REDIS_ENABLED: "false"
+      container_env:
+        REDIS_ENABLED: "false"
+      reconcile: recreate-if-env-changed
+
 service_runtime:
   promote:
     source: .
@@ -20,3 +29,7 @@ validate:
   - type: compose-config
   - type: service-health
     service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      REDIS_ENABLED: "false"
