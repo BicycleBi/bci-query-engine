@@ -13,7 +13,7 @@ service_runtime:
     source: .
     service: query-engine
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: RAG Dev authenticated paginated artifact data endpoint and Redis page caching
+    purpose: RAG Dev authenticated opaque artifact query execution and Redis response caching
 
 validate:
   - type: compose-config

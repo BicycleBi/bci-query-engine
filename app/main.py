@@ -12,7 +12,7 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse
 
-from .engine import execute_artifact, fetch_artifact_data, get_run, write_artifact_definition
+from .engine import execute_artifact, execute_artifact_query, get_run, write_artifact_definition
 from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
@@ -152,38 +152,21 @@ def get_artifact_html(
     return HTMLResponse(content=html, headers=headers)
 
 
-@app.get("/artifacts/{client_key}/{artifact_key}/data")
+@app.post("/artifacts/{client_key}/{artifact_key}/data")
 def get_artifact_data(
     client_key: str,
     artifact_key: str,
-    filters: Optional[str] = None,
-    limit: int = 300,
-    offset: int = 0,
-    sort: str = "confidence",
-    direction: str = "asc",
-    chart_selection: Optional[str] = None,
+    query: dict[str, Any],
     x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
-    """Return a database-defined interactive state with a bounded data page."""
+    """Pass an opaque artifact request to its database-owned query contract."""
     require_client_access(identity, client_key)
     try:
-        parsed_filters = json.loads(filters) if filters else {}
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="filters must be valid JSON") from exc
-    if not isinstance(parsed_filters, dict):
-        raise HTTPException(status_code=400, detail="filters must be a JSON object")
-
-    try:
-        return fetch_artifact_data(
+        return execute_artifact_query(
             client_key,
             artifact_key,
-            filters=parsed_filters,
-            limit=limit,
-            offset=offset,
-            sort_key=sort,
-            sort_direction=direction,
-            chart_selection=chart_selection,
+            query=query,
             authenticated_subject=authenticated_subject(identity),
             authorized_roles=authorized_roles(identity, x_identity_roles),
         )

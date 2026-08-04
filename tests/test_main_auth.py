@@ -131,11 +131,11 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
     client = TestClient(main.app)
     captured = {}
 
-    def fake_fetch_artifact_data(client_key, artifact_key, **kwargs):
+    def fake_execute_artifact_query(client_key, artifact_key, **kwargs):
         captured.update(kwargs)
         return {"rows": [], "client_key": client_key, "artifact_key": artifact_key}
 
-    monkeypatch.setattr(main, "fetch_artifact_data", fake_fetch_artifact_data)
+    monkeypatch.setattr(main, "execute_artifact_query", fake_execute_artifact_query)
     token = _encode_token(
         {
             "aud": "bci-client",
@@ -148,15 +148,23 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
         }
     )
 
-    response = client.get(
+    response = client.post(
         "/artifacts/srp/pricing-insights/data",
         headers={
             **_auth_headers(token),
             "X-Identity-Roles": "srp_scope_b,srp_scope_a",
         },
+        json={
+            "operation": "details",
+            "filters": {"type": "Vehicles & Transport"},
+        },
     )
 
     assert response.status_code == 200
+    assert captured["query"] == {
+        "operation": "details",
+        "filters": {"type": "Vehicles & Transport"},
+    }
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_scope_a", "srp_scope_b"]
 

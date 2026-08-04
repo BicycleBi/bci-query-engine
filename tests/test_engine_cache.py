@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -102,9 +103,14 @@ class FakeCache:
         authorization_suffix = (
             f":{authorization_context_hash}" if authorization_context_hash else ""
         )
+        discriminator = params.get("behavior") or json.dumps(
+            params.get("query", {}),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         return (
             f"{client_key}:{artifact_key}:{cache_type}:"
-            f"{params['behavior']}:{subject_hash}{authorization_suffix}:{freshness}"
+            f"{discriminator}:{subject_hash}{authorization_suffix}:{freshness}"
         )
 
     def get(self, key):
@@ -287,7 +293,100 @@ def test_delivery_execution_does_not_use_cache(monkeypatch):
     assert data.calls == 1
 
 
-def test_dashboard_function_name_follows_the_render_view_contract():
-    assert engine._dashboard_function_name(
+def test_query_function_name_follows_the_render_view_contract():
+    assert engine._query_function_name(
         "public.rag_pricing_first_artifact_rows"
-    ) == "public.rag_pricing_first_artifact_rows_dashboard"
+    ) == "public.rag_pricing_first_artifact_rows_query"
+
+
+class FakeQueryData(FakeData):
+    def __init__(self, *, contract_exists=True, result=None, **kwargs):
+        super().__init__(**kwargs)
+        self.contract_exists = contract_exists
+        self.result = result if result is not None else {"rows": [], "total_count": 0}
+        self.query_payloads = []
+
+    def execute(self, sql, params=None):
+        if "set_config('bci.authenticated_subject'" in sql:
+            self.authenticated_subjects.append(params[0])
+            return FakeResult(row=("",))
+        if "set_config('bci.authorized_roles'" in sql:
+            self.authorized_roles.append(params[0])
+            return FakeResult(row=("",))
+        if "to_regprocedure('public.bci_artifact_cache_freshness(text,text)')" in sql:
+            return FakeResult(row=(self.freshness_timestamp is not None,))
+        if "public.bci_artifact_cache_freshness" in sql:
+            return FakeResult(row=(self.freshness_timestamp,))
+        if "SELECT to_regprocedure(%s)" in sql:
+            return FakeResult(row=("rpt.visit_counts_query(jsonb)",) if self.contract_exists else (None,))
+        if "SELECT rpt.visit_counts_query" in sql:
+            self.calls += 1
+            self.query_payloads.append(params[0])
+            return FakeResult(row=(self.result,))
+        raise AssertionError(f"Unexpected data query: {sql}")
+
+
+def test_artifact_query_passes_opaque_json_to_database(monkeypatch):
+    data = FakeQueryData(result={"dashboard": {"summary": {"total": 7}}})
+    _patch_connections(monkeypatch, data=data)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=False),
+    )
+
+    query = {
+        "operation": "summary",
+        "filters": {"type": "Vehicles & Transport"},
+        "pagination": {"limit": 100, "offset": 0},
+    }
+    result = engine.execute_artifact_query(
+        "srp",
+        "visit-counts",
+        query=query,
+        authenticated_subject="user-1",
+        authorized_roles=["scope-a"],
+    )
+
+    assert result == {"dashboard": {"summary": {"total": 7}}}
+    assert json.loads(data.query_payloads[0]) == query
+    assert data.authenticated_subjects == ["user-1"]
+    assert data.authorized_roles == ['["scope-a"]']
+
+
+def test_artifact_query_cache_hit_skips_database_contract(monkeypatch):
+    data = FakeQueryData(fail_on_execute=True, freshness_timestamp="2026-08-04 10:00:00+00")
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload={"cached": True})
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.execute_artifact_query(
+        "srp",
+        "visit-counts",
+        query={"operation": "summary"},
+    )
+
+    assert result == {"cached": True}
+    assert data.calls == 0
+
+
+def test_artifact_query_requires_database_contract(monkeypatch):
+    data = FakeQueryData(contract_exists=False)
+    _patch_connections(monkeypatch, data=data)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=False),
+    )
+
+    with pytest.raises(ValueError, match="no database query contract"):
+        engine.execute_artifact_query(
+            "srp",
+            "visit-counts",
+            query={"operation": "summary"},
+        )

@@ -511,22 +511,6 @@ def _set_authorization_context(
     )
 
 
-_PRICING_FILTER_COLUMNS = {
-    "type": "group_name",
-    "subtype": "category",
-    "sourceCategory": "category_name",
-    "vehicleYear": "item_year",
-    "vehicleMake": "item_make",
-    "vehicleModel": "item_model",
-    "age": "CASE WHEN NULLIF(item_age_at_sale, '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN CONCAT(FLOOR(NULLIF(item_age_at_sale, '')::numeric / 5) * 5, ' to ', FLOOR(NULLIF(item_age_at_sale, '')::numeric / 5) * 5 + 4, ' years') END",
-    "usage": "item_usage_type",
-    "mileageBand": "item_mileage_band",
-    "hoursBand": "item_hours_band",
-    "measurement": "measurement",
-    "amount": "amount",
-}
-
-
 def _safe_view_name(view_name: str) -> str:
     """Allow only schema-qualified identifiers from trusted metadata."""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", view_name or ""):
@@ -534,59 +518,27 @@ def _safe_view_name(view_name: str) -> str:
     return view_name
 
 
-def _dashboard_function_name(view_name: str) -> str:
-    """Return the optional database-defined interactive contract for a view."""
-    return _safe_view_name(f"{_safe_view_name(view_name)}_dashboard")
+def _query_function_name(view_name: str) -> str:
+    """Return the database-owned query contract associated with a render view."""
+    return _safe_view_name(f"{_safe_view_name(view_name)}_query")
 
 
-def _normalise_data_filters(filters: Optional[dict[str, Any]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for key, value in (filters or {}).items():
-        if key not in _PRICING_FILTER_COLUMNS:
-            continue
-        text = str(value or "").strip()
-        if text and text != "All":
-            result[key] = text[:200]
-    return result
-
-
-def _filter_sql(filters: dict[str, str]) -> tuple[str, list[str]]:
-    clauses = ["row_type = 'detail'"]
-    params: list[str] = []
-    for key, column in _PRICING_FILTER_COLUMNS.items():
-        if key in filters:
-            clauses.append(f"{column} = %s")
-            params.append(filters[key])
-    return " AND ".join(clauses), params
-
-
-def fetch_artifact_data(
+def execute_artifact_query(
     client_key: str,
     artifact_key: str,
     *,
-    filters: Optional[dict[str, Any]] = None,
-    limit: int = 300,
-    offset: int = 0,
-    sort_key: str = "confidence",
-    sort_direction: str = "asc",
-    chart_selection: Optional[str] = None,
+    query: dict[str, Any],
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
-) -> dict[str, Any]:
-    """Return a bounded, server-filtered artifact data response."""
-    limit = max(1, min(int(limit), 300))
-    offset = max(0, int(offset))
-    sort_columns = {
-        "confidence": "CASE demo_confidence WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END",
-        "date": "auction_end_time",
-        "price": "gross_transaction_value",
-        "age": "item_age_at_sale",
-        "usage": "item_usage_value",
-        "lot": "lot_id",
-    }
-    order_expression = sort_columns.get(sort_key, sort_columns["confidence"])
-    direction = "DESC" if str(sort_direction).lower() == "desc" else "ASC"
-    selected_filters = _normalise_data_filters(filters)
+) -> Any:
+    """Execute a database-owned artifact query without interpreting its payload."""
+    if not isinstance(query, dict):
+        raise ValueError("Artifact query must be a JSON object")
+
+    serialized_query = json.dumps(query, separators=(",", ":"), sort_keys=True)
+    max_query_bytes = int(os.getenv("ARTIFACT_QUERY_MAX_BYTES", "65536"))
+    if len(serialized_query.encode("utf-8")) > max_query_bytes:
+        raise ValueError(f"Artifact query exceeds the {max_query_bytes}-byte request limit")
 
     with get_metadata_conn() as meta:
         artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
@@ -603,98 +555,45 @@ def fetch_artifact_data(
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
         cache_params = {
-            "cache_version": 1,
+            "cache_version": 2,
             "data_freshness_timestamp": freshness,
             "authenticated_subject_hash": _subject_hash(authenticated_subject),
             "authorization_context_hash": _authorization_context_hash(authorized_roles),
-            "filters": selected_filters,
-            "limit": limit,
-            "offset": offset,
-            "sort_key": sort_key,
-            "sort_direction": direction,
-            "chart_selection": chart_selection or "",
+            "query": query,
         }
-        cache_key = cache.build_key(client_key, artifact_key, "data-page", cache_params) if cache else None
+        cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params) if cache else None
         if cache and cache_key:
-            cached = cache.get(cache_key)
-            if cached is not None:
-                return cached
+            try:
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    return cached
+            except Exception:
+                cache = None
 
-        # A client-owned SQL contract may provide the complete selected state.
-        # Query Engine transports and caches it without owning dashboard logic.
-        dashboard_function = _dashboard_function_name(view_name)
-        function_signature = f"{dashboard_function}(jsonb,integer,integer,text,text,text)"
-        function_exists = data.execute("SELECT to_regprocedure(%s)", (function_signature,)).fetchone()[0]
-        if function_exists is not None:
-            result = data.execute(
-                f"SELECT {dashboard_function}(%s::jsonb, %s, %s, %s, %s, %s)",  # noqa: S608
-                (
-                    json.dumps(selected_filters),
-                    limit,
-                    offset,
-                    sort_key,
-                    direction,
-                    chart_selection or "",
-                ),
-            ).fetchone()[0]
-            if not isinstance(result, dict):
-                result = json.loads(result)
-            result["data_version"] = freshness
-            if cache and cache_key:
+        query_function = _query_function_name(view_name)
+        function_signature = f"{query_function}(jsonb)"
+        function_exists = data.execute(
+            "SELECT to_regprocedure(%s)",
+            (function_signature,),
+        ).fetchone()[0]
+        if function_exists is None:
+            raise ValueError(
+                f"Artifact has no database query contract: client={client_key} "
+                f"artifact={artifact_key}"
+            )
+
+        result = data.execute(
+            f"SELECT {query_function}(%s::jsonb)",  # noqa: S608
+            (serialized_query,),
+        ).fetchone()[0]
+        if isinstance(result, str):
+            result = json.loads(result)
+
+        if cache and cache_key:
+            try:
                 cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
-            return result
-
-        where_sql, params = _filter_sql(selected_filters)
-        detail_sql = f"""
-            SELECT *
-            FROM {view_name}
-            WHERE {where_sql}
-            ORDER BY {order_expression} {direction}, auction_end_time DESC, lot_id
-            LIMIT %s OFFSET %s
-        """
-        detail_params = [*params, limit + 1, offset]
-        detail_cursor = data.execute(detail_sql, detail_params)
-        columns = [description[0] for description in detail_cursor.description]
-        raw_rows = detail_cursor.fetchall()
-        has_more = len(raw_rows) > limit
-        detail_rows = [dict(zip(columns, row)) for row in raw_rows[:limit]]
-
-        count_row = data.execute(
-            f"SELECT COUNT(*) FROM {view_name} WHERE {where_sql}",
-            params,
-        ).fetchone()
-        total_count = int(count_row[0])
-
-        summary_cursor = data.execute(
-            f"SELECT * FROM {view_name} WHERE row_type <> 'detail' ORDER BY section_sort_order, summary_detail_key"
-        )
-        summary_columns = [description[0] for description in summary_cursor.description]
-        summary_rows = [dict(zip(summary_columns, row)) for row in summary_cursor.fetchall()]
-
-        filter_options: dict[str, list[dict[str, Any]]] = {}
-        options_view = "public.rag_pricing_first_artifact_filter_options"
-        options_exists = data.execute("SELECT to_regclass(%s)", (options_view,)).fetchone()[0]
-        if options_exists is not None:
-            option_rows = data.execute(
-                f"SELECT filter_key, filter_value, option_count FROM {options_view} ORDER BY filter_key, filter_value"
-            ).fetchall()
-            for filter_key, filter_value, option_count in option_rows:
-                filter_options.setdefault(filter_key, []).append({"value": filter_value, "count": int(option_count)})
-
-        result = {
-            "data_version": freshness,
-            "rows": detail_rows,
-            "summary_rows": summary_rows,
-            "filter_options": filter_options,
-            "total_count": total_count,
-            "has_more": has_more,
-            "next_offset": offset + len(detail_rows) if has_more else None,
-        }
-        # psycopg may return Decimal/date/UUID values; normalize before the
-        # shared Redis JSON cache serializes the response.
-        result = json.loads(json.dumps(result, default=str))
-        if cache and cache_key:
-            cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+            except Exception:
+                pass
         return result
 
 
