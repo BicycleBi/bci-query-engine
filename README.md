@@ -187,12 +187,14 @@ GET /artifacts/{client_key}/{artifact_key}/data
 ```
 
 The endpoint accepts `filters` as a JSON object plus `limit`, `offset`, `sort`,
-and `direction` query parameters. It returns the current data version, a
-bounded `rows` page, `summary_rows`, database-provided `filter_options`,
-`total_count`, and `next_offset`. Query Engine binds the authenticated subject
-to the data transaction and caches the complete response by filter, page,
-sort, and data version. It does not cache or return the full detail dataset
-for this contract.
+`direction`, and optional `chart_selection` query parameters. It returns the
+current data version, a bounded `rows` page, and a `dashboard` object containing
+the complete selected KPI summary, aggregate chart points, and applicable
+quality metrics. It also returns cascaded `filter_options`, `total_count`, and
+`next_offset`. Query Engine calculates the dashboard state in PostgreSQL, binds
+the authenticated subject to the data transaction, and caches the complete
+response by selection, page, sort, chart selection, and data version. It does
+not cache or return the full detail dataset for this contract.
 
 ## Running locally (with compose)
 
