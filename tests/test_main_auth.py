@@ -188,6 +188,45 @@ def test_protected_routes_reject_invalid_authorization_roles(monkeypatch):
     assert response.status_code == 403
 
 
+def test_blank_forwarded_roles_fall_back_to_signed_token_roles(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    assert main.authorized_roles(
+        {"roles": ["srp_production_admin"]},
+        "",
+    ) == ["srp_production_admin"]
+
+
+def test_identity_without_any_roles_is_forbidden(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": [],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "",
+        },
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "display",
+        },
+    )
+    assert response.status_code == 403
+
+
 def test_protected_routes_reject_token_without_subject(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)
