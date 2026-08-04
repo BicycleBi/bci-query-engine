@@ -234,81 +234,6 @@ def test_authenticated_subject_is_bound_to_data_query_and_cache(monkeypatch):
     ]
 
 
-def test_pricing_chart_selection_accepts_only_supported_server_filters():
-    age_sql, age_params = engine._pricing_chart_filter_sql("vehicle-age:12")
-    assert "ROUND" in age_sql
-    assert age_params == ["12"]
-    month_sql, month_params = engine._pricing_chart_filter_sql("sale-month:2026-08")
-    assert month_sql == " AND SUBSTRING(auction_end_time FROM 1 FOR 7) = %s"
-    assert month_params == ["2026-08"]
-    assert engine._pricing_chart_filter_sql("not-a-supported-selection") == ("", [])
-
-
-def test_pricing_interactive_contract_uses_the_full_detail_view():
-    assert engine._interactive_data_view_name(
-        "rag",
-        "pricing-intelligence-overview",
-        "public.rag_pricing_first_artifact_rows",
-    ) == "public.rag_pricing_first_artifact_interactive_rows"
-
-
-def test_pricing_data_page_returns_server_dashboard_and_bounded_rows(monkeypatch):
-    class PricingData(FakeData):
-        def __init__(self):
-            super().__init__()
-            self.detail_params = None
-
-        def execute(self, sql, params=None):
-            if "set_config('bci.authenticated_subject'" in sql:
-                self.authenticated_subjects.append(params[0])
-                return FakeResult(row=("",))
-            if "to_regprocedure('public.bci_artifact_cache_freshness(text,text)')" in sql:
-                return FakeResult(row=(False,))
-            if "SELECT *" in sql and "LIMIT %s OFFSET %s" in sql:
-                self.detail_params = params
-                return FakeResult(
-                    rows=[("detail", "lot-1")],
-                    description=[("row_type",), ("lot_id",)],
-                )
-            if "SELECT COUNT(*)" in sql:
-                return FakeResult(row=(1,))
-            if "row_type = 'quality_metric'" in sql:
-                return FakeResult(rows=[], description=[])
-            raise AssertionError(f"Unexpected data query: {sql}")
-
-    data = PricingData()
-    _patch_connections(monkeypatch, data=data)
-    monkeypatch.setattr(
-        cache_module,
-        "get_cache_settings",
-        lambda: cache_module.CacheSettings(enabled=False),
-    )
-    monkeypatch.setattr(
-        engine,
-        "_pricing_dashboard_summary",
-        lambda *_args: {"comparable_lot_count": 10, "sold_lot_count": 8},
-    )
-    monkeypatch.setattr(
-        engine,
-        "_pricing_chart_points",
-        lambda *_args, **_kwargs: {"mode": "sale-month", "points": [{"selection_key": "sale-month:2026-08"}]},
-    )
-    monkeypatch.setattr(engine, "_pricing_filter_options", lambda *_args: {"type": [{"value": "Vehicles & Transport", "count": 10}]})
-
-    result = engine.fetch_artifact_data(
-        "rag",
-        "pricing-intelligence-overview",
-        filters={"type": "Vehicles & Transport"},
-        chart_selection="vehicle-age:12",
-    )
-
-    assert result["dashboard"]["summary"]["comparable_lot_count"] == 10
-    assert result["dashboard"]["chart"]["points"][0]["selection_key"] == "sale-month:2026-08"
-    assert result["rows"] == [{"row_type": "detail", "lot_id": "lot-1"}]
-    assert result["total_count"] == 1
-    assert data.detail_params[-2:] == [301, 0]
-
-
 def test_redis_read_failure_falls_back_to_normal_execution(monkeypatch):
     _, data = _patch_connections(monkeypatch)
     fake_cache = FakeCache(fail_get=True)
@@ -344,3 +269,9 @@ def test_delivery_execution_does_not_use_cache(monkeypatch):
     assert result["status"] == "success"
     assert result["preview_html"] is None
     assert data.calls == 1
+
+
+def test_dashboard_function_name_follows_the_render_view_contract():
+    assert engine._dashboard_function_name(
+        "public.rag_pricing_first_artifact_rows"
+    ) == "public.rag_pricing_first_artifact_rows_dashboard"

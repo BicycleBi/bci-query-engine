@@ -143,7 +143,7 @@ def get_artifact_data(
     chart_selection: Optional[str] = None,
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
-    """Return a server-calculated dashboard state with a bounded data page."""
+    """Return a database-defined interactive state with a bounded data page."""
     require_client_access(identity, client_key)
     try:
         parsed_filters = json.loads(filters) if filters else {}

@@ -511,56 +511,6 @@ _PRICING_FILTER_COLUMNS = {
     "amount": "amount",
 }
 
-# The display artifact stays compact; the interactive endpoint reads the
-# complete detail projection through this explicit artifact data contract.
-_INTERACTIVE_ARTIFACT_DATA_VIEWS = {
-    ("rag", "pricing-intelligence-overview"): "public.rag_pricing_first_artifact_interactive_rows",
-}
-
-_PRICING_NUMERIC_PRICE = """
-    CASE
-        WHEN NULLIF(gross_transaction_value, '') ~ '^[0-9]+(\\.[0-9]+)?$'
-        THEN NULLIF(gross_transaction_value, '')::numeric
-    END
-"""
-
-_PRICING_NUMERIC_AGE = """
-    CASE
-        WHEN NULLIF(item_age_at_sale, '') ~ '^[0-9]+(\\.[0-9]+)?$'
-        THEN NULLIF(item_age_at_sale, '')::numeric
-    END
-"""
-
-
-def _rows_as_dicts(cursor) -> list[dict[str, Any]]:
-    columns = [description[0] for description in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-
-def _pricing_chart_filter_sql(chart_selection: Optional[str]) -> tuple[str, list[str]]:
-    """Return a trusted table-only filter for a dashboard chart selection."""
-    selection = str(chart_selection or "").strip()
-    if not selection:
-        return "", []
-
-    age_match = re.fullmatch(r"vehicle-age:([0-9]+)", selection)
-    if age_match:
-        return f" AND ROUND(({_PRICING_NUMERIC_AGE})) = %s", [age_match.group(1)]
-
-    month_match = re.fullmatch(r"sale-month:([0-9]{4}-[0-9]{2})", selection)
-    if month_match:
-        return " AND SUBSTRING(auction_end_time FROM 1 FOR 7) = %s", [month_match.group(1)]
-
-    date_match = re.fullmatch(r"sale-date:([0-9]{4}-[0-9]{2}-[0-9]{2})", selection)
-    if date_match:
-        return " AND SUBSTRING(auction_end_time FROM 1 FOR 10) = %s", [date_match.group(1)]
-
-    lot_match = re.fullmatch(r"distribution:([A-Za-z0-9_.:-]{1,200})", selection)
-    if lot_match:
-        return " AND lot_id = %s", [lot_match.group(1)]
-
-    return "", []
-
 
 def _safe_view_name(view_name: str) -> str:
     """Allow only schema-qualified identifiers from trusted metadata."""
@@ -569,11 +519,9 @@ def _safe_view_name(view_name: str) -> str:
     return view_name
 
 
-def _interactive_data_view_name(client_key: str, artifact_key: str, render_view_name: str) -> str:
-    """Resolve an explicit interactive data view without changing render metadata."""
-    return _safe_view_name(
-        _INTERACTIVE_ARTIFACT_DATA_VIEWS.get((client_key, artifact_key), render_view_name)
-    )
+def _dashboard_function_name(view_name: str) -> str:
+    """Return the optional database-defined interactive contract for a view."""
+    return _safe_view_name(f"{_safe_view_name(view_name)}_dashboard")
 
 
 def _normalise_data_filters(filters: Optional[dict[str, Any]]) -> dict[str, str]:
@@ -597,206 +545,6 @@ def _filter_sql(filters: dict[str, str]) -> tuple[str, list[str]]:
     return " AND ".join(clauses), params
 
 
-def _pricing_filter_options(data, view_name: str, selected_filters: dict[str, str]) -> dict[str, list[dict[str, Any]]]:
-    """Return cascaded options, excluding each option's own active filter."""
-    queries: list[str] = []
-    params: list[str] = []
-    for filter_key, expression in _PRICING_FILTER_COLUMNS.items():
-        filters_without_current = {
-            key: value for key, value in selected_filters.items() if key != filter_key
-        }
-        where_sql, where_params = _filter_sql(filters_without_current)
-        value_sql = f"({expression})::text"
-        queries.append(
-            f"""
-            SELECT '{filter_key}'::text AS filter_key,
-                   {value_sql} AS filter_value,
-                   COUNT(*)::bigint AS option_count
-            FROM {view_name}
-            WHERE {where_sql}
-              AND NULLIF({value_sql}, '') IS NOT NULL
-            GROUP BY {value_sql}
-            """
-        )
-        params.extend(where_params)
-
-    cursor = data.execute(" UNION ALL ".join(queries) + " ORDER BY filter_key, filter_value", params)
-    options: dict[str, list[dict[str, Any]]] = {}
-    for filter_key, filter_value, option_count in cursor.fetchall():
-        options.setdefault(str(filter_key), []).append(
-            {"value": str(filter_value), "count": int(option_count)}
-        )
-    return options
-
-
-def _pricing_dashboard_summary(data, view_name: str, where_sql: str, params: list[str]) -> dict[str, Any]:
-    """Calculate the complete selected dashboard state in PostgreSQL."""
-    cursor = data.execute(
-        f"""
-        WITH selected AS (
-            SELECT *,
-                   {_PRICING_NUMERIC_PRICE} AS sale_price,
-                   {_PRICING_NUMERIC_AGE} AS age_at_sale
-            FROM {view_name}
-            WHERE {where_sql}
-        )
-        SELECT
-            COUNT(*)::bigint AS comparable_lot_count,
-            COUNT(*) FILTER (WHERE sale_price > 0)::bigint AS sold_lot_count,
-            COUNT(*) FILTER (WHERE demo_confidence = 'High')::bigint AS high_confidence_lot_count,
-            COUNT(*) FILTER (WHERE demo_confidence = 'Medium')::bigint AS medium_confidence_lot_count,
-            COUNT(*) FILTER (WHERE demo_confidence = 'Low')::bigint AS low_confidence_lot_count,
-            MIN(sale_price) FILTER (WHERE sale_price > 0) AS min_sale_price,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sale_price)
-                FILTER (WHERE sale_price > 0) AS median_sale_price,
-            AVG(sale_price) FILTER (WHERE sale_price > 0) AS average_sale_price,
-            MAX(sale_price) FILTER (WHERE sale_price > 0) AS max_sale_price,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY age_at_sale)
-                FILTER (WHERE sale_price > 0 AND age_at_sale IS NOT NULL) AS median_age_at_sale,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (
-                ORDER BY CASE
-                    WHEN NULLIF(item_usage_value, '') ~ '^[0-9]+(\\.[0-9]+)?$'
-                        THEN NULLIF(item_usage_value, '')::numeric
-                END
-            ) FILTER (WHERE sale_price > 0) AS median_usage_value,
-            MODE() WITHIN GROUP (ORDER BY NULLIF(item_usage_type, ''))
-                FILTER (WHERE NULLIF(item_usage_type, '') IS NOT NULL) AS primary_usage_type,
-            COUNT(*) FILTER (
-                WHERE NULLIF(measurement, '') IS NOT NULL
-                  AND measurement <> 'Not specified'
-            )::bigint AS measurement_count,
-            COUNT(*) FILTER (WHERE NULLIF(amount, '') IS NOT NULL)::bigint AS amount_count,
-            COUNT(*) FILTER (
-                WHERE NULLIF(group_name, '') IS NOT NULL
-                  AND NULLIF(category, '') IS NOT NULL
-                  AND category NOT IN ('Other / Mixed Lots', 'Unclassified')
-            )::bigint AS type_subtype_count,
-            COUNT(*) FILTER (WHERE NULLIF(item_year, '') IS NOT NULL)::bigint AS year_count,
-            COUNT(*) FILTER (
-                WHERE NULLIF(item_make, '') IS NOT NULL
-                  AND NULLIF(item_model, '') IS NOT NULL
-            )::bigint AS make_model_count,
-            COUNT(*) FILTER (
-                WHERE NULLIF(item_usage_value, '') IS NOT NULL
-                  AND NULLIF(item_usage_type, '') IS NOT NULL
-                  AND item_usage_type <> 'Unknown'
-            )::bigint AS usage_count
-        FROM selected
-        """,
-        params,
-    )
-    row = cursor.fetchone()
-    columns = [description[0] for description in cursor.description]
-    return dict(zip(columns, row))
-
-
-def _pricing_chart_points(data, view_name: str, where_sql: str, params: list[str], *, vehicle_view: bool) -> dict[str, Any]:
-    """Return aggregate chart points. No detail rows are sent for chart rendering."""
-    common = f"""
-        SELECT *,
-               {_PRICING_NUMERIC_PRICE} AS sale_price,
-               {_PRICING_NUMERIC_AGE} AS age_at_sale
-        FROM {view_name}
-        WHERE {where_sql}
-    """
-    if vehicle_view:
-        cursor = data.execute(
-            f"""
-            WITH selected AS ({common})
-            SELECT CONCAT('vehicle-age:', ROUND(age_at_sale)::integer) AS selection_key,
-                   ROUND(age_at_sale)::double precision AS x,
-                   ROUND(age_at_sale)::text AS label,
-                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sale_price) AS price,
-                   MIN(sale_price) AS min,
-                   MAX(sale_price) AS max,
-                   COUNT(*)::bigint AS count
-            FROM selected
-            WHERE sale_price > 0 AND age_at_sale IS NOT NULL
-            GROUP BY ROUND(age_at_sale)
-            ORDER BY ROUND(age_at_sale)
-            """,
-            params,
-        )
-        return {"mode": "vehicle-age", "points": _rows_as_dicts(cursor)}
-
-    month_cursor = data.execute(
-        f"""
-        WITH selected AS ({common}), sold AS (
-            SELECT TO_DATE(SUBSTRING(auction_end_time FROM 1 FOR 7) || '-01', 'YYYY-MM-DD') AS sale_month,
-                   sale_price
-            FROM selected
-            WHERE sale_price > 0
-              AND auction_end_time ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-        )
-        SELECT CONCAT('sale-month:', TO_CHAR(sale_month, 'YYYY-MM')) AS selection_key,
-               EXTRACT(EPOCH FROM sale_month) * 1000 AS x,
-               TO_CHAR(sale_month, 'YY-MM') AS label,
-               TO_CHAR(sale_month, 'MM') AS month_number,
-               TO_CHAR(sale_month, 'YYYY') AS year_label,
-               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sale_price) AS price,
-               MIN(sale_price) AS min,
-               MAX(sale_price) AS max,
-               COUNT(*)::bigint AS count
-        FROM sold
-        GROUP BY sale_month
-        ORDER BY sale_month
-        """,
-        params,
-    )
-    month_points = _rows_as_dicts(month_cursor)
-    if len(month_points) >= 2:
-        return {"mode": "sale-month", "points": month_points}
-
-    date_cursor = data.execute(
-        f"""
-        WITH selected AS ({common}), sold AS (
-            SELECT TO_DATE(SUBSTRING(auction_end_time FROM 1 FOR 10), 'YYYY-MM-DD') AS sale_date,
-                   sale_price
-            FROM selected
-            WHERE sale_price > 0
-              AND auction_end_time ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-        )
-        SELECT CONCAT('sale-date:', TO_CHAR(sale_date, 'YYYY-MM-DD')) AS selection_key,
-               EXTRACT(EPOCH FROM sale_date) * 1000 AS x,
-               TO_CHAR(sale_date, 'MM-DD') AS label,
-               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sale_price) AS price,
-               MIN(sale_price) AS min,
-               MAX(sale_price) AS max,
-               COUNT(*)::bigint AS count
-        FROM sold
-        GROUP BY sale_date
-        ORDER BY sale_date
-        """,
-        params,
-    )
-    date_points = _rows_as_dicts(date_cursor)
-    if len(date_points) >= 2:
-        return {"mode": "sale-date", "points": date_points}
-
-    distribution_cursor = data.execute(
-        f"""
-        WITH selected AS ({common}), sold AS (
-            SELECT lot_id, sale_price
-            FROM selected
-            WHERE sale_price > 0
-            ORDER BY sale_price, lot_id
-            LIMIT 40
-        )
-        SELECT CONCAT('distribution:', lot_id) AS selection_key,
-               ROW_NUMBER() OVER (ORDER BY sale_price, lot_id)::double precision AS x,
-               CONCAT('Lot ', ROW_NUMBER() OVER (ORDER BY sale_price, lot_id)) AS label,
-               sale_price AS price,
-               sale_price AS min,
-               sale_price AS max,
-               1::bigint AS count
-        FROM sold
-        ORDER BY sale_price, lot_id
-        """,
-        params,
-    )
-    return {"mode": "distribution", "points": _rows_as_dicts(distribution_cursor)}
-
-
 def fetch_artifact_data(
     client_key: str,
     artifact_key: str,
@@ -809,18 +557,15 @@ def fetch_artifact_data(
     chart_selection: Optional[str] = None,
     authenticated_subject: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Return a complete server-calculated dashboard state and bounded table page."""
+    """Return a bounded, server-filtered artifact data response."""
     limit = max(1, min(int(limit), 300))
     offset = max(0, int(offset))
     sort_columns = {
         "confidence": "CASE demo_confidence WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END",
         "date": "auction_end_time",
-        "price": _PRICING_NUMERIC_PRICE,
-        "age": _PRICING_NUMERIC_AGE,
-        "usage": "CASE WHEN NULLIF(item_usage_value, '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN NULLIF(item_usage_value, '')::numeric END",
-        "type": "group_name",
-        "subtype": "category",
-        "auction": "COALESCE(NULLIF(auction_reference, ''), auction_title)",
+        "price": "gross_transaction_value",
+        "age": "item_age_at_sale",
+        "usage": "item_usage_value",
         "lot": "lot_id",
     }
     order_expression = sort_columns.get(sort_key, sort_columns["confidence"])
@@ -832,8 +577,7 @@ def fetch_artifact_data(
         if artifact is None:
             raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
         render_artifact = _resolve_render_artifact(meta, artifact)
-        render_view_name = _safe_view_name(render_artifact["view_name"])
-        view_name = _interactive_data_view_name(client_key, artifact_key, render_view_name)
+        view_name = _safe_view_name(render_artifact["view_name"])
 
     from .cache import get_artifact_cache, get_cache_settings
 
@@ -858,68 +602,71 @@ def fetch_artifact_data(
             if cached is not None:
                 return cached
 
+        # A client-owned SQL contract may provide the complete selected state.
+        # Query Engine transports and caches it without owning dashboard logic.
+        dashboard_function = _dashboard_function_name(view_name)
+        function_signature = f"{dashboard_function}(jsonb,integer,integer,text,text,text)"
+        function_exists = data.execute("SELECT to_regprocedure(%s)", (function_signature,)).fetchone()[0]
+        if function_exists is not None:
+            result = data.execute(
+                f"SELECT {dashboard_function}(%s::jsonb, %s, %s, %s, %s, %s)",  # noqa: S608
+                (
+                    json.dumps(selected_filters),
+                    limit,
+                    offset,
+                    sort_key,
+                    direction,
+                    chart_selection or "",
+                ),
+            ).fetchone()[0]
+            if not isinstance(result, dict):
+                result = json.loads(result)
+            result["data_version"] = freshness
+            if cache and cache_key:
+                cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+            return result
+
         where_sql, params = _filter_sql(selected_filters)
-        chart_where_sql, chart_params = _pricing_chart_filter_sql(chart_selection)
-        table_where_sql = where_sql + chart_where_sql
-        table_params = [*params, *chart_params]
         detail_sql = f"""
             SELECT *
             FROM {view_name}
-            WHERE {table_where_sql}
+            WHERE {where_sql}
             ORDER BY {order_expression} {direction}, auction_end_time DESC, lot_id
             LIMIT %s OFFSET %s
         """
-        detail_params = [*table_params, limit + 1, offset]
+        detail_params = [*params, limit + 1, offset]
         detail_cursor = data.execute(detail_sql, detail_params)
-        raw_rows = _rows_as_dicts(detail_cursor)
+        columns = [description[0] for description in detail_cursor.description]
+        raw_rows = detail_cursor.fetchall()
         has_more = len(raw_rows) > limit
-        detail_rows = raw_rows[:limit]
+        detail_rows = [dict(zip(columns, row)) for row in raw_rows[:limit]]
 
         count_row = data.execute(
-            f"SELECT COUNT(*) FROM {view_name} WHERE {table_where_sql}",
-            table_params,
+            f"SELECT COUNT(*) FROM {view_name} WHERE {where_sql}",
+            params,
         ).fetchone()
         total_count = int(count_row[0])
 
-        dashboard_summary = _pricing_dashboard_summary(data, view_name, where_sql, params)
-        vehicle_view = selected_filters.get("type") == "Vehicles & Transport"
-        chart = _pricing_chart_points(
-            data,
-            view_name,
-            where_sql,
-            params,
-            vehicle_view=vehicle_view,
+        summary_cursor = data.execute(
+            f"SELECT * FROM {view_name} WHERE row_type <> 'detail' ORDER BY section_sort_order, summary_detail_key"
         )
-        quality_cursor = data.execute(
-            f"""
-            SELECT *
-            FROM {view_name}
-            WHERE row_type = 'quality_metric'
-            ORDER BY section_sort_order, support_sort_order, summary_detail_key
-            """
-        )
-        quality_metrics = _rows_as_dicts(quality_cursor)
-        filter_options = _pricing_filter_options(data, view_name, selected_filters)
-        selected_parts = [value for value in selected_filters.values() if value]
-        selected_label = " / ".join(selected_parts) if selected_parts else "All comparable groups"
-        dashboard_summary.update(
-            {
-                "category_name": selected_label,
-                "pricing_guidance_note": "Use the average as a cross-check against the median.",
-                "demo_sample_warning": "All matching lots are reflected.",
-                "confidence_guidance_note": "High-confidence lots have the required source-data signals for their type.",
-            }
-        )
+        summary_columns = [description[0] for description in summary_cursor.description]
+        summary_rows = [dict(zip(summary_columns, row)) for row in summary_cursor.fetchall()]
+
+        filter_options: dict[str, list[dict[str, Any]]] = {}
+        options_view = "public.rag_pricing_first_artifact_filter_options"
+        options_exists = data.execute("SELECT to_regclass(%s)", (options_view,)).fetchone()[0]
+        if options_exists is not None:
+            option_rows = data.execute(
+                f"SELECT filter_key, filter_value, option_count FROM {options_view} ORDER BY filter_key, filter_value"
+            ).fetchall()
+            for filter_key, filter_value, option_count in option_rows:
+                filter_options.setdefault(filter_key, []).append({"value": filter_value, "count": int(option_count)})
 
         result = {
             "data_version": freshness,
             "rows": detail_rows,
-            "dashboard": {
-                "summary": dashboard_summary,
-                "chart": chart,
-                "quality_metrics": quality_metrics,
-                "vehicle_view": vehicle_view,
-            },
+            "summary_rows": summary_rows,
             "filter_options": filter_options,
             "total_count": total_count,
             "has_more": has_more,
