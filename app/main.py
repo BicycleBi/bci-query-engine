@@ -95,7 +95,7 @@ def authorized_roles(
     forwarded_roles: Optional[str] = None,
 ) -> list[str]:
     roles: Any
-    if forwarded_roles is not None:
+    if forwarded_roles is not None and forwarded_roles.strip():
         roles = [role.strip() for role in forwarded_roles.split(",") if role.strip()]
     else:
         roles = identity.get("roles", [])
@@ -103,7 +103,10 @@ def authorized_roles(
         raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
     if any(not isinstance(role, str) or not role.strip() for role in roles):
         raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
-    return sorted(set(role.strip() for role in roles))
+    normalized_roles = sorted(set(role.strip() for role in roles))
+    if not normalized_roles:
+        raise HTTPException(status_code=403, detail="Identity has no authorization roles")
+    return normalized_roles
 
 
 @app.get("/health", response_model=HealthResponse)
