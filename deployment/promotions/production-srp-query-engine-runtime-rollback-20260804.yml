@@ -22,7 +22,7 @@ service_runtime:
     source: .
     service: query-engine
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    release_id: service-runtime-srp-production-query-engine-rollback-6fee1cb-20260804-v1
+    release_id: service-runtime-srp-production-query-engine-rollback-6fee1cb-20260804-v2
     purpose: Restore the exact verified pre-role-context SRP Production Query Engine source
 
 validate:
