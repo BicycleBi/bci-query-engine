@@ -140,9 +140,10 @@ def get_artifact_data(
     offset: int = 0,
     sort: str = "confidence",
     direction: str = "asc",
+    chart_selection: Optional[str] = None,
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
-    """Return a bounded server-filtered data page for interactive artifacts."""
+    """Return a server-calculated dashboard state with a bounded data page."""
     require_client_access(identity, client_key)
     try:
         parsed_filters = json.loads(filters) if filters else {}
@@ -160,6 +161,7 @@ def get_artifact_data(
             offset=offset,
             sort_key=sort,
             sort_direction=direction,
+            chart_selection=chart_selection,
             authenticated_subject=authenticated_subject(identity),
         )
     except ValueError as exc:
