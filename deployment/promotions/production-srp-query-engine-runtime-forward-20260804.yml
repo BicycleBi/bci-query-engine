@@ -1,0 +1,22 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: /home/shared/repos/bci-query-engine-promote
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-srp-production-query-engine-role-context-20260804-v1
+    purpose: Propagate trusted authenticated subject and role context to client-owned artifact SQL
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine

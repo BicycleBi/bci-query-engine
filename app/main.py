@@ -159,6 +159,7 @@ def get_artifact_data(
     sort: str = "confidence",
     direction: str = "asc",
     chart_selection: Optional[str] = None,
+    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Return a database-defined interactive state with a bounded data page."""
@@ -181,6 +182,7 @@ def get_artifact_data(
             sort_direction=direction,
             chart_selection=chart_selection,
             authenticated_subject=authenticated_subject(identity),
+            authorized_roles=authorized_roles(identity, x_identity_roles),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

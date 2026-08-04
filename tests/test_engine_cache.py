@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-sys.modules.setdefault("psycopg", SimpleNamespace(connect=None))
+sys.modules.setdefault("psycopg", SimpleNamespace(connect=None, Connection=object))
 sys.modules.setdefault("requests", SimpleNamespace(post=None))
 
 engine = importlib.import_module("app.engine")

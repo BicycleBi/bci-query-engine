@@ -571,6 +571,7 @@ def fetch_artifact_data(
     sort_direction: str = "asc",
     chart_selection: Optional[str] = None,
     authenticated_subject: Optional[str] = None,
+    authorized_roles: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Return a bounded, server-filtered artifact data response."""
     limit = max(1, min(int(limit), 300))
@@ -598,12 +599,14 @@ def fetch_artifact_data(
 
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
-        _set_authenticated_subject(data, authenticated_subject)
+        _set_authorization_context(data, authenticated_subject, authorized_roles)
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
         cache_params = {
             "cache_version": 1,
             "data_freshness_timestamp": freshness,
+            "authenticated_subject_hash": _subject_hash(authenticated_subject),
+            "authorization_context_hash": _authorization_context_hash(authorized_roles),
             "filters": selected_filters,
             "limit": limit,
             "offset": offset,
