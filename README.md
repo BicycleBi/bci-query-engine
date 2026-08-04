@@ -183,22 +183,24 @@ cache keys include SHA-256 hashes of the subject and normalized authorization
 context, so a membership change or different role set cannot reuse another
 scope's HTML.
 
-## Interactive artifact data pages
+## Interactive artifact data
 
-Interactive artifacts can expose a bounded, server-filtered data contract at:
+Interactive artifacts can expose a database-owned query contract at:
 
 ```text
-GET /artifacts/{client_key}/{artifact_key}/data
+POST /artifacts/{client_key}/{artifact_key}/data
 ```
 
-The endpoint accepts `filters` as a JSON object plus `limit`, `offset`, `sort`,
-`direction`, and optional `chart_selection` query parameters. A client can
-define a PostgreSQL function named `{view_name}_dashboard(jsonb, integer,
-integer, text, text, text)` to return its complete selected dashboard state.
-Query Engine invokes that database-owned contract, binds the authenticated
-subject to the transaction, and caches the response by selection, page, sort,
-chart selection, and data version. It does not own client KPI, chart, filter,
-or classification logic.
+The JSON request body is opaque to Query Engine. For an artifact whose render
+view is `{view_name}`, the client database defines `{view_name}_query(jsonb)`.
+Query Engine authenticates the request, binds the trusted authorization
+context, invokes that function with the unchanged JSON object, and returns its
+JSON result unchanged.
+
+The database function owns request validation and all client filtering,
+sorting, pagination, calculation, and response-shape logic. Query Engine owns
+only authorization, safe function resolution, request-size enforcement, and
+freshness-aware Redis caching of the opaque request and response.
 
 ## Running locally (with compose)
 
