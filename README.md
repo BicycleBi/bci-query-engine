@@ -165,18 +165,23 @@ or mismatched `client_key` are rejected before artifact write, render, or
 execution logic runs.
 
 For data views that implement authenticated scoping, Query Engine also requires
-the token `sub` claim and binds it to the data transaction with:
+the token `sub` claim. For Nginx-protected requests, Security refreshes
+Metadata roles and Nginx overwrites `X-Identity-Roles` with that authenticated
+response before forwarding internally. Query Engine uses that fresh role set,
+falling back to the signed token roles for direct service calls, and binds the
+normalized context to the data transaction with:
 
 ```sql
 SELECT set_config('bci.authenticated_subject', $1, true);
+SELECT set_config('bci.authorized_roles', $2, true);
 ```
 
-The setting is transaction-local and comes only from the already validated
-internal token. A data view can read it with
-`current_setting('bci.authenticated_subject', true)` and resolve its own access
-mapping in SQL. Rendered cache keys include a SHA-256 hash of the subject so
-HTML produced for one subject cannot be served from another subject's cache
-entry.
+Both settings are transaction-local and come from the validated internal
+security boundary. Data views can resolve opaque Metadata roles to client-owned
+data scopes without storing user identities in the data database. Rendered
+cache keys include SHA-256 hashes of the subject and normalized authorization
+context, so a membership change or different role set cannot reuse another
+scope's HTML.
 
 ## Interactive artifact data pages
 

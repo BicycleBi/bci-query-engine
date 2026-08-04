@@ -113,6 +113,7 @@ def build_render_cache_params(
     template_id: Optional[str],
     render_artifact_id: str,
     authenticated_subject_hash: Optional[str] = None,
+    authorization_context_hash: Optional[str] = None,
     data_freshness_timestamp: Optional[str] = None,
 ) -> dict[str, Any]:
     template_hash = hashlib.sha256(template_body.encode("utf-8")).hexdigest()
@@ -124,6 +125,7 @@ def build_render_cache_params(
         "template_hash": template_hash,
         "render_artifact_id": render_artifact_id,
         "authenticated_subject_hash": authenticated_subject_hash,
+        "authorization_context_hash": authorization_context_hash,
         "data_freshness_timestamp": data_freshness_timestamp,
     }
 

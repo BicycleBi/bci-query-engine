@@ -71,8 +71,10 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
         behavior,
         output_formats,
         authenticated_subject,
+        authorized_roles,
     ):
         captured["authenticated_subject"] = authenticated_subject
+        captured["authorized_roles"] = authorized_roles
         captured["output_formats"] = output_formats
         return {
             "run_id": "run-1",
@@ -107,7 +109,10 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
 
     response = client.post(
         "/artifact-executions",
-        headers=_auth_headers(token),
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "srp_pnl_scope_b,srp_pnl_scope_a",
+        },
         json={
             "client_key": "srp",
             "artifact_key": "visit-counts",
@@ -117,7 +122,70 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     assert response.status_code == 202
     assert response.json()["preview_html"] == "<p>ok</p>"
     assert captured["authenticated_subject"] == "user-1"
+    assert captured["authorized_roles"] == ["srp_pnl_scope_a", "srp_pnl_scope_b"]
     assert captured["output_formats"] == []
+
+
+def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    captured = {}
+
+    def fake_fetch_artifact_data(client_key, artifact_key, **kwargs):
+        captured.update(kwargs)
+        return {"rows": [], "client_key": client_key, "artifact_key": artifact_key}
+
+    monkeypatch.setattr(main, "fetch_artifact_data", fake_fetch_artifact_data)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["stale-token-role"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/srp/pricing-insights/data",
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "srp_scope_b,srp_scope_a",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["authenticated_subject"] == "user-1"
+    assert captured["authorized_roles"] == ["srp_scope_a", "srp_scope_b"]
+
+
+def test_protected_routes_reject_invalid_authorization_roles(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": "srp_pnl_scope_a",
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers=_auth_headers(token),
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "display",
+        },
+    )
+    assert response.status_code == 403
 
 
 def test_protected_routes_reject_token_without_subject(monkeypatch):

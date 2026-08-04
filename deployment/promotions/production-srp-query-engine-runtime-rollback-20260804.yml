@@ -1,0 +1,22 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: /home/shared/repos/bci-query-engine-promote
+source_commit: 6fee1cbdbc243c59cc793b4ecfc46518642563f6
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-srp-production-query-engine-rollback-6fee1cb-20260804-v1
+    purpose: Restore the exact verified pre-role-context SRP Production Query Engine source
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
