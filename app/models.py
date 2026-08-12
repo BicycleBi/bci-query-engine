@@ -3,7 +3,7 @@ models.py — Pydantic request/response models for the Query Engine API.
 """
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -121,6 +121,17 @@ class ArtifactExecutionRequest(BaseModel):
     artifact_key: str
     behavior: ArtifactExecutionBehavior = ArtifactExecutionBehavior.deliver
     output_formats: list[ArtifactOutputFormat] = Field(default_factory=list)
+
+
+class ArtifactQueryCachePrewarmRequest(BaseModel):
+    queries: list[dict[str, Any]] = Field(min_length=1, max_length=16)
+
+
+class ArtifactQueryCachePrewarmResponse(BaseModel):
+    client_key: str
+    artifact_key: str
+    status: str
+    entry_count: int
 
 
 class ArtifactExecutionResponse(BaseModel):

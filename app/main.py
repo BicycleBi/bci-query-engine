@@ -12,10 +12,18 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse
 
-from .engine import execute_artifact, execute_artifact_query, get_run, write_artifact_definition
+from .engine import (
+    execute_artifact,
+    execute_artifact_query,
+    get_run,
+    prewarm_artifact_query_cache,
+    write_artifact_definition,
+)
 from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
+    ArtifactQueryCachePrewarmRequest,
+    ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
     ArtifactWriteResponse,
     HealthResponse,
@@ -27,6 +35,7 @@ app = FastAPI(title="BCI Query Engine", version="0.1.0")
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))
+SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
 
 def _token_signature(payload: dict[str, Any]) -> str:
@@ -73,6 +82,14 @@ def require_internal_identity(authorization: Optional[str] = Header(default=None
         raise HTTPException(status_code=401, detail="Missing internal authorization token")
     token = authorization.removeprefix("Bearer ").strip()
     return _verify_internal_token(token)
+
+
+def require_service_identity(authorization: Optional[str] = Header(default=None)) -> None:
+    if not SERVICE_TOKEN:
+        raise HTTPException(status_code=503, detail="Internal service authentication is unavailable")
+    supplied = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else ""
+    if not supplied or not hmac.compare_digest(supplied, SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid internal service token")
 
 
 def require_client_access(identity: dict[str, Any], client_key: str) -> None:
@@ -172,6 +189,28 @@ def get_artifact_data(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm",
+    response_model=ArtifactQueryCachePrewarmResponse,
+)
+def prewarm_artifact_data_cache(
+    client_key: str,
+    artifact_key: str,
+    request: ArtifactQueryCachePrewarmRequest,
+    _service_identity: None = Depends(require_service_identity),
+):
+    """Rebuild explicitly shared artifact-query Redis entries after a data load."""
+    try:
+        result = prewarm_artifact_query_cache(
+            client_key,
+            artifact_key,
+            queries=request.queries,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ArtifactQueryCachePrewarmResponse(**result)
 
 
 def _cache_headers(cache: dict) -> dict[str, str]:
