@@ -202,6 +202,29 @@ sorting, pagination, calculation, and response-shape logic. Query Engine owns
 only authorization, safe function resolution, request-size enforcement, and
 freshness-aware Redis caching of the opaque request and response.
 
+### Data-load cache prewarming
+
+An artifact whose interactive response is identical for every authorized user
+may explicitly opt into shared query caching by defining
+`{view_name}_query_cache_scope(jsonb)` and returning `shared` for the exact
+supported request. Contracts without that function, or requests for which it
+returns `identity`, retain the subject-and-role-scoped cache key.
+
+After a client data load commits its report-ready state, the client Data
+Integration service may call the service-only endpoint:
+
+```text
+POST /internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm
+```
+
+with the fixed opaque requests to cache. The endpoint accepts only the stack's
+service token, requires every request to be explicitly declared `shared` by
+the database contract, executes the canonical query function, and writes the
+same freshness-aware Redis keys used by authenticated browser requests. It
+returns only cache status and entry counts; it never returns artifact rows.
+The load must fail if the declared cache entries cannot be rebuilt, so a
+successful load is also evidence that the next dashboard request is warm.
+
 ## Running locally (with compose)
 
 ```bash
