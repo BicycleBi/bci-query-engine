@@ -10,11 +10,12 @@ import time
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Header
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from .engine import (
     execute_artifact,
     execute_artifact_query,
+    get_artifact_asset,
     get_run,
     prewarm_artifact_query_cache,
     write_artifact_definition,
@@ -211,6 +212,31 @@ def prewarm_artifact_data_cache(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ArtifactQueryCachePrewarmResponse(**result)
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/assets/{asset_path:path}")
+def get_artifact_static_asset(
+    client_key: str,
+    artifact_key: str,
+    asset_path: str,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return an authenticated, immutable package-owned artifact asset."""
+    require_client_access(identity, client_key)
+    try:
+        asset = get_artifact_asset(client_key, artifact_key, asset_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return Response(
+        content=asset["content"],
+        media_type=asset["content_type"],
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"{asset["sha256"]}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _cache_headers(cache: dict) -> dict[str, str]:

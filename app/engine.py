@@ -599,6 +599,43 @@ def _execute_artifact_query_contract(data, view_name: str, serialized_query: str
     return result
 
 
+def get_artifact_asset(client_key: str, artifact_key: str, asset_path: str) -> dict[str, Any]:
+    """Return one active package-owned artifact asset from Metadata."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", asset_path or ""):
+        raise ValueError("Artifact asset path is invalid")
+    if ".." in asset_path.split("/"):
+        raise ValueError("Artifact asset path is invalid")
+
+    with get_metadata_conn() as meta:
+        relation = meta.execute(
+            "SELECT to_regclass('app.artifact_assets')"
+        ).fetchone()
+        if not relation or relation[0] is None:
+            raise ValueError("Artifact asset registry is unavailable")
+
+        row = meta.execute(
+            """
+            SELECT content, content_type, sha256
+            FROM app.artifact_assets
+            WHERE client_key = %s
+              AND artifact_key = %s
+              AND asset_path = %s
+              AND active
+            """,
+            (client_key, artifact_key, asset_path),
+        ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"No active artifact asset found: client={client_key} "
+            f"artifact={artifact_key} asset={asset_path}"
+        )
+    return {
+        "content": bytes(row[0]),
+        "content_type": str(row[1]),
+        "sha256": str(row[2]),
+    }
+
+
 def execute_artifact_query(
     client_key: str,
     artifact_key: str,

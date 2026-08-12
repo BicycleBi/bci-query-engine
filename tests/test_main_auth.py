@@ -217,6 +217,66 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
     assert captured["queries"] == queries
 
 
+def test_artifact_asset_route_is_authenticated_and_immutable(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+
+    monkeypatch.setattr(
+        main,
+        "get_artifact_asset",
+        lambda client_key, artifact_key, asset_path: {
+            "content": b"window.assetReady=true;",
+            "content_type": "application/javascript",
+            "sha256": "a" * 64,
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rag",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["rag-user"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rag/lot-summary/assets/echarts.abc123.min.js",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"window.assetReady=true;"
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert response.headers["etag"] == f'"{"a" * 64}"'
+
+
+def test_artifact_asset_route_rejects_other_client(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srp-user"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rag/lot-summary/assets/echarts.abc123.min.js",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 403
+
+
 def test_protected_routes_reject_invalid_authorization_roles(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

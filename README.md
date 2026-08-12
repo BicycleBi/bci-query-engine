@@ -29,6 +29,7 @@ normal Postgres-backed execution path.
 |--------|------|-------------|
 | `POST` | `/artifacts` | Create or update an artifact definition in metadata |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
@@ -224,6 +225,21 @@ same freshness-aware Redis keys used by authenticated browser requests. It
 returns only cache status and entry counts; it never returns artifact rows.
 The load must fail if the declared cache entries cannot be rebuilt, so a
 successful load is also evidence that the next dashboard request is warm.
+
+## Artifact static assets
+
+Database-hosted web artifacts may publish immutable package-owned assets at:
+
+```text
+GET /artifacts/{client_key}/{artifact_key}/assets/{asset_path}
+```
+
+The authenticated route reads only active rows from `app.artifact_assets`,
+returns the recorded media type, and emits a SHA-256 ETag plus a one-year
+immutable private-cache policy. Asset URLs must therefore include a content
+digest or version in their path. The client promotion package owns the asset
+bytes and registry rows; Query Engine does not read client source directories
+or expose a generic filesystem route.
 
 ## Running locally (with compose)
 
