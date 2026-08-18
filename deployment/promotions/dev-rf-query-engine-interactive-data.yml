@@ -8,6 +8,15 @@ targets:
   stack_dir: /home/shared/bci-clients/rfdev
   compose_project: rfdev
 
+runtime_config:
+  services:
+    query-engine:
+      env:
+        REDIS_ENABLED: "true"
+      container_env:
+        REDIS_ENABLED: "true"
+      reconcile: recreate-if-env-changed
+
 service_runtime:
   promote:
     source: .
@@ -19,3 +28,7 @@ validate:
   - type: compose-config
   - type: service-health
     service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      REDIS_ENABLED: "true"
