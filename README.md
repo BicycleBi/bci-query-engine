@@ -29,6 +29,7 @@ normal Postgres-backed execution path.
 |--------|------|-------------|
 | `POST` | `/artifacts` | Create or update an artifact definition in metadata |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
@@ -201,6 +202,44 @@ The database function owns request validation and all client filtering,
 sorting, pagination, calculation, and response-shape logic. Query Engine owns
 only authorization, safe function resolution, request-size enforcement, and
 freshness-aware Redis caching of the opaque request and response.
+
+### Data-load cache prewarming
+
+An artifact whose interactive response is identical for every authorized user
+may explicitly opt into shared query caching by defining
+`{view_name}_query_cache_scope(jsonb)` and returning `shared` for the exact
+supported request. Contracts without that function, or requests for which it
+returns `identity`, retain the subject-and-role-scoped cache key.
+
+After a client data load commits its report-ready state, the client Data
+Integration service may call the service-only endpoint:
+
+```text
+POST /internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm
+```
+
+with the fixed opaque requests to cache. The endpoint accepts only the stack's
+service token, requires every request to be explicitly declared `shared` by
+the database contract, executes the canonical query function, and writes the
+same freshness-aware Redis keys used by authenticated browser requests. It
+returns only cache status and entry counts; it never returns artifact rows.
+The load must fail if the declared cache entries cannot be rebuilt, so a
+successful load is also evidence that the next dashboard request is warm.
+
+## Artifact static assets
+
+Database-hosted web artifacts may publish immutable package-owned assets at:
+
+```text
+GET /artifacts/{client_key}/{artifact_key}/assets/{asset_path}
+```
+
+The authenticated route reads only active rows from `app.artifact_assets`,
+returns the recorded media type, and emits a SHA-256 ETag plus a one-year
+immutable private-cache policy. Asset URLs must therefore include a content
+digest or version in their path. The client promotion package owns the asset
+bytes and registry rows; Query Engine does not read client source directories
+or expose a generic filesystem route.
 
 ## Running locally (with compose)
 

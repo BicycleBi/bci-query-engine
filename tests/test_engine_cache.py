@@ -94,6 +94,7 @@ class FakeCache:
         self.payload = payload
         self.fail_get = fail_get
         self.set_calls = []
+        self.invalidated_patterns = []
 
     @staticmethod
     def build_key(client_key, artifact_key, cache_type, params):
@@ -120,6 +121,10 @@ class FakeCache:
 
     def set(self, key, value, ttl_seconds):
         self.set_calls.append((key, value, ttl_seconds))
+
+    def invalidate_pattern(self, pattern):
+        self.invalidated_patterns.append(pattern)
+        return 0
 
 
 @contextmanager
@@ -300,9 +305,10 @@ def test_query_function_name_follows_the_render_view_contract():
 
 
 class FakeQueryData(FakeData):
-    def __init__(self, *, contract_exists=True, result=None, **kwargs):
+    def __init__(self, *, contract_exists=True, cache_scope=None, result=None, **kwargs):
         super().__init__(**kwargs)
         self.contract_exists = contract_exists
+        self.cache_scope = cache_scope
         self.result = result if result is not None else {"rows": [], "total_count": 0}
         self.query_payloads = []
 
@@ -318,7 +324,15 @@ class FakeQueryData(FakeData):
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
         if "SELECT to_regprocedure(%s)" in sql:
+            if str(params[0]).endswith("_query_cache_scope(jsonb)"):
+                return FakeResult(
+                    row=("rpt.visit_counts_query_cache_scope(jsonb)",)
+                    if self.cache_scope is not None
+                    else (None,)
+                )
             return FakeResult(row=("rpt.visit_counts_query(jsonb)",) if self.contract_exists else (None,))
+        if "SELECT rpt.visit_counts_query_cache_scope" in sql:
+            return FakeResult(row=(self.cache_scope,))
         if "SELECT rpt.visit_counts_query" in sql:
             self.calls += 1
             self.query_payloads.append(params[0])
@@ -373,6 +387,94 @@ def test_artifact_query_cache_hit_skips_database_contract(monkeypatch):
 
     assert result == {"cached": True}
     assert data.calls == 0
+
+
+def test_shared_artifact_query_cache_key_is_not_identity_scoped(monkeypatch):
+    data = FakeQueryData(cache_scope="shared", freshness_timestamp="2026-08-12 10:00:00+00")
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    engine.execute_artifact_query(
+        "rag",
+        "lot-summary",
+        query={"operation": "dataset", "dataset": "summary"},
+        authenticated_subject="user-1",
+        authorized_roles=["scope-a"],
+    )
+
+    cache_key = fake_cache.set_calls[0][0]
+    expected_user_hash = cache_module.hashlib.sha256(b"user-1").hexdigest()
+    assert expected_user_hash not in cache_key
+    assert fake_cache.set_calls[0][2] == 42
+
+
+def test_prewarm_builds_declared_shared_query_entries(monkeypatch):
+    data = FakeQueryData(
+        cache_scope="shared",
+        freshness_timestamp="2026-08-12 10:00:00+00",
+        result={"dataset": "summary", "rows": []},
+    )
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.prewarm_artifact_query_cache(
+        "rag",
+        "lot-summary",
+        queries=[{"operation": "dataset", "dataset": "summary"}],
+    )
+
+    assert result == {
+        "client_key": "rag",
+        "artifact_key": "lot-summary",
+        "status": "prewarmed",
+        "entry_count": 1,
+    }
+    assert fake_cache.invalidated_patterns == [
+        "bci:cache:rag:lot-summary:artifact-query:*"
+    ]
+    assert len(fake_cache.set_calls) == 1
+    prewarmed_key = fake_cache.set_calls[0][0]
+
+    engine.execute_artifact_query(
+        "rag",
+        "lot-summary",
+        query={"operation": "dataset", "dataset": "summary"},
+        authenticated_subject="user-2",
+        authorized_roles=["different-role"],
+    )
+
+    assert fake_cache.set_calls[1][0] == prewarmed_key
+
+
+def test_prewarm_rejects_identity_scoped_query(monkeypatch):
+    data = FakeQueryData(cache_scope="identity")
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    with pytest.raises(ValueError, match="only shared query contracts"):
+        engine.prewarm_artifact_query_cache(
+            "rag",
+            "lot-summary",
+            queries=[{"operation": "dataset", "dataset": "summary"}],
+        )
 
 
 def test_artifact_query_requires_database_contract(monkeypatch):

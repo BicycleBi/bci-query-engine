@@ -523,6 +523,119 @@ def _query_function_name(view_name: str) -> str:
     return _safe_view_name(f"{_safe_view_name(view_name)}_query")
 
 
+def _query_cache_scope_function_name(view_name: str) -> str:
+    """Return the optional database-owned cache-scope contract."""
+    return _safe_view_name(f"{_safe_view_name(view_name)}_query_cache_scope")
+
+
+def _serialized_artifact_query(query: dict[str, Any]) -> str:
+    if not isinstance(query, dict):
+        raise ValueError("Artifact query must be a JSON object")
+    serialized_query = json.dumps(query, separators=(",", ":"), sort_keys=True)
+    max_query_bytes = int(os.getenv("ARTIFACT_QUERY_MAX_BYTES", "65536"))
+    if len(serialized_query.encode("utf-8")) > max_query_bytes:
+        raise ValueError(f"Artifact query exceeds the {max_query_bytes}-byte request limit")
+    return serialized_query
+
+
+def _artifact_query_cache_scope(data, view_name: str, serialized_query: str) -> str:
+    """Resolve an artifact-owned cache scope, defaulting safely to identity."""
+    scope_function = _query_cache_scope_function_name(view_name)
+    function_exists = data.execute(
+        "SELECT to_regprocedure(%s)",
+        (f"{scope_function}(jsonb)",),
+    ).fetchone()[0]
+    if function_exists is None:
+        return "identity"
+    row = data.execute(
+        f"SELECT {scope_function}(%s::jsonb)",  # noqa: S608
+        (serialized_query,),
+    ).fetchone()
+    scope = str(row[0]).strip().lower() if row and row[0] is not None else ""
+    if scope not in {"identity", "shared"}:
+        raise ValueError(f"Artifact query cache scope is invalid: {scope or '<empty>'}")
+    return scope
+
+
+def _artifact_query_cache_params(
+    *,
+    query: dict[str, Any],
+    freshness: Optional[str],
+    cache_scope: str,
+    authenticated_subject: Optional[str] = None,
+    authorized_roles: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    if cache_scope == "shared":
+        return {
+            "cache_version": 3,
+            "cache_scope": "shared",
+            "data_freshness_timestamp": freshness,
+            "query": query,
+        }
+    return {
+        "cache_version": 2,
+        "data_freshness_timestamp": freshness,
+        "authenticated_subject_hash": _subject_hash(authenticated_subject),
+        "authorization_context_hash": _authorization_context_hash(authorized_roles),
+        "query": query,
+    }
+
+
+def _execute_artifact_query_contract(data, view_name: str, serialized_query: str) -> Any:
+    query_function = _query_function_name(view_name)
+    function_signature = f"{query_function}(jsonb)"
+    function_exists = data.execute(
+        "SELECT to_regprocedure(%s)",
+        (function_signature,),
+    ).fetchone()[0]
+    if function_exists is None:
+        raise ValueError("Artifact has no database query contract")
+    result = data.execute(
+        f"SELECT {query_function}(%s::jsonb)",  # noqa: S608
+        (serialized_query,),
+    ).fetchone()[0]
+    if isinstance(result, str):
+        result = json.loads(result)
+    return result
+
+
+def get_artifact_asset(client_key: str, artifact_key: str, asset_path: str) -> dict[str, Any]:
+    """Return one active package-owned artifact asset from Metadata."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", asset_path or ""):
+        raise ValueError("Artifact asset path is invalid")
+    if ".." in asset_path.split("/"):
+        raise ValueError("Artifact asset path is invalid")
+
+    with get_metadata_conn() as meta:
+        relation = meta.execute(
+            "SELECT to_regclass('app.artifact_assets')"
+        ).fetchone()
+        if not relation or relation[0] is None:
+            raise ValueError("Artifact asset registry is unavailable")
+
+        row = meta.execute(
+            """
+            SELECT content, content_type, sha256
+            FROM app.artifact_assets
+            WHERE client_key = %s
+              AND artifact_key = %s
+              AND asset_path = %s
+              AND active
+            """,
+            (client_key, artifact_key, asset_path),
+        ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"No active artifact asset found: client={client_key} "
+            f"artifact={artifact_key} asset={asset_path}"
+        )
+    return {
+        "content": bytes(row[0]),
+        "content_type": str(row[1]),
+        "sha256": str(row[2]),
+    }
+
+
 def execute_artifact_query(
     client_key: str,
     artifact_key: str,
@@ -532,13 +645,7 @@ def execute_artifact_query(
     authorized_roles: Optional[list[str]] = None,
 ) -> Any:
     """Execute a database-owned artifact query without interpreting its payload."""
-    if not isinstance(query, dict):
-        raise ValueError("Artifact query must be a JSON object")
-
-    serialized_query = json.dumps(query, separators=(",", ":"), sort_keys=True)
-    max_query_bytes = int(os.getenv("ARTIFACT_QUERY_MAX_BYTES", "65536"))
-    if len(serialized_query.encode("utf-8")) > max_query_bytes:
-        raise ValueError(f"Artifact query exceeds the {max_query_bytes}-byte request limit")
+    serialized_query = _serialized_artifact_query(query)
 
     with get_metadata_conn() as meta:
         artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
@@ -553,14 +660,15 @@ def execute_artifact_query(
     with get_data_conn() as data:
         _set_authorization_context(data, authenticated_subject, authorized_roles)
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
-        cache_params = {
-            "cache_version": 2,
-            "data_freshness_timestamp": freshness,
-            "authenticated_subject_hash": _subject_hash(authenticated_subject),
-            "authorization_context_hash": _authorization_context_hash(authorized_roles),
-            "query": query,
-        }
+        cache_params = _artifact_query_cache_params(
+            query=query,
+            freshness=freshness,
+            cache_scope=cache_scope,
+            authenticated_subject=authenticated_subject,
+            authorized_roles=authorized_roles,
+        )
         cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params) if cache else None
         if cache and cache_key:
             try:
@@ -570,24 +678,15 @@ def execute_artifact_query(
             except Exception:
                 cache = None
 
-        query_function = _query_function_name(view_name)
-        function_signature = f"{query_function}(jsonb)"
-        function_exists = data.execute(
-            "SELECT to_regprocedure(%s)",
-            (function_signature,),
-        ).fetchone()[0]
-        if function_exists is None:
-            raise ValueError(
-                f"Artifact has no database query contract: client={client_key} "
-                f"artifact={artifact_key}"
-            )
-
-        result = data.execute(
-            f"SELECT {query_function}(%s::jsonb)",  # noqa: S608
-            (serialized_query,),
-        ).fetchone()[0]
-        if isinstance(result, str):
-            result = json.loads(result)
+        try:
+            result = _execute_artifact_query_contract(data, view_name, serialized_query)
+        except ValueError as exc:
+            if str(exc) == "Artifact has no database query contract":
+                raise ValueError(
+                    f"Artifact has no database query contract: client={client_key} "
+                    f"artifact={artifact_key}"
+                ) from exc
+            raise
 
         if cache and cache_key:
             try:
@@ -595,6 +694,62 @@ def execute_artifact_query(
             except Exception:
                 pass
         return result
+
+
+def prewarm_artifact_query_cache(
+    client_key: str,
+    artifact_key: str,
+    *,
+    queries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rebuild the exact shared Redis entries declared by an artifact contract."""
+    if not queries or len(queries) > 16:
+        raise ValueError("Artifact query cache prewarm requires between 1 and 16 queries")
+
+    serialized_queries = [(_serialized_artifact_query(query), query) for query in queries]
+    with get_metadata_conn() as meta:
+        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+        if artifact is None:
+            raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
+        render_artifact = _resolve_render_artifact(meta, artifact)
+        view_name = _safe_view_name(render_artifact["view_name"])
+
+    from .cache import get_artifact_cache, get_cache_settings
+
+    cache_settings = get_cache_settings()
+    if not cache_settings.enabled:
+        raise ValueError("Artifact query cache prewarm requires Redis caching to be enabled")
+    cache = get_artifact_cache(cache_settings)
+    if cache is None:
+        raise ValueError("Artifact query cache prewarm could not connect to Redis")
+
+    entries: list[tuple[str, Any]] = []
+    with get_data_conn() as data:
+        _set_authorization_context(data, None, None)
+        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        for serialized_query, query in serialized_queries:
+            cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
+            if cache_scope != "shared":
+                raise ValueError("Artifact query cache prewarm accepts only shared query contracts")
+            result = _execute_artifact_query_contract(data, view_name, serialized_query)
+            cache_params = _artifact_query_cache_params(
+                query=query,
+                freshness=freshness,
+                cache_scope="shared",
+            )
+            cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params)
+            entries.append((cache_key, result))
+
+    cache.invalidate_pattern(f"bci:cache:{client_key}:{artifact_key}:artifact-query:*")
+    for cache_key, result in entries:
+        cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+
+    return {
+        "client_key": client_key,
+        "artifact_key": artifact_key,
+        "status": "prewarmed",
+        "entry_count": len(entries),
+    }
 
 
 def execute_artifact(

@@ -14,6 +14,7 @@ def _load_main(monkeypatch):
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", "test-secret")
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", "bci-security")
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", "bci-client")
+    monkeypatch.setenv("SERVICE_TOKEN", "test-service-token")
 
     for name in list(sys.modules):
         if name == "app.main" or name.startswith("app.main."):
@@ -167,6 +168,113 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
     }
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_scope_a", "srp_scope_b"]
+
+
+def test_artifact_query_cache_prewarm_requires_service_token(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/internal/artifacts/rag/lot-summary/query-cache/prewarm",
+        json={"queries": [{"operation": "dataset", "dataset": "summary"}]},
+    )
+
+    assert response.status_code == 401
+
+
+def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    captured = {}
+
+    def fake_prewarm(client_key, artifact_key, **kwargs):
+        captured.update(kwargs)
+        return {
+            "client_key": client_key,
+            "artifact_key": artifact_key,
+            "status": "prewarmed",
+            "entry_count": len(kwargs["queries"]),
+        }
+
+    monkeypatch.setattr(main, "prewarm_artifact_query_cache", fake_prewarm)
+    queries = [
+        {"operation": "dataset", "dataset": "summary"},
+        {"operation": "dataset", "dataset": "details"},
+    ]
+    response = client.post(
+        "/internal/artifacts/rag/lot-summary/query-cache/prewarm",
+        headers={"Authorization": "Bearer test-service-token"},
+        json={"queries": queries},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "client_key": "rag",
+        "artifact_key": "lot-summary",
+        "status": "prewarmed",
+        "entry_count": 2,
+    }
+    assert captured["queries"] == queries
+
+
+def test_artifact_asset_route_is_authenticated_and_immutable(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+
+    monkeypatch.setattr(
+        main,
+        "get_artifact_asset",
+        lambda client_key, artifact_key, asset_path: {
+            "content": b"window.assetReady=true;",
+            "content_type": "application/javascript",
+            "sha256": "a" * 64,
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rag",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["rag-user"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rag/lot-summary/assets/echarts.abc123.min.js",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"window.assetReady=true;"
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert response.headers["etag"] == f'"{"a" * 64}"'
+
+
+def test_artifact_asset_route_rejects_other_client(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srp-user"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rag/lot-summary/assets/echarts.abc123.min.js",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 403
 
 
 def test_protected_routes_reject_invalid_authorization_roles(monkeypatch):
