@@ -1,0 +1,95 @@
+{
+  "client": "rag",
+  "environment": "production",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "6c74d727f99f0bafe093e5f664dfba1098609778cdaef3dc909b7d5b44475610"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "dd65d6238a0dfb4581e9dce445798efb7120fcd2c43de0a8a4906f476968b3b2"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "e591ef1e97817887a172060b64540f493c00a432b567ee8a618d3395e93ef926"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "0dc53838d9bdbffac5a82e516ab2b40b286876be4599e43e7ab3a46555fba428"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_artifact_assets.py",
+        "role": "test-artifact-assets",
+        "sha256": "9f7ce2d78eafca12db5b06b22e532f3c1c16e3eb030a08cbeeb293a4b3ca098d"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_engine_cache.py",
+        "role": "test-engine-cache",
+        "sha256": "65576057b1c28ca4b68635d5512e36d0ed43b37ed1e4aae537b48edb9d090863"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "7fba589bc4667f03087203bb9ad3fd754a5084011704db894d1605e2c4d4ef50"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "e69efd752cb3d084954c626730b9241a9a2367a9",
+    "change_id": "rag-production-query-engine-runtime-20260819-forward",
+    "client": "rag",
+    "dependencies": [],
+    "environment": "production",
+    "forbidden_units": [],
+    "generated_at": "2026-08-19T14:48:59Z",
+    "intent": "Promote only the exact RAG Dev-tested Query Engine runtime now merged to main, adding authenticated artifact assets and shared cache prewarming",
+    "operator": "codex",
+    "package_path": "deployment/packages/rag-production-query-engine-runtime-20260819-forward",
+    "regression_checks": [],
+    "rollback": {
+      "method": "Apply the separately reviewed rollback package pinned to e69efd752cb3d084954c626730b9241a9a2367a9 and recreate only query-engine",
+      "reference": "deployment/packages/rag-production-query-engine-runtime-20260819-rollback/promotion.json"
+    },
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "eabf0104857c7e31d7b47b125c722462757cda2e",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Promote the exact RAG Dev-tested authenticated artifact asset and shared cache-prewarm runtime now merged to Query Engine main",
+      "release_id": "service-runtime-rag-production-query-engine-artifact-assets-20260819-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "eabf0104857c7e31d7b47b125c722462757cda2e",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote",
+  "targets": {
+    "compose_project": "rag",
+    "stack_dir": "/home/shared/bci-clients/rag"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}

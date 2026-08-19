@@ -1,0 +1,89 @@
+{
+  "client": "rag",
+  "environment": "production",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "ca7c04069afcf8bc8d450f6dff0262cb280e253c04953b1a30da0a8bf95f077e"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "3164f24e4ebd5359da5445f23464e86741d01ca71aeaca762b4bfdda7a39130c"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "673e680072b64642f0a09901eab8a32f36dc0ee7ba744be3b3284e75edf4ea3f"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/dev-rag-query-engine-runtime.yml",
+        "role": "dev-rag-query-engine-runtime",
+        "sha256": "0987911b5da1b5c01865d3865754d8cee7bdede7dae57e5685ec3cf8a4f3f961"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_engine_cache.py",
+        "role": "test-engine-cache",
+        "sha256": "66f908c2f14cf43908bddb818c5c0b5cde41f89ee3aa15092d7daaddd7081558"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "b766b4b0472487bc5aa118da1e4b122a099937d46d154eecf0f71856e1a852ac"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "8b9ecca4a40e56f7720aec33550deb0e5bec6e33",
+    "change_id": "rag-production-query-engine-runtime-20260819-rollback",
+    "client": "rag",
+    "dependencies": [],
+    "environment": "production",
+    "forbidden_units": [],
+    "generated_at": "2026-08-19T14:50:06Z",
+    "intent": "Restore only the exact verified RAG Production Query Engine runtime source e69efd7 if the forward runtime must be reversed",
+    "operator": "codex",
+    "package_path": "deployment/packages/rag-production-query-engine-runtime-20260819-rollback",
+    "regression_checks": [],
+    "rollback": {
+      "method": "Reapply the separately reviewed forward package after correcting the rollback-triggering issue",
+      "reference": "deployment/packages/rag-production-query-engine-runtime-20260819-forward/promotion.json"
+    },
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "e69efd752cb3d084954c626730b9241a9a2367a9",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Restore the exact verified RAG Production Query Engine source that preceded authenticated artifact asset delivery",
+      "release_id": "service-runtime-rag-production-query-engine-rollback-e69efd7-20260819-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "e69efd752cb3d084954c626730b9241a9a2367a9",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote",
+  "targets": {
+    "compose_project": "rag",
+    "stack_dir": "/home/shared/bci-clients/rag"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
