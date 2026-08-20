@@ -13,8 +13,8 @@ service_runtime:
     source: .
     service: query-engine
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    release_id: service-runtime-ragqa-query-engine-generic-data-20260805
-    purpose: RAG QA authenticated opaque artifact query execution and Redis response caching
+    release_id: service-runtime-ragqa-query-engine-artifact-assets-20260820-v1
+    purpose: RAG QA authenticated artifact assets and shared query response caching
 
 validate:
   - type: compose-config
