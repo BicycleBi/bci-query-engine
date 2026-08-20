@@ -1,0 +1,22 @@
+schema_version: 1
+client: rag
+environment: qa
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/ragqa
+  compose_project: ragqa
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-ragqa-query-engine-artifact-assets-20260820-v1
+    purpose: RAG QA authenticated artifact assets and shared query response caching
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
