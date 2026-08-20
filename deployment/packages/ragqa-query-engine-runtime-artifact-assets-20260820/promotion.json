@@ -1,0 +1,97 @@
+{
+  "client": "rag",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "6c74d727f99f0bafe093e5f664dfba1098609778cdaef3dc909b7d5b44475610"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "dd65d6238a0dfb4581e9dce445798efb7120fcd2c43de0a8a4906f476968b3b2"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "e591ef1e97817887a172060b64540f493c00a432b567ee8a618d3395e93ef926"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "0dc53838d9bdbffac5a82e516ab2b40b286876be4599e43e7ab3a46555fba428"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rag-query-engine-runtime.yml",
+        "role": "qa-rag-query-engine-runtime",
+        "sha256": "e88cfaaa8cbf19a20b391abbd3a3ee05f25570185fa83ded320e249c0d0a4692"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_artifact_assets.py",
+        "role": "test-artifact-assets",
+        "sha256": "9f7ce2d78eafca12db5b06b22e532f3c1c16e3eb030a08cbeeb293a4b3ca098d"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_engine_cache.py",
+        "role": "test-engine-cache",
+        "sha256": "65576057b1c28ca4b68635d5512e36d0ed43b37ed1e4aae537b48edb9d090863"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "7fba589bc4667f03087203bb9ad3fd754a5084011704db894d1605e2c4d4ef50"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "8d3f84b03860f497f1ff7062c989bd293f683a14",
+    "change_id": "ragqa-query-engine-runtime-artifact-assets-20260820",
+    "client": "rag",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-08-20T10:38:10Z",
+    "intent": "Promote the reviewed Query Engine authenticated artifact asset route to RAG QA and recreate only query-engine",
+    "operator": "codex",
+    "package_path": "deployment/packages/ragqa-query-engine-runtime-artifact-assets-20260820",
+    "regression_checks": [],
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "fc98265f71b9175b267c4f3ad02426db9d226110",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "RAG QA authenticated artifact assets and shared query response caching",
+      "release_id": "service-runtime-ragqa-query-engine-artifact-assets-20260820-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "fc98265f71b9175b267c4f3ad02426db9d226110",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote",
+  "targets": {
+    "compose_project": "ragqa",
+    "stack_dir": "/home/shared/bci-clients/ragqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
