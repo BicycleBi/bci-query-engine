@@ -1,0 +1,97 @@
+{
+  "client": "rf",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "Dockerfile",
+        "role": "Dockerfile",
+        "sha256": "93b0475ff1d75618aeac9179899cc3fdfc09a356165c065350f21a1f5eee7511"
+      },
+      {
+        "operation": "replace",
+        "path": "app/cache.py",
+        "role": "cache",
+        "sha256": "72087dc71f82f79abca75440712026a97f803b17a03472cf34e632ff010dea4e"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "a88a4942199c7b136f671c46f6cacd005811aa4cb0c79c5c63e4bcd0552c315d"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "08a49a1cc372248fa8579d2201e20a40082bdfb8159783218fba659cdf405be1"
+      },
+      {
+        "operation": "replace",
+        "path": "bci_redis_cache/__init__.py",
+        "role": "--init--",
+        "sha256": "d98f1d03af7b16be4341249b09b5339b9347687916076f86fd751c9f2979acfd"
+      },
+      {
+        "operation": "replace",
+        "path": "bci_redis_cache/cache.py",
+        "role": "cache",
+        "sha256": "8d461bad4ce11d2817d799d9b7d29ea155390ea322d311bf7b75cb819d52abb2"
+      },
+      {
+        "operation": "replace",
+        "path": "pyproject.toml",
+        "role": "pyproject",
+        "sha256": "96d519565f04d138776818e11a40ae681f684b7c269e8d832feb9a8f52fdec47"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_engine_cache.py",
+        "role": "test-engine-cache",
+        "sha256": "0c90705581514d14bc2e8dbcec759bda9d1bc3977d7b787b55735b84c16ca759"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "092defeb8f0b75e100d1e6f1c5cf5e601920b300",
+    "change_id": "rfqa-query-engine-cache-prewarm-20260821-rollback",
+    "client": "rf",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-08-21T10:44:53Z",
+    "intent": "Restore the Query Engine source current when the RF QA stack was established if cache prewarming must be reversed",
+    "operator": "codex",
+    "package_path": "deployment/packages/rfqa-query-engine-cache-prewarm-20260821-rollback",
+    "regression_checks": [],
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "bf66fe584d04921cd0ec1a966737a8bcea87631e",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Restore the Query Engine source current when the RF QA stack was established",
+      "release_id": "service-runtime-rfqa-query-engine-rollback-bf66fe5-20260821-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "bf66fe584d04921cd0ec1a966737a8bcea87631e",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime",
+  "targets": {
+    "compose_project": "rfqa",
+    "stack_dir": "/home/shared/bci-clients/rfqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
