@@ -2,7 +2,7 @@ schema_version: 1
 client: rf
 environment: qa
 source_repo: /home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime
-source_commit: bf66fe580d373f71c0b8c9b034f4734258fba8d0
+source_commit: bf66fe584d04921cd0ec1a966737a8bcea87631e
 
 targets:
   stack_dir: /home/shared/bci-clients/rfqa
