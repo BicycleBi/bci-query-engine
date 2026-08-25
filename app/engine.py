@@ -1223,5 +1223,7 @@ def get_run(run_id: str) -> Optional[dict]:
         "created_at",
     ]
     result = dict(zip(keys, row))
+    if result["run_id"] is not None:
+        result["run_id"] = str(result["run_id"])
     result["outputs"] = [dict(zip(output_keys, output)) for output in outputs]
     return result
