@@ -2,7 +2,9 @@ import importlib
 import json
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -153,6 +155,41 @@ def test_queue_artifact_execution_persists_immediate_status(monkeypatch):
     assert meta.log_params[5] == "queued"
     assert meta.log_params[6] == "web"
     assert meta.commits == 1
+
+
+def test_get_run_normalizes_database_uuid_for_api_contract(monkeypatch):
+    run_id = UUID("33333333-3333-3333-3333-333333333333")
+    started_at = datetime.now(tz=timezone.utc)
+
+    class FakeRunMeta:
+        def execute(self, sql, params=None):
+            if "FROM log.artifact_runs r" in sql:
+                return FakeResult(
+                    row=(
+                        run_id,
+                        "srp",
+                        "visit-counts",
+                        "completed",
+                        started_at,
+                        started_at,
+                        None,
+                    )
+                )
+            if "FROM log.artifact_outputs" in sql:
+                return FakeResult(rows=[])
+            if "CREATE TABLE IF NOT EXISTS log.artifact_outputs" in sql:
+                return FakeResult()
+            if "CREATE INDEX IF NOT EXISTS artifact_outputs_" in sql:
+                return FakeResult()
+            raise AssertionError(f"Unexpected metadata query: {sql}")
+
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(FakeRunMeta()))
+
+    result = engine.get_run(str(run_id))
+
+    assert result is not None
+    assert result["run_id"] == str(run_id)
+    assert isinstance(result["run_id"], str)
 
 
 def test_redis_disabled_preserves_display_execution(monkeypatch):

@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RunMode(str, Enum):
@@ -144,6 +144,11 @@ class ArtifactExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     preview_html: Optional[str] = None
     outputs: list[dict] = Field(default_factory=list)
+
+    @field_validator("run_id", mode="before")
+    @classmethod
+    def normalize_run_id(cls, value: Any) -> Optional[str]:
+        return None if value is None else str(value)
 
 
 class RunResponse(ArtifactExecutionResponse):

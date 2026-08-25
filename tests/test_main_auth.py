@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -231,6 +232,45 @@ def test_execution_status_rejects_other_client_run(monkeypatch):
     )
 
     assert response.status_code == 403
+
+
+def test_execution_status_serializes_database_uuid(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    run_id = UUID("33333333-3333-3333-3333-333333333333")
+    monkeypatch.setattr(
+        main,
+        "get_run",
+        lambda requested_run_id: {
+            "run_id": run_id,
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "status": "completed",
+            "started_at": datetime.now(tz=timezone.utc),
+            "completed_at": datetime.now(tz=timezone.utc),
+            "outputs": [],
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        f"/artifact-executions/{run_id}",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == str(run_id)
+    assert response.json()["status"] == "completed"
 
 
 def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
