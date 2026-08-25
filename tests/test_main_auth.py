@@ -127,6 +127,112 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     assert captured["output_formats"] == []
 
 
+def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    captured = {}
+    started_at = datetime.now(tz=timezone.utc)
+
+    monkeypatch.setattr(
+        main,
+        "queue_artifact_execution",
+        lambda client_key, artifact_key: {
+            "run_id": "11111111-1111-1111-1111-111111111111",
+            "client_key": client_key,
+            "artifact_key": artifact_key,
+            "status": "queued",
+            "started_at": started_at,
+            "completed_at": None,
+            "outputs": [],
+        },
+    )
+
+    def fake_execute_artifact(client_key, artifact_key, **kwargs):
+        captured.update(
+            client_key=client_key,
+            artifact_key=artifact_key,
+            **kwargs,
+        )
+        return {
+            "run_id": kwargs["run_id"],
+            "client_key": client_key,
+            "artifact_key": artifact_key,
+            "status": "success",
+            "started_at": kwargs["started_at"],
+            "completed_at": datetime.now(tz=timezone.utc),
+            "outputs": [],
+        }
+
+    monkeypatch.setattr(main, "execute_queued_artifact", fake_execute_artifact)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "srp_pnl_scope_a",
+        },
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "deliver",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert response.json()["run_id"] == "11111111-1111-1111-1111-111111111111"
+    assert captured["precreated_run"] is True
+    assert captured["authenticated_subject"] == "user-1"
+    assert captured["authorized_roles"] == ["srp_pnl_scope_a"]
+
+
+def test_execution_status_rejects_other_client_run(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    monkeypatch.setattr(
+        main,
+        "get_run",
+        lambda run_id: {
+            "run_id": run_id,
+            "client_key": "rag",
+            "artifact_key": "pricing-insights",
+            "status": "queued",
+            "started_at": datetime.now(tz=timezone.utc),
+            "completed_at": None,
+            "outputs": [],
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifact-executions/11111111-1111-1111-1111-111111111111",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 403
+
+
 def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

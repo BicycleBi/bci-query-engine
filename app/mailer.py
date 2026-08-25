@@ -10,7 +10,7 @@ import requests
 
 
 def _email_service_timeout_seconds() -> float:
-    return float(os.environ.get("EMAIL_SERVICE_TIMEOUT_SECONDS", "90"))
+    return float(os.environ.get("EMAIL_SERVICE_TIMEOUT_SECONDS", "390"))
 
 
 def send(

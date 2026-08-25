@@ -56,6 +56,17 @@ Renders the artifact and returns HTML on the normal display path.
 
 Creates an execution request for an artifact.
 
+For `deliver`, Query Engine first persists a `queued` run and returns HTTP 202
+with its `run_id`. Rendering and delivery then continue outside the request.
+Poll `GET /artifact-executions/{run_id}` for `queued`, `preparing`, `sending`,
+`completed`, or `failed` status. This keeps credential retrieval and provider
+delivery latency out of the browser request lifecycle. Queued deliveries use a
+bounded in-process worker pool (two workers by default; configurable with
+`ARTIFACT_DELIVERY_WORKERS`) so a multi-artifact trigger cannot fan out every
+delivery at once. The default Query Engine-to-Email Service timeout is 390
+seconds so two sequential cold credential lookups can complete; deployments
+can override it with `EMAIL_SERVICE_TIMEOUT_SECONDS`.
+
 **Request body:**
 ```json
 {

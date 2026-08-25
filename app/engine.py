@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,16 @@ from time import perf_counter
 from typing import Any, Optional
 
 from .db import get_data_conn, get_metadata_conn
+
+
+def _delivery_worker_count() -> int:
+    try:
+        return max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
+    except ValueError:
+        return 2
+
+
+_DELIVERY_EXECUTION_SLOTS = threading.BoundedSemaphore(_delivery_worker_count())
 
 
 def _now() -> datetime:
@@ -760,6 +771,9 @@ def execute_artifact(
     refresh_cache: bool = False,
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
+    run_id: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    precreated_run: bool = False,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -770,8 +784,8 @@ def execute_artifact(
             dry-run  — render + log, no send
             preview  — render only, return HTML, no log (legacy compatibility)
     """
-    started_at = _now()
-    run_id: Optional[str] = str(uuid.uuid4())
+    started_at = started_at or _now()
+    run_id = run_id or str(uuid.uuid4())
     started_perf = perf_counter()
     artifact_id: Optional[str] = None
     output_formats = output_formats or []
@@ -786,6 +800,20 @@ def execute_artifact(
     )
 
     try:
+        if precreated_run:
+            with get_metadata_conn() as status_meta:
+                status_meta.execute(
+                    """
+                    UPDATE log.artifact_runs
+                    SET status = %s,
+                        completed_at = NULL,
+                        error_message = NULL
+                    WHERE run_id = %s::uuid
+                    """,
+                    ("preparing", run_id),
+                )
+                status_meta.commit()
+
         with get_metadata_conn() as meta:
             # ── 1. Read artifact config ────────────────────────────────
             artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
@@ -930,6 +958,17 @@ def execute_artifact(
                 cc  = [r[0] for r in recipient_rows if r[1] == "cc"]
                 bcc = [r[0] for r in recipient_rows if r[1] == "bcc"]
                 recipient_count = len(recipient_rows)
+                if precreated_run:
+                    meta.execute(
+                        """
+                        UPDATE log.artifact_runs
+                        SET status = %s,
+                            recipient_count = %s
+                        WHERE run_id = %s::uuid
+                        """,
+                        ("sending", recipient_count, run_id),
+                    )
+                    meta.commit()
                 _mailer.send(
                     subject=subject,
                     html=html,
@@ -944,25 +983,46 @@ def execute_artifact(
 
             # ── 7. Log the run and generated outputs ───────────────────
             completed_at = _now()
-            meta.execute(
-                """
-                INSERT INTO log.artifact_runs
-                    (run_id, artifact_id, artifact_key, client_key,
-                     triggered_by, status, delivery_mode,
-                     row_count, slice_count, recipient_count,
-                     started_at, completed_at)
-                VALUES (%s::uuid, %s, %s, %s,
-                        %s, %s, %s,
-                        %s, %s, %s,
-                        %s, %s)
-                """,
-                (
-                    run_id, artifact_id, artifact_key, client_key,
-                    "api", "completed", delivery_mode,
-                    row_count, len(outputs) if outputs else None, recipient_count,
-                    started_at, completed_at,
-                ),
-            )
+            if precreated_run:
+                meta.execute(
+                    """
+                    UPDATE log.artifact_runs
+                    SET artifact_id = %s,
+                        status = %s,
+                        delivery_mode = %s,
+                        row_count = %s,
+                        slice_count = %s,
+                        recipient_count = %s,
+                        completed_at = %s,
+                        error_message = NULL
+                    WHERE run_id = %s::uuid
+                    """,
+                    (
+                        artifact_id, "completed", delivery_mode,
+                        row_count, len(outputs) if outputs else None, recipient_count,
+                        completed_at, run_id,
+                    ),
+                )
+            else:
+                meta.execute(
+                    """
+                    INSERT INTO log.artifact_runs
+                        (run_id, artifact_id, artifact_key, client_key,
+                         triggered_by, status, delivery_mode,
+                         row_count, slice_count, recipient_count,
+                         started_at, completed_at)
+                    VALUES (%s::uuid, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s)
+                    """,
+                    (
+                        run_id, artifact_id, artifact_key, client_key,
+                        "api", "completed", delivery_mode,
+                        row_count, len(outputs) if outputs else None, recipient_count,
+                        started_at, completed_at,
+                    ),
+                )
             _insert_artifact_outputs(meta, outputs)
             meta.commit()
 
@@ -995,23 +1055,36 @@ def execute_artifact(
             with get_metadata_conn() as meta:
                 aid = artifact_id or _lookup_artifact_id(meta, client_key, artifact_key)
                 if aid:
-                    run_id = str(
+                    if precreated_run:
                         meta.execute(
                             """
-                            INSERT INTO log.artifact_runs
-                                (run_id, artifact_id, artifact_key, client_key,
-                                 triggered_by, status,
-                                 started_at, completed_at, error_message)
-                            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING run_id
+                            UPDATE log.artifact_runs
+                            SET artifact_id = %s,
+                                status = %s,
+                                completed_at = %s,
+                                error_message = %s
+                            WHERE run_id = %s::uuid
                             """,
-                            (
-                                run_id, aid, artifact_key, client_key,
-                                "api", "failed",
-                                started_at, completed_at, str(exc),
-                            ),
-                        ).fetchone()[0]
-                    )
+                            (aid, "failed", completed_at, str(exc), run_id),
+                        )
+                    else:
+                        run_id = str(
+                            meta.execute(
+                                """
+                                INSERT INTO log.artifact_runs
+                                    (run_id, artifact_id, artifact_key, client_key,
+                                     triggered_by, status,
+                                     started_at, completed_at, error_message)
+                                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                                RETURNING run_id
+                                """,
+                                (
+                                    run_id, aid, artifact_key, client_key,
+                                    "api", "failed",
+                                    started_at, completed_at, str(exc),
+                                ),
+                            ).fetchone()[0]
+                        )
                     meta.commit()
         except Exception:
             pass
@@ -1026,6 +1099,47 @@ def execute_artifact(
             "error_message": str(exc),
             "outputs": [],
         }
+
+
+def queue_artifact_execution(client_key: str, artifact_key: str) -> dict:
+    """Persist an execution before asynchronous work begins."""
+    run_id = str(uuid.uuid4())
+    started_at = _now()
+    with get_metadata_conn() as meta:
+        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+        if artifact is None:
+            raise ValueError(
+                f"No active artifact found: client={client_key} artifact={artifact_key}"
+            )
+        meta.execute(
+            """
+            INSERT INTO log.artifact_runs
+                (run_id, artifact_id, artifact_key, client_key,
+                 triggered_by, status, delivery_mode, started_at)
+            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                run_id, artifact["artifact_id"], artifact_key, client_key,
+                "api", "queued", artifact["delivery_mode"], started_at,
+            ),
+        )
+        meta.commit()
+
+    return {
+        "run_id": run_id,
+        "client_key": client_key,
+        "artifact_key": artifact_key,
+        "status": "queued",
+        "started_at": started_at,
+        "completed_at": None,
+        "outputs": [],
+    }
+
+
+def execute_queued_artifact(*args: Any, **kwargs: Any) -> dict:
+    """Run one queued artifact within the bounded delivery worker pool."""
+    with _DELIVERY_EXECUTION_SLOTS:
+        return execute_artifact(*args, **kwargs)
 
 
 def run_artifact(
