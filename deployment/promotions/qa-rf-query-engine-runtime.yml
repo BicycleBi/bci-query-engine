@@ -1,0 +1,22 @@
+schema_version: 1
+client: rf
+environment: qa
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/rfqa
+  compose_project: rfqa
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-rfqa-query-engine-cache-prewarm-20260825-v1
+    purpose: RF QA authenticated artifact assets, interactive Market Penetration data, and Redis response caching
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
