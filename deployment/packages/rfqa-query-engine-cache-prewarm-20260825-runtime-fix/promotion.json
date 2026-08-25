@@ -1,0 +1,121 @@
+{
+  "client": "rf",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "6c74d727f99f0bafe093e5f664dfba1098609778cdaef3dc909b7d5b44475610"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "dd65d6238a0dfb4581e9dce445798efb7120fcd2c43de0a8a4906f476968b3b2"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "e591ef1e97817887a172060b64540f493c00a432b567ee8a618d3395e93ef926"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/packages/rag-production-query-engine-runtime-20260819-forward/promotion.json",
+        "role": "promotion",
+        "sha256": "8d527c7f1a92f685d73e9a033c06ba0e9e2cb9041a8c8bdb4818daaedaff5050"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/packages/rag-production-query-engine-runtime-20260819-rollback/promotion.json",
+        "role": "promotion",
+        "sha256": "3b6d86dcd183f2e9ab4ad795116ce93c1de4654a87ae4bbabea56f2e0e422532"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/packages/ragqa-query-engine-runtime-artifact-assets-20260820/promotion.json",
+        "role": "promotion",
+        "sha256": "1661857ebc81fcd48c6ba08a2ea881532020b67ab0953b442503eba0a6a34be4"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/packages/rfqa-query-engine-cache-prewarm-20260821-forward/promotion.json",
+        "role": "promotion",
+        "sha256": "78c7dcb49b1491a4e78d3bcbd0203660df508d1ec5627e1ccd4e692d26cc2c01"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/packages/rfqa-query-engine-cache-prewarm-20260821-rollback/promotion.json",
+        "role": "promotion",
+        "sha256": "7333c25cd45bf4a8e66c3b232a779c089532b2b52479d25136c7ce8e78e1ef6b"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rag-query-engine-runtime.yml",
+        "role": "qa-rag-query-engine-runtime",
+        "sha256": "e88cfaaa8cbf19a20b391abbd3a3ee05f25570185fa83ded320e249c0d0a4692"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rf-query-engine-runtime.yml",
+        "role": "qa-rf-query-engine-runtime",
+        "sha256": "fcf80539740d58b33c5f36e03983b438d49920ae0955c21d2a9090258ec37091"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_artifact_assets.py",
+        "role": "test-artifact-assets",
+        "sha256": "9f7ce2d78eafca12db5b06b22e532f3c1c16e3eb030a08cbeeb293a4b3ca098d"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "7fba589bc4667f03087203bb9ad3fd754a5084011704db894d1605e2c4d4ef50"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "fa1d4f2b14abea3224870538ccaf09b9e643509e",
+    "change_id": "rfqa-query-engine-cache-prewarm-20260825-runtime-fix",
+    "client": "rf",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-08-25T11:48:24Z",
+    "intent": "Promote the exact RFDev-proven Query Engine artifact asset and interactive Market Penetration runtime to RF QA",
+    "operator": "Codex",
+    "package_path": "deployment/packages/rfqa-query-engine-cache-prewarm-20260825-runtime-fix",
+    "regression_checks": [],
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "8c308a759cbfa33a91bfe0c45421bea27ade3f92",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "RF QA authenticated artifact assets, interactive Market Penetration data, and Redis response caching",
+      "release_id": "service-runtime-rfqa-query-engine-cache-prewarm-20260825-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "8c308a759cbfa33a91bfe0c45421bea27ade3f92",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime",
+  "targets": {
+    "compose_project": "rfqa",
+    "stack_dir": "/home/shared/bci-clients/rfqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
