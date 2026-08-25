@@ -1,0 +1,139 @@
+{
+  "client": "rf",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "2eafd9d88edc824eeca01d7d71cd4f88aa150ae253663347f39c5d1ece4ab3c7"
+      },
+      {
+        "operation": "replace",
+        "path": "app/cache.py",
+        "role": "cache",
+        "sha256": "e3ea98d1d433236fd160230e1209396e9de68479adc972991a7f0f6f8c5ad285"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "9a5e1412bbab74feb94ca1955b9f3adb45fca75bf2a88f30afab72552ce33172"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "efa7df19483159b26b67900950a9fee7cfee6c277a98924a24b0447dba8ad8bb"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "0dc53838d9bdbffac5a82e516ab2b40b286876be4599e43e7ab3a46555fba428"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/dev-rag-query-engine-runtime.yml",
+        "role": "dev-rag-query-engine-runtime",
+        "sha256": "0987911b5da1b5c01865d3865754d8cee7bdede7dae57e5685ec3cf8a4f3f961"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/dev-srp-query-engine-runtime.yml",
+        "role": "dev-srp-query-engine-runtime",
+        "sha256": "86d7f53d361c53ae4eb5f1dc883b34888b7e9227c40ced50cc360f1035198ace"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/production-srp-query-engine-runtime-forward-20260804.yml",
+        "role": "production-srp-query-engine-runtime-forward-20260804",
+        "sha256": "a6c41a7e3faff85f9088a50902d2e2675557448b9ce2287f741212d3d3383eab"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/production-srp-query-engine-runtime-rollback-20260804.yml",
+        "role": "production-srp-query-engine-runtime-rollback-20260804",
+        "sha256": "3d93ccc3ddcc3a33d5c49d55deb58202807e0afa145258c91f320145e40a9cf3"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rag-query-engine-runtime.yml",
+        "role": "qa-rag-query-engine-runtime",
+        "sha256": "da31a5bbed4c1697ff9ddd73dca51d5b857afe74504b203abc6a7dccf4f1d06f"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rf-query-engine-prewarm-forward.yml",
+        "role": "qa-rf-query-engine-prewarm-forward",
+        "sha256": "7c9e47fb7b94e13a2fdd8cc772086cd0fff8436f23c57d389ecbe4ac991c053f"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rf-query-engine-prewarm-rollback.yml",
+        "role": "qa-rf-query-engine-prewarm-rollback",
+        "sha256": "47f981ac253c2309a527263765b1f95c0de2d1a8b8ed3a456e082d2221ad6c87"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-rf-query-engine-runtime-current-rollback.yml",
+        "role": "qa-rf-query-engine-runtime-current-rollback",
+        "sha256": "97a2ea32f2721d5952c3e8c1adf47c66b474741d2bd58060d03e9432d4c327ee"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_engine_cache.py",
+        "role": "test-engine-cache",
+        "sha256": "65576057b1c28ca4b68635d5512e36d0ed43b37ed1e4aae537b48edb9d090863"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "01f63f06a80d9b6e216b1daf6eb1242aeccf43fde5fc2d04c5df8d2f6d7f92d8"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "bf66fe584d04921cd0ec1a966737a8bcea87631e",
+    "change_id": "rfqa-query-engine-cache-prewarm-20260825-runtime-fix-rollback",
+    "client": "rf",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-08-25T11:54:00Z",
+    "intent": "Restore the exact RF QA Query Engine runtime deployed before artifact asset and interactive Market Penetration support",
+    "operator": "Codex",
+    "package_path": "deployment/packages/rfqa-query-engine-cache-prewarm-20260825-runtime-fix-rollback",
+    "regression_checks": [],
+    "schema_version": 2,
+    "semantic_checks": [],
+    "source_commit": "a480ea6dc49427ff1f6e742129500938691bfaca",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Restore the exact RF QA Query Engine runtime deployed before artifact asset and interactive Market Penetration support",
+      "release_id": "service-runtime-rfqa-query-engine-rollback-fa1d4f2-20260825-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "a480ea6dc49427ff1f6e742129500938691bfaca",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-rfqa-market-penetration-runtime",
+  "targets": {
+    "compose_project": "rfqa",
+    "stack_dir": "/home/shared/bci-clients/rfqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
