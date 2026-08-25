@@ -13,7 +13,7 @@ service_runtime:
     source: .
     service: query-engine
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: SRP Dev Query Engine signed role and subject SQL context
+    purpose: SRP Dev asynchronous artifact delivery execution and status polling
 
 validate:
   - type: compose-config

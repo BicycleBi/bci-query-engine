@@ -140,6 +140,21 @@ def _patch_connections(monkeypatch, *, data=None):
     return meta, data
 
 
+def test_queue_artifact_execution_persists_immediate_status(monkeypatch):
+    meta, _ = _patch_connections(monkeypatch)
+
+    result = engine.queue_artifact_execution("srp", "visit-counts")
+
+    assert result["status"] == "queued"
+    assert result["client_key"] == "srp"
+    assert result["artifact_key"] == "visit-counts"
+    assert result["completed_at"] is None
+    assert meta.log_params[1] == ARTIFACT_ID
+    assert meta.log_params[5] == "queued"
+    assert meta.log_params[6] == "web"
+    assert meta.commits == 1
+
+
 def test_redis_disabled_preserves_display_execution(monkeypatch):
     meta, data = _patch_connections(monkeypatch)
     monkeypatch.setattr(

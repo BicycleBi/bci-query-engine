@@ -9,15 +9,17 @@ import os
 import time
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse, Response
 
 from .engine import (
     execute_artifact,
     execute_artifact_query,
+    execute_queued_artifact,
     get_artifact_asset,
     get_run,
     prewarm_artifact_query_cache,
+    queue_artifact_execution,
     write_artifact_definition,
 )
 from .models import (
@@ -269,18 +271,41 @@ def _cache_headers(cache: dict) -> dict[str, str]:
 @app.post("/artifact-executions", response_model=ArtifactExecutionResponse, status_code=202)
 def create_artifact_execution(
     request: ArtifactExecutionRequest,
+    background_tasks: BackgroundTasks,
     x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Create an execution request for an artifact."""
     require_client_access(identity, request.client_key)
+    subject = authenticated_subject(identity)
+    roles = authorized_roles(identity, x_identity_roles)
+
+    if request.behavior.value == "deliver":
+        try:
+            result = queue_artifact_execution(request.client_key, request.artifact_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        background_tasks.add_task(
+            execute_queued_artifact,
+            request.client_key,
+            request.artifact_key,
+            behavior=request.behavior.value,
+            output_formats=[output_format.value for output_format in request.output_formats],
+            authenticated_subject=subject,
+            authorized_roles=roles,
+            run_id=result["run_id"],
+            started_at=result["started_at"],
+            precreated_run=True,
+        )
+        return ArtifactExecutionResponse(**result)
+
     result = execute_artifact(
         request.client_key,
         request.artifact_key,
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
-        authenticated_subject=authenticated_subject(identity),
-        authorized_roles=authorized_roles(identity, x_identity_roles),
+        authenticated_subject=subject,
+        authorized_roles=roles,
     )
 
     if result.get("status") == "error":
@@ -295,6 +320,7 @@ def get_artifact_execution_status(run_id: str, identity: dict[str, Any] = Depend
     record = get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    require_client_access(identity, record["client_key"])
     return ArtifactExecutionResponse(**record)
 
 
@@ -339,4 +365,5 @@ def get_run_status(run_id: str, identity: dict[str, Any] = Depends(require_inter
     record = get_run(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    require_client_access(identity, record["client_key"])
     return RunResponse(**record)
