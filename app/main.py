@@ -291,6 +291,8 @@ def create_artifact_execution(
             request.artifact_key,
             behavior=request.behavior.value,
             output_formats=[output_format.value for output_format in request.output_formats],
+            execution_query=request.query,
+            distribution_group_keys=request.distribution_group_keys,
             authenticated_subject=subject,
             authorized_roles=roles,
             run_id=result["run_id"],
@@ -304,6 +306,8 @@ def create_artifact_execution(
         request.artifact_key,
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
+        execution_query=request.query,
+        distribution_group_keys=request.distribution_group_keys,
         authenticated_subject=subject,
         authorized_roles=roles,
     )
