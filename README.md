@@ -30,6 +30,7 @@ normal Postgres-backed execution path.
 | `POST` | `/artifacts` | Create or update an artifact definition in metadata |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/distribution-groups` | List approved active distribution groups without recipient details |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
@@ -51,6 +52,14 @@ Current phase support includes:
 ### `GET /artifacts/{client_key}/{artifact_key}`
 
 Renders the artifact and returns HTML on the normal display path.
+
+### `GET /artifacts/{client_key}/{artifact_key}/distribution-groups`
+
+Returns only active groups bound to the artifact that contain at least one
+active recipient. The response contains bounded group keys, display names, and
+descriptions; recipient identities, addresses, delivery types, and counts are
+not exposed. The same artifact and client authorization boundary used by other
+authenticated artifact routes applies.
 
 ### `POST /artifact-executions`
 

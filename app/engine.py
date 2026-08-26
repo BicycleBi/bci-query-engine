@@ -357,6 +357,50 @@ def _resolve_distribution_recipients(
 
 
 
+def get_artifact_distribution_groups(client_key: str, artifact_key: str) -> list[dict[str, Any]]:
+    """List active artifact-approved groups without exposing recipient metadata."""
+    with get_metadata_conn() as meta:
+        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+        if artifact is None:
+            raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
+
+        rows = meta.execute(
+            """
+            SELECT
+                distribution_group.group_key,
+                distribution_group.display_name,
+                distribution_group.description
+            FROM app.distribution_groups distribution_group
+            JOIN app.artifact_distribution_groups artifact_group
+              ON artifact_group.group_id = distribution_group.group_id
+             AND artifact_group.active
+            WHERE artifact_group.artifact_id = %s::uuid
+              AND distribution_group.client_key = %s
+              AND distribution_group.active
+              AND EXISTS (
+                  SELECT 1
+                  FROM app.distribution_group_members member
+                  JOIN app.distribution_contacts contact
+                    ON contact.contact_id = member.contact_id
+                   AND contact.active
+                  WHERE member.group_id = distribution_group.group_id
+                    AND member.active
+              )
+            ORDER BY LOWER(distribution_group.display_name), distribution_group.group_key
+            """,
+            (artifact["artifact_id"], client_key),
+        ).fetchall()
+
+    return [
+        {
+            "group_key": str(group_key),
+            "display_name": str(display_name),
+            "description": str(description) if description is not None else None,
+        }
+        for group_key, display_name, description in rows
+    ]
+
+
 def _insert_artifact_outputs(meta, outputs: list[dict[str, Any]]) -> None:
     if not outputs:
         return

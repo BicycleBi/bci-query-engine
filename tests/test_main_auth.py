@@ -132,6 +132,51 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     assert captured["output_formats"] == []
 
 
+def test_distribution_group_route_returns_approved_group_labels(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    monkeypatch.setattr(
+        main,
+        "get_artifact_distribution_groups",
+        lambda client_key, artifact_key: [
+            {
+                "group_key": "operations",
+                "display_name": "Operations",
+                "description": "Operations audience",
+            }
+        ],
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rf/market-penetration-fdh-csv-burst/distribution-groups",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "client_key": "rf",
+        "artifact_key": "market-penetration-fdh-csv-burst",
+        "groups": [
+            {
+                "group_key": "operations",
+                "display_name": "Operations",
+                "description": "Operations audience",
+            }
+        ],
+    }
+
+
 def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

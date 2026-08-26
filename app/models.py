@@ -116,6 +116,18 @@ class ArtifactWriteResponse(BaseModel):
     reference_count: int
 
 
+class DistributionGroupSummary(BaseModel):
+    group_key: str
+    display_name: str
+    description: Optional[str] = None
+
+
+class ArtifactDistributionGroupsResponse(BaseModel):
+    client_key: str
+    artifact_key: str
+    groups: list[DistributionGroupSummary] = Field(default_factory=list)
+
+
 class ArtifactExecutionRequest(BaseModel):
     client_key: str
     artifact_key: str

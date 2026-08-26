@@ -20,6 +20,38 @@ class FakeResult:
     def fetchall(self):
         return self.rows
 
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+class ArtifactGroupMeta:
+    def __init__(self, groups):
+        self.groups = groups
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        if "FROM app.artifacts a" in sql:
+            return FakeResult([(
+                "11111111-1111-1111-1111-111111111111",
+                "rf",
+                "market-penetration-fdh-csv-burst",
+                "public.market_penetration_fdh_csv_burst_render_payload",
+                "email",
+                "Market Penetration FDH CSV Burst",
+                "<p>body</p>",
+                "22222222-2222-2222-2222-222222222222",
+            )])
+        if "FROM app.distribution_groups distribution_group" in sql:
+            return FakeResult(self.groups)
+        raise AssertionError(f"Unexpected metadata query: {sql}")
+
 
 class DistributionMeta:
     def __init__(self, approved, members):
@@ -122,6 +154,35 @@ def test_unapproved_distribution_group_is_rejected_before_member_lookup():
         )
 
     assert len(meta.calls) == 1
+
+
+def test_approved_distribution_group_list_exposes_labels_without_recipients(monkeypatch):
+    meta = ArtifactGroupMeta([
+        ("operations", "Operations", "Operations audience"),
+        ("sales", "Sales", None),
+    ])
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: meta)
+
+    groups = engine.get_artifact_distribution_groups(
+        "rf",
+        "market-penetration-fdh-csv-burst",
+    )
+
+    assert groups == [
+        {
+            "group_key": "operations",
+            "display_name": "Operations",
+            "description": "Operations audience",
+        },
+        {
+            "group_key": "sales",
+            "display_name": "Sales",
+            "description": None,
+        },
+    ]
+    group_sql = meta.calls[1][0]
+    assert "distribution_group_members" in group_sql
+    assert "contact.email" not in group_sql
 
 
 def test_execution_request_requires_query_for_csv_and_delivery_for_groups():
