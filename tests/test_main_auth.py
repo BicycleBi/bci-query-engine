@@ -72,12 +72,16 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
         artifact_key,
         behavior,
         output_formats,
+        execution_query,
+        distribution_group_keys,
         authenticated_subject,
         authorized_roles,
     ):
         captured["authenticated_subject"] = authenticated_subject
         captured["authorized_roles"] = authorized_roles
         captured["output_formats"] = output_formats
+        captured["execution_query"] = execution_query
+        captured["distribution_group_keys"] = distribution_group_keys
         return {
             "run_id": "run-1",
             "status": "success",
@@ -126,6 +130,51 @@ def test_protected_routes_accept_valid_internal_token(monkeypatch):
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_pnl_scope_a", "srp_pnl_scope_b"]
     assert captured["output_formats"] == []
+
+
+def test_distribution_group_route_returns_approved_group_labels(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    monkeypatch.setattr(
+        main,
+        "get_artifact_distribution_groups",
+        lambda client_key, artifact_key: [
+            {
+                "group_key": "operations",
+                "display_name": "Operations",
+                "description": "Operations audience",
+            }
+        ],
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rf/market-penetration-fdh-csv-burst/distribution-groups",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "client_key": "rf",
+        "artifact_key": "market-penetration-fdh-csv-burst",
+        "groups": [
+            {
+                "group_key": "operations",
+                "display_name": "Operations",
+                "description": "Operations audience",
+            }
+        ],
+    }
 
 
 def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypatch):
@@ -187,6 +236,9 @@ def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypa
             "client_key": "srp",
             "artifact_key": "visit-counts",
             "behavior": "deliver",
+            "output_formats": ["csv"],
+            "query": {"action": "hierarchy-export", "statuses": ["21_Area Live"]},
+            "distribution_group_keys": ["test-reviewers"],
         },
     )
 
@@ -196,6 +248,12 @@ def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypa
     assert captured["precreated_run"] is True
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_pnl_scope_a"]
+    assert captured["output_formats"] == ["csv"]
+    assert captured["execution_query"] == {
+        "action": "hierarchy-export",
+        "statuses": ["21_Area Live"],
+    }
+    assert captured["distribution_group_keys"] == ["test-reviewers"]
 
 
 def test_execution_status_rejects_other_client_run(monkeypatch):

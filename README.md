@@ -11,7 +11,7 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
    - `email` — POSTs to `bci-email-service` which sends via Microsoft Graph
    - `web`   — returns rendered HTML for front-end consumption
    - `both`  — email + web
-5. Optionally generates requested file outputs such as PDF
+5. Optionally generates requested file outputs such as PDF and database-owned CSV
 6. Logs every run to `log.artifact_runs` and generated files to
    `log.artifact_outputs`
 
@@ -30,6 +30,7 @@ normal Postgres-backed execution path.
 | `POST` | `/artifacts` | Create or update an artifact definition in metadata |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/distribution-groups` | List approved active distribution groups without recipient details |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
@@ -52,6 +53,14 @@ Current phase support includes:
 
 Renders the artifact and returns HTML on the normal display path.
 
+### `GET /artifacts/{client_key}/{artifact_key}/distribution-groups`
+
+Returns only active groups bound to the artifact that contain at least one
+active recipient. The response contains bounded group keys, display names, and
+descriptions; recipient identities, addresses, delivery types, and counts are
+not exposed. The same artifact and client authorization boundary used by other
+authenticated artifact routes applies.
+
 ### `POST /artifact-executions`
 
 Creates an execution request for an artifact.
@@ -73,7 +82,9 @@ can override it with `EMAIL_SERVICE_TIMEOUT_SECONDS`.
   "client_key": "srp",
   "artifact_key": "visit-counts-quick-email",
   "behavior": "deliver",
-  "output_formats": []
+  "output_formats": [],
+  "query": null,
+  "distribution_group_keys": []
 }
 ```
 
@@ -84,6 +95,8 @@ Supported behaviors:
 
 Supported optional output formats:
 - `pdf` — render one PDF per data row returned by the artifact view
+- `csv` — write one UTF-8 CSV from the artifact query function's database-owned
+  `csv` contract
 
 When PDF output is requested, Query Engine renders the artifact template once
 per returned data row and writes files under `ARTIFACT_OUTPUT_DIR`, defaulting
@@ -94,6 +107,32 @@ the report data as-of date. Generated file metadata is written to
 If `behavior` is `deliver` and the artifact delivery mode allows email,
 generated PDF outputs are sent to email-service as attachments on the delivery
 request.
+
+CSV execution requires `query`. Query Engine invokes the artifact's existing
+`{view_name}_query(jsonb)` function and accepts only this bounded result shape:
+
+```json
+{
+  "csv": {
+    "filename": "filtered-results.csv",
+    "columns": [{"key": "field", "label": "Field"}],
+    "rows": [{"field": "value"}]
+  }
+}
+```
+
+The database owns filtering, ordering, column selection, and row production.
+Query Engine owns CSV encoding, spreadsheet-formula neutralization, size/row
+limits, output logging, and attachment handoff. CSV execution queries bypass
+render caching because delivery is a side effect and the filtered file must be
+generated from current database results.
+
+`distribution_group_keys` selects reusable application distribution groups for
+a delivery execution. Every selected active group must be actively bound to
+the artifact in `app.artifact_distribution_groups`. Active contacts are joined
+through `app.distribution_group_members`, deduplicated case-insensitively, and
+resolved with `to` taking precedence over `cc`, then `bcc`. Distribution
+membership never grants artifact read or execute authorization.
 
 Example PDF display execution:
 
@@ -168,6 +207,8 @@ curl -X POST http://127.0.0.1:18300/artifact-executions \
 | `ARTIFACT_OUTPUT_DIR` | Directory where generated file outputs are written. Defaults to `/tmp/bci-query-engine/artifact-outputs`. |
 | `PDF_CHROMIUM_EXECUTABLE` | Optional path/name for the Chromium executable used for PDF rendering. |
 | `PDF_RENDER_TIMEOUT_SECONDS` | Timeout for a single PDF render. Defaults to `120`. |
+| `CSV_OUTPUT_MAX_ROWS` | Maximum rows accepted from a database-owned CSV contract. Defaults to `100000`. |
+| `CSV_OUTPUT_MAX_BYTES` | Maximum generated CSV bytes. Defaults to `3145728` (3 MiB). |
 
 See `.env.example` for a complete list.
 

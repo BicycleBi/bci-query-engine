@@ -17,6 +17,7 @@ from .engine import (
     execute_artifact_query,
     execute_queued_artifact,
     get_artifact_asset,
+    get_artifact_distribution_groups,
     get_run,
     prewarm_artifact_query_cache,
     queue_artifact_execution,
@@ -25,6 +26,7 @@ from .engine import (
 from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
+    ArtifactDistributionGroupsResponse,
     ArtifactQueryCachePrewarmRequest,
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
@@ -194,6 +196,28 @@ def get_artifact_data(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get(
+    "/artifacts/{client_key}/{artifact_key}/distribution-groups",
+    response_model=ArtifactDistributionGroupsResponse,
+)
+def list_artifact_distribution_groups(
+    client_key: str,
+    artifact_key: str,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """List active groups approved for an artifact without recipient details."""
+    require_client_access(identity, client_key)
+    try:
+        groups = get_artifact_distribution_groups(client_key, artifact_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ArtifactDistributionGroupsResponse(
+        client_key=client_key,
+        artifact_key=artifact_key,
+        groups=groups,
+    )
+
+
 @app.post(
     "/internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm",
     response_model=ArtifactQueryCachePrewarmResponse,
@@ -291,6 +315,8 @@ def create_artifact_execution(
             request.artifact_key,
             behavior=request.behavior.value,
             output_formats=[output_format.value for output_format in request.output_formats],
+            execution_query=request.query,
+            distribution_group_keys=request.distribution_group_keys,
             authenticated_subject=subject,
             authorized_roles=roles,
             run_id=result["run_id"],
@@ -304,6 +330,8 @@ def create_artifact_execution(
         request.artifact_key,
         behavior=request.behavior.value,
         output_formats=[output_format.value for output_format in request.output_formats],
+        execution_query=request.query,
+        distribution_group_keys=request.distribution_group_keys,
         authenticated_subject=subject,
         authorized_roles=roles,
     )

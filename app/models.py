@@ -116,11 +116,49 @@ class ArtifactWriteResponse(BaseModel):
     reference_count: int
 
 
+class DistributionGroupSummary(BaseModel):
+    group_key: str
+    display_name: str
+    description: Optional[str] = None
+
+
+class ArtifactDistributionGroupsResponse(BaseModel):
+    client_key: str
+    artifact_key: str
+    groups: list[DistributionGroupSummary] = Field(default_factory=list)
+
+
 class ArtifactExecutionRequest(BaseModel):
     client_key: str
     artifact_key: str
     behavior: ArtifactExecutionBehavior = ArtifactExecutionBehavior.deliver
     output_formats: list[ArtifactOutputFormat] = Field(default_factory=list)
+    query: Optional[dict[str, Any]] = None
+    distribution_group_keys: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("distribution_group_keys")
+    @classmethod
+    def validate_distribution_group_keys(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            key = value.strip()
+            if not key or len(key) > 100:
+                raise ValueError("Distribution group keys must be between 1 and 100 characters")
+            if not all(character.isalnum() or character in "-_" for character in key):
+                raise ValueError(
+                    "Distribution group keys may contain only letters, numbers, hyphens, and underscores"
+                )
+            if key not in normalized:
+                normalized.append(key)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_execution_options(self) -> "ArtifactExecutionRequest":
+        if self.distribution_group_keys and self.behavior != ArtifactExecutionBehavior.deliver:
+            raise ValueError("Distribution groups are supported only for delivery executions")
+        if ArtifactOutputFormat.csv in self.output_formats and self.query is None:
+            raise ValueError("CSV output requires a database-owned execution query")
+        return self
 
 
 class ArtifactQueryCachePrewarmRequest(BaseModel):

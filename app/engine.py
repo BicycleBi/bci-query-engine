@@ -9,6 +9,7 @@ Flow:
   5. Write log.artifact_runs
   6. Return run_id + status
 """
+import csv
 import hashlib
 import json
 import os
@@ -191,6 +192,213 @@ def _generate_pdf_outputs(
         )
 
     return outputs
+
+
+def _csv_cell(value: Any) -> Any:
+    """Return a spreadsheet-safe scalar while preserving numeric values."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    text = str(value)
+    if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(("=", "+", "-", "@")):
+        return f"\x27{text}"
+    return text
+
+
+def _generate_csv_output(
+    *,
+    run_id: str,
+    artifact_id: str,
+    client_key: str,
+    artifact_key: str,
+    query_result: Any,
+) -> dict[str, Any]:
+    """Generate one CSV from a database-owned ``csv`` output contract."""
+    if not isinstance(query_result, dict) or not isinstance(query_result.get("csv"), dict):
+        raise ValueError("CSV output query must return a database-owned csv contract")
+
+    contract = query_result["csv"]
+    columns = contract.get("columns")
+    rows = contract.get("rows")
+    if not isinstance(columns, list) or not columns or len(columns) > 64:
+        raise ValueError("CSV output contract must define between 1 and 64 columns")
+    if not isinstance(rows, list):
+        raise ValueError("CSV output contract rows must be an array")
+
+    max_rows = max(1, int(os.getenv("CSV_OUTPUT_MAX_ROWS", "100000")))
+    if len(rows) > max_rows:
+        raise ValueError(f"CSV output exceeds the {max_rows}-row limit")
+
+    normalized_columns: list[tuple[str, str]] = []
+    for column in columns:
+        if not isinstance(column, dict):
+            raise ValueError("CSV output columns must be objects")
+        key = str(column.get("key") or "").strip()
+        label = str(column.get("label") or "").strip()
+        if not key or not label or len(key) > 100 or len(label) > 200:
+            raise ValueError("CSV output columns require bounded key and label values")
+        normalized_columns.append((key, label))
+
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("CSV output rows must be objects")
+
+    requested_filename = str(contract.get("filename") or f"{artifact_key}.csv")
+    filename = f"{_safe_filename_part(Path(requested_filename).stem)}.csv"
+    output_root = _artifact_output_dir() / client_key / artifact_key / run_id
+    output_root.mkdir(parents=True, exist_ok=True)
+    output_path = output_root / filename
+
+    with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([label for _, label in normalized_columns])
+        for row in rows:
+            writer.writerow([_csv_cell(row.get(key)) for key, _ in normalized_columns])
+
+    file_size = output_path.stat().st_size
+    max_bytes = max(1, int(os.getenv("CSV_OUTPUT_MAX_BYTES", str(3 * 1024 * 1024))))
+    if file_size > max_bytes:
+        output_path.unlink(missing_ok=True)
+        raise ValueError(f"CSV output exceeds the {max_bytes}-byte attachment limit")
+
+    return {
+        "run_id": run_id,
+        "artifact_id": artifact_id,
+        "artifact_key": artifact_key,
+        "client_key": client_key,
+        "output_format": "csv",
+        "output_role": "attachment",
+        "slice_key": None,
+        "slice_label": None,
+        "filename": filename,
+        "storage_path": str(output_path),
+        "content_type": "text/csv; charset=utf-8",
+        "file_size_bytes": file_size,
+        "sha256": _sha256_file(output_path),
+        "status": "completed",
+    }
+
+
+def _resolve_distribution_recipients(
+    meta,
+    *,
+    artifact_id: str,
+    client_key: str,
+    group_keys: list[str],
+) -> list[tuple[str, str]]:
+    """Resolve active, artifact-approved groups and deduplicate their members."""
+    if not group_keys:
+        return []
+
+    approved_rows = meta.execute(
+        """
+        SELECT distribution_group.group_key
+        FROM app.distribution_groups distribution_group
+        JOIN app.artifact_distribution_groups artifact_group
+          ON artifact_group.group_id = distribution_group.group_id
+         AND artifact_group.active
+        WHERE artifact_group.artifact_id = %s::uuid
+          AND distribution_group.client_key = %s
+          AND distribution_group.active
+          AND distribution_group.group_key = ANY(%s)
+        ORDER BY distribution_group.group_key
+        """,
+        (artifact_id, client_key, group_keys),
+    ).fetchall()
+    approved = {str(row[0]) for row in approved_rows}
+    requested = set(group_keys)
+    if approved != requested:
+        unavailable = ", ".join(sorted(requested - approved))
+        raise ValueError(f"Distribution group is unavailable for this artifact: {unavailable}")
+
+    rows = meta.execute(
+        """
+        SELECT contact.email, member.delivery_type
+        FROM app.distribution_groups distribution_group
+        JOIN app.artifact_distribution_groups artifact_group
+          ON artifact_group.group_id = distribution_group.group_id
+         AND artifact_group.active
+        JOIN app.distribution_group_members member
+          ON member.group_id = distribution_group.group_id
+         AND member.active
+        JOIN app.distribution_contacts contact
+          ON contact.contact_id = member.contact_id
+         AND contact.active
+        WHERE artifact_group.artifact_id = %s::uuid
+          AND distribution_group.client_key = %s
+          AND distribution_group.active
+          AND distribution_group.group_key = ANY(%s)
+        ORDER BY contact.email, member.delivery_type
+        """,
+        (artifact_id, client_key, group_keys),
+    ).fetchall()
+
+    delivery_priority = {"to": 0, "cc": 1, "bcc": 2}
+    resolved: dict[str, tuple[str, str]] = {}
+    for email_value, delivery_type_value in rows:
+        email = str(email_value or "").strip()
+        delivery_type = str(delivery_type_value or "").strip().lower()
+        if not email or delivery_type not in delivery_priority:
+            continue
+        lookup = email.casefold()
+        existing = resolved.get(lookup)
+        if existing is None or delivery_priority[delivery_type] < delivery_priority[existing[1]]:
+            resolved[lookup] = (email, delivery_type)
+
+    recipients = sorted(
+        resolved.values(),
+        key=lambda item: (delivery_priority[item[1]], item[0].casefold()),
+    )
+    if not recipients:
+        raise ValueError("Selected distribution groups have no active recipients")
+    return recipients
+
+
+
+def get_artifact_distribution_groups(client_key: str, artifact_key: str) -> list[dict[str, Any]]:
+    """List active artifact-approved groups without exposing recipient metadata."""
+    with get_metadata_conn() as meta:
+        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+        if artifact is None:
+            raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
+
+        rows = meta.execute(
+            """
+            SELECT
+                distribution_group.group_key,
+                distribution_group.display_name,
+                distribution_group.description
+            FROM app.distribution_groups distribution_group
+            JOIN app.artifact_distribution_groups artifact_group
+              ON artifact_group.group_id = distribution_group.group_id
+             AND artifact_group.active
+            WHERE artifact_group.artifact_id = %s::uuid
+              AND distribution_group.client_key = %s
+              AND distribution_group.active
+              AND EXISTS (
+                  SELECT 1
+                  FROM app.distribution_group_members member
+                  JOIN app.distribution_contacts contact
+                    ON contact.contact_id = member.contact_id
+                   AND contact.active
+                  WHERE member.group_id = distribution_group.group_id
+                    AND member.active
+              )
+            ORDER BY LOWER(distribution_group.display_name), distribution_group.group_key
+            """,
+            (artifact["artifact_id"], client_key),
+        ).fetchall()
+
+    return [
+        {
+            "group_key": str(group_key),
+            "display_name": str(display_name),
+            "description": str(description) if description is not None else None,
+        }
+        for group_key, display_name, description in rows
+    ]
 
 
 def _insert_artifact_outputs(meta, outputs: list[dict[str, Any]]) -> None:
@@ -768,6 +976,8 @@ def execute_artifact(
     artifact_key: str,
     behavior: str = "deliver",
     output_formats: Optional[list[str]] = None,
+    execution_query: Optional[dict[str, Any]] = None,
+    distribution_group_keys: Optional[list[str]] = None,
     refresh_cache: bool = False,
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
@@ -789,6 +999,7 @@ def execute_artifact(
     started_perf = perf_counter()
     artifact_id: Optional[str] = None
     output_formats = output_formats or []
+    distribution_group_keys = distribution_group_keys or []
     from .renderer import render
     from . import mailer as _mailer
     from .cache import (
@@ -834,7 +1045,11 @@ def execute_artifact(
             render_template_id = render_artifact["template_id"]
 
             cache_settings = get_cache_settings()
-            cacheable_render = behavior in {"display", "preview"} and not output_formats
+            cacheable_render = (
+                behavior in {"display", "preview"}
+                and not output_formats
+                and execution_query is None
+            )
             cache_status = "bypass"
             cache_read_ms: Optional[float] = None
             data_query_ms: Optional[float] = None
@@ -871,6 +1086,7 @@ def execute_artifact(
                 cache_status = "hit" if cached_render is not None else "miss"
 
             # ── 2. Query data DB ───────────────────────────────────────
+            query_result: Any = None
             if cached_render is not None:
                 html = cached_render["html"]
                 row_count = int(cached_render.get("row_count", 0))
@@ -878,9 +1094,21 @@ def execute_artifact(
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
                     _set_authorization_context(data, authenticated_subject, authorized_roles)
-                    cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                    cols = [d[0] for d in cur.description]
-                    data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    if execution_query is not None:
+                        serialized_query = _serialized_artifact_query(execution_query)
+                        query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
+                        if isinstance(query_result, dict):
+                            data_rows = [query_result]
+                        elif isinstance(query_result, list) and all(
+                            isinstance(row, dict) for row in query_result
+                        ):
+                            data_rows = query_result
+                        else:
+                            data_rows = [{"value": query_result}]
+                    else:
+                        cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
+                        cols = [d[0] for d in cur.description]
+                        data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
                 data_query_ms = (perf_counter() - data_query_started) * 1000
 
             if cached_render is None:
@@ -889,6 +1117,12 @@ def execute_artifact(
                 html = render(template_body, data_rows)
                 render_ms = (perf_counter() - render_started) * 1000
                 row_count = len(data_rows)
+                if (
+                    isinstance(query_result, dict)
+                    and isinstance(query_result.get("csv"), dict)
+                    and isinstance(query_result["csv"].get("rows"), list)
+                ):
+                    row_count = len(query_result["csv"]["rows"])
                 if cache is not None and cache_settings.cache_rendered:
                     set_cached_render(
                         cache,
@@ -939,21 +1173,39 @@ def execute_artifact(
                         rendered_at=started_at,
                     )
                 )
+            if "csv" in output_formats:
+                outputs.append(
+                    _generate_csv_output(
+                        run_id=run_id,
+                        artifact_id=artifact_id,
+                        client_key=client_key,
+                        artifact_key=artifact_key,
+                        query_result=query_result,
+                    )
+                )
 
             # ── 6. Send email if applicable ────────────────────────────
             return_html = behavior == "display"
             send_email = behavior == "deliver" and delivery_mode in ("email", "both")
             recipient_count = 0
             if send_email:
-                recipient_rows = meta.execute(
-                    """
-                    SELECT email, delivery_type
-                    FROM app.artifact_recipients
-                    WHERE artifact_id = %s AND active
-                    ORDER BY delivery_type, email
-                    """,
-                    (artifact_id,),
-                ).fetchall()
+                if distribution_group_keys:
+                    recipient_rows = _resolve_distribution_recipients(
+                        meta,
+                        artifact_id=artifact_id,
+                        client_key=client_key,
+                        group_keys=distribution_group_keys,
+                    )
+                else:
+                    recipient_rows = meta.execute(
+                        """
+                        SELECT email, delivery_type
+                        FROM app.artifact_recipients
+                        WHERE artifact_id = %s AND active
+                        ORDER BY delivery_type, email
+                        """,
+                        (artifact_id,),
+                    ).fetchall()
                 to  = [r[0] for r in recipient_rows if r[1] == "to"]
                 cc  = [r[0] for r in recipient_rows if r[1] == "cc"]
                 bcc = [r[0] for r in recipient_rows if r[1] == "bcc"]
