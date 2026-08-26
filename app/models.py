@@ -144,10 +144,20 @@ class ArtifactExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     preview_html: Optional[str] = None
     outputs: list[dict] = Field(default_factory=list)
+    delivery_id: Optional[str] = None
+    delivery_status: Optional[str] = None
+    provider: Optional[str] = None
+    provider_message_id: Optional[str] = None
+    provider_status_code: Optional[int] = None
 
     @field_validator("run_id", mode="before")
     @classmethod
     def normalize_run_id(cls, value: Any) -> Optional[str]:
+        return None if value is None else str(value)
+
+    @field_validator("delivery_id", mode="before")
+    @classmethod
+    def normalize_delivery_id(cls, value: Any) -> Optional[str]:
         return None if value is None else str(value)
 
 
@@ -158,3 +168,62 @@ class RunResponse(ArtifactExecutionResponse):
 class HealthResponse(BaseModel):
     status: str
     service: str = "bci-query-engine"
+
+
+class DeliveryBatchMode(str, Enum):
+    live = "live"
+    internal_test = "internal_test"
+
+
+class DeliveryBatchRequest(BaseModel):
+    client_key: str
+    artifact_keys: list[str] = Field(min_length=1, max_length=100)
+    reporting_period: str = Field(min_length=1, max_length=120)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+    mode: DeliveryBatchMode = DeliveryBatchMode.live
+
+    @field_validator("artifact_keys")
+    @classmethod
+    def unique_artifact_keys(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("Artifact keys cannot be empty")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Artifact keys must be unique within a batch")
+        return normalized
+
+
+class DeliveryBatchItemResponse(BaseModel):
+    item_id: str
+    artifact_key: str
+    run_id: str
+    status: str
+    attempt_number: int
+    delivery_id: Optional[str] = None
+    delivery_status: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @field_validator("item_id", "run_id", "delivery_id", mode="before")
+    @classmethod
+    def normalize_identifiers(cls, value: Any) -> Optional[str]:
+        return None if value is None else str(value)
+
+
+class DeliveryBatchResponse(BaseModel):
+    batch_id: str
+    client_key: str
+    reporting_period: str
+    mode: DeliveryBatchMode
+    status: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    items: list[DeliveryBatchItemResponse]
+
+    @field_validator("batch_id", mode="before")
+    @classmethod
+    def normalize_batch_id(cls, value: Any) -> str:
+        return str(value)
+
+
+class DeliveryRetryRequest(BaseModel):
+    reason: str = Field(min_length=8, max_length=500)

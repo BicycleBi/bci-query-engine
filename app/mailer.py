@@ -23,6 +23,7 @@ def send(
     client_key: Optional[str] = None,
     artifact_key: Optional[str] = None,
     run_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     attachments: Optional[list[dict]] = None,
 ) -> dict:
     """
@@ -45,6 +46,7 @@ def send(
         "client_key": client_key,
         "artifact_key": artifact_key,
         "run_id": run_id,
+        "request_id": request_id,
         "attachments": [_attachment_payload(attachment) for attachment in attachments or []],
     }
     headers = {"Authorization": f"Bearer {service_token}"}
@@ -56,6 +58,21 @@ def send(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_delivery(delivery_id: str) -> dict:
+    """Return non-recipient delivery correlation from Email Service."""
+    url = os.environ.get("EMAIL_SERVICE_URL", "http://email-service:8200")
+    service_token = os.environ.get("SERVICE_TOKEN", "")
+    if not service_token:
+        raise ValueError("SERVICE_TOKEN is required for email delivery")
+    response = requests.get(
+        f"{url}/deliveries/{delivery_id}",
+        headers={"Authorization": f"Bearer {service_token}"},
+        timeout=_email_service_timeout_seconds(),
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def _attachment_payload(attachment: dict) -> dict:

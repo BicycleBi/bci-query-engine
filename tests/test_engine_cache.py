@@ -56,6 +56,9 @@ class FakeMeta:
             self.log_params = params
             return FakeResult(row=("run-1",))
 
+        if "FROM app.artifact_delivery_targets" in sql:
+            return FakeResult(row=(False,))
+
         raise AssertionError(f"Unexpected metadata query: {sql}")
 
     def commit(self):

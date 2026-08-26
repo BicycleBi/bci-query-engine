@@ -32,6 +32,10 @@ normal Postgres-backed execution path.
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
+| `POST` | `/delivery-batches` | Create one governed multi-owner delivery batch |
+| `GET` | `/delivery-batches/{batch_id}` | Get non-recipient batch and item status |
+| `POST` | `/delivery-batches/{batch_id}/reconcile` | Refresh Email Service delivery evidence |
+| `POST` | `/delivery-batches/{batch_id}/items/{item_id}/retry` | Retry one definitively failed item with a reason |
 | `GET`  | `/health` | Health check |
 
 Legacy compatibility routes still exist for `/run/{client_key}/{artifact_key}` and `/run/{run_id}`, but they are no longer the primary API surface.
@@ -60,10 +64,12 @@ For `deliver`, Query Engine first persists a `queued` run and returns HTTP 202
 with its `run_id`. Rendering and delivery then continue outside the request.
 Poll `GET /artifact-executions/{run_id}` for `queued`, `preparing`, `sending`,
 `completed`, or `failed` status. This keeps credential retrieval and provider
-delivery latency out of the browser request lifecycle. Queued deliveries use a
-bounded in-process worker pool (two workers by default; configurable with
-`ARTIFACT_DELIVERY_WORKERS`) so a multi-artifact trigger cannot fan out every
-delivery at once. The default Query Engine-to-Email Service timeout is 390
+delivery latency out of the browser request lifecycle. Queued deliveries are
+claimed from Postgres by bounded worker threads (two by default; configurable
+with `ARTIFACT_DELIVERY_WORKERS`) using row locks and expiring leases. Queue
+state and trusted authorization context therefore survive a process restart.
+An expired pre-send lease can be reclaimed; an expired send is quarantined as
+status unknown and is never blindly repeated. The default Query Engine-to-Email Service timeout is 390
 seconds so two sequential cold credential lookups can complete; deployments
 can override it with `EMAIL_SERVICE_TIMEOUT_SECONDS`.
 
@@ -94,6 +100,12 @@ the report data as-of date. Generated file metadata is written to
 If `behavior` is `deliver` and the artifact delivery mode allows email,
 generated PDF outputs are sent to email-service as attachments on the delivery
 request.
+
+Artifacts registered in `app.artifact_delivery_targets` as `batch_only` cannot
+use the single-artifact delivery route. The batch route requires a configured
+delivery-control role, validates each artifact against the server-side target
+allowlist, and supports a separate `internal_test` mode whose recipients come
+only from `ARTIFACT_INTERNAL_TEST_RECIPIENTS`.
 
 Example PDF display execution:
 
@@ -166,6 +178,12 @@ curl -X POST http://127.0.0.1:18300/artifact-executions \
 | `CACHE_RENDERED` | Enables rendered HTML cache reads/writes when Redis is enabled (default: `true`) |
 | `PORT` | Port to listen on (default: 8300) |
 | `ARTIFACT_OUTPUT_DIR` | Directory where generated file outputs are written. Defaults to `/tmp/bci-query-engine/artifact-outputs`. |
+| `ARTIFACT_DELIVERY_WORKER_ENABLED` | Enables durable delivery workers (default: `true`). |
+| `ARTIFACT_DELIVERY_WORKERS` | Number of bounded delivery worker threads (default: `2`). |
+| `ARTIFACT_DELIVERY_POLL_SECONDS` | Empty-queue poll interval (default: `1`). |
+| `ARTIFACT_DELIVERY_LEASE_SECONDS` | Worker lease duration, refreshed before provider send (default: `1200`, minimum: `600`). |
+| `ARTIFACT_DELIVERY_CONTROL_ROLES` | Comma-separated Security roles allowed to operate delivery batches. Empty fails closed. |
+| `ARTIFACT_INTERNAL_TEST_RECIPIENTS` | Comma-separated fixed employee allowlist for internal-test batches. Empty fails closed. |
 | `PDF_CHROMIUM_EXECUTABLE` | Optional path/name for the Chromium executable used for PDF rendering. |
 | `PDF_RENDER_TIMEOUT_SECONDS` | Timeout for a single PDF render. Defaults to `120`. |
 
