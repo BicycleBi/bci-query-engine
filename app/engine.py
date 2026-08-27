@@ -312,6 +312,21 @@ def _artifact_requires_batch(meta, artifact_id: str) -> bool:
     return bool(row and row[0])
 
 
+def _internal_test_delivery_envelope(
+    subject: str,
+    html: str,
+) -> tuple[list[tuple[str, str]], str, str]:
+    """Override only recipients while preserving the production message exactly."""
+    internal_recipients = [
+        email.strip()
+        for email in os.getenv("ARTIFACT_INTERNAL_TEST_RECIPIENTS", "").split(",")
+        if email.strip()
+    ]
+    if not internal_recipients:
+        raise ValueError("Internal test recipient allowlist is not configured")
+    return [(email, "to") for email in internal_recipients], subject, html
+
+
 def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     row = meta.execute(
         """
@@ -984,26 +999,9 @@ def execute_artifact(
             recipient_count = 0
             if send_email:
                 if delivery_mode_override == "internal_test":
-                    internal_recipients = [
-                        email.strip()
-                        for email in os.getenv("ARTIFACT_INTERNAL_TEST_RECIPIENTS", "").split(",")
-                        if email.strip()
-                    ]
-                    if not internal_recipients:
-                        raise ValueError("Internal test recipient allowlist is not configured")
-                    recipient_rows = [(email, "to") for email in internal_recipients]
-                    subject = f"[TEST] {subject}"
-                    html = re.sub(
-                        r"(<body[^>]*>)",
-                        (
-                            r"\1<div style=\"padding:12px 18px;background:#fff4d6;"
-                            r"border:1px solid #d6a34a;color:#5f3c00;font-family:Arial,sans-serif;"
-                            r"font-size:13px;font-weight:700;text-align:center;\">"
-                            r"INTERNAL TEST — do not forward; owner delivery history is not updated.</div>"
-                        ),
+                    recipient_rows, subject, html = _internal_test_delivery_envelope(
+                        subject,
                         html,
-                        count=1,
-                        flags=re.IGNORECASE,
                     )
                 else:
                     recipient_rows = meta.execute(

@@ -105,7 +105,9 @@ Artifacts registered in `app.artifact_delivery_targets` as `batch_only` cannot
 use the single-artifact delivery route. The batch route requires a configured
 delivery-control role, validates each artifact against the server-side target
 allowlist, and supports a separate `internal_test` mode whose recipients come
-only from `ARTIFACT_INTERNAL_TEST_RECIPIENTS`.
+only from `ARTIFACT_INTERNAL_TEST_RECIPIENTS`. Internal-test mode changes only
+the recipient envelope: the rendered subject and body remain byte-for-byte the
+same production-candidate message that the owner would receive.
 
 Example PDF display execution:
 
