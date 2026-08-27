@@ -1,0 +1,35 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: /home/shared/repos/bci-query-engine-promote-production-pnl-owner-delivery
+source_commit: 8b9ecca4a40e56f7720aec33550deb0e5bec6e33
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+runtime_config:
+  services:
+    query-engine:
+      env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "false"
+      container_env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "false"
+      reconcile: recreate-if-env-changed
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-srp-production-query-engine-pre-owner-delivery-rollback-20260827-v1
+    purpose: Restore exact pre-owner-delivery Production Query Engine runtime and keep delivery workers disabled
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      ARTIFACT_DELIVERY_WORKER_ENABLED: "false"

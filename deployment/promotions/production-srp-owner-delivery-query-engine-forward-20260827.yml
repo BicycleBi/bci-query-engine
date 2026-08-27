@@ -1,0 +1,50 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: /home/shared/repos/bci-query-engine-promote-production-pnl-owner-delivery
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+runtime_config:
+  services:
+    query-engine:
+      env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "false"
+        ARTIFACT_DELIVERY_WORKERS: "2"
+        ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+        ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+        ARTIFACT_DELIVERY_CONTROL_ROLES: "srp_production_pnl_delivery_operator"
+        ARTIFACT_INTERNAL_TEST_RECIPIENTS: ""
+      container_env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "false"
+        ARTIFACT_DELIVERY_WORKERS: "2"
+        ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+        ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+        ARTIFACT_DELIVERY_CONTROL_ROLES: "srp_production_pnl_delivery_operator"
+        ARTIFACT_INTERNAL_TEST_RECIPIENTS: ""
+      reconcile: recreate-if-env-changed
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-srp-production-query-engine-owner-delivery-foundation-20260827-v1
+    purpose: Durable, idempotent Production P&L facility delivery control with workers disabled pending recipient activation
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      ARTIFACT_DELIVERY_WORKER_ENABLED: "false"
+      ARTIFACT_DELIVERY_WORKERS: "2"
+      ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+      ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+      ARTIFACT_DELIVERY_CONTROL_ROLES: "srp_production_pnl_delivery_operator"
+      ARTIFACT_INTERNAL_TEST_RECIPIENTS: ""
