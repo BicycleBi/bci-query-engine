@@ -161,6 +161,19 @@ class ArtifactExecutionResponse(BaseModel):
         return None if value is None else str(value)
 
 
+class ArtifactDeliveryHistoryItem(BaseModel):
+    artifact_key: str
+    run_id: str
+    delivery_status: str
+    sent_at: datetime
+    reporting_period: Optional[str] = None
+
+    @field_validator("run_id", mode="before")
+    @classmethod
+    def normalize_run_id(cls, value: Any) -> str:
+        return str(value)
+
+
 class RunResponse(ArtifactExecutionResponse):
     pass
 

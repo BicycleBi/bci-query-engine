@@ -1799,3 +1799,51 @@ def get_run(run_id: str) -> Optional[dict]:
         result["run_id"] = str(result["run_id"])
     result["outputs"] = [dict(zip(output_keys, output)) for output in outputs]
     return result
+
+
+def get_latest_artifact_deliveries(client_key: str, artifact_keys: list[str]) -> list[dict[str, Any]]:
+    """Return the latest provider-accepted delivery metadata without recipient data."""
+    with get_metadata_conn() as meta:
+        rows = meta.execute(
+            """
+            SELECT DISTINCT ON (run.artifact_key)
+                run.artifact_key,
+                run.run_id,
+                CASE
+                    WHEN run.delivery_status IN ('sent', 'submitted') THEN 'provider_accepted'
+                    ELSE COALESCE(run.delivery_status, run.status)
+                END AS delivery_status,
+                COALESCE(run.completed_at, run.started_at) AS sent_at,
+                batch.reporting_period
+            FROM log.artifact_runs run
+            LEFT JOIN log.artifact_delivery_batch_items item
+              ON item.run_id = run.run_id
+            LEFT JOIN log.artifact_delivery_batches batch
+              ON batch.batch_id = item.batch_id
+            WHERE run.client_key = %s
+              AND run.artifact_key = ANY(%s::text[])
+              AND (
+                  run.delivery_status IN ('sent', 'submitted', 'provider_accepted', 'delivered')
+                  OR (
+                      run.delivery_status IS NULL
+                      AND run.status = 'completed'
+                      AND run.delivery_mode IN ('email', 'both')
+                  )
+              )
+            ORDER BY
+                run.artifact_key,
+                COALESCE(run.completed_at, run.started_at) DESC,
+                run.started_at DESC
+            """,
+            (client_key, artifact_keys),
+        ).fetchall()
+    return [
+        {
+            "artifact_key": row[0],
+            "run_id": str(row[1]),
+            "delivery_status": row[2],
+            "sent_at": row[3],
+            "reporting_period": row[4],
+        }
+        for row in rows
+    ]

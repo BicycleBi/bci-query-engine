@@ -11,7 +11,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from fastapi.responses import HTMLResponse, Response
 
 from .engine import (
@@ -19,6 +19,7 @@ from .engine import (
     execute_artifact_query,
     execute_queued_artifact,
     get_artifact_asset,
+    get_latest_artifact_deliveries,
     get_run,
     create_delivery_batch,
     get_delivery_batch,
@@ -32,6 +33,7 @@ from .engine import (
 from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
+    ArtifactDeliveryHistoryItem,
     ArtifactQueryCachePrewarmRequest,
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
@@ -363,6 +365,23 @@ def get_artifact_execution_status(run_id: str, identity: dict[str, Any] = Depend
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     require_client_access(identity, record["client_key"])
     return ArtifactExecutionResponse(**record)
+
+
+@app.get("/artifact-deliveries/latest", response_model=list[ArtifactDeliveryHistoryItem])
+def get_latest_artifact_delivery_statuses(
+    client_key: str,
+    artifact_key: list[str] = Query(),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return latest accepted delivery times without exposing recipients or message content."""
+    require_client_access(identity, client_key)
+    artifact_keys = list(dict.fromkeys(value.strip() for value in artifact_key if value.strip()))
+    if not artifact_keys or len(artifact_keys) > 100:
+        raise HTTPException(status_code=400, detail="Provide between 1 and 100 artifact keys")
+    return [
+        ArtifactDeliveryHistoryItem(**item)
+        for item in get_latest_artifact_deliveries(client_key, artifact_keys)
+    ]
 
 
 @app.post("/delivery-batches", response_model=DeliveryBatchResponse, status_code=202)

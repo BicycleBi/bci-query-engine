@@ -347,6 +347,63 @@ def test_execution_status_serializes_database_uuid(monkeypatch):
     assert response.json()["status"] == "completed"
 
 
+def test_latest_artifact_deliveries_returns_nonrecipient_history(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    sent_at = datetime(2026, 8, 28, 10, 6, 53, tzinfo=timezone.utc)
+    captured = {}
+
+    def fake_latest(client_key, artifact_keys):
+        captured["client_key"] = client_key
+        captured["artifact_keys"] = artifact_keys
+        return [
+            {
+                "artifact_key": "pnl-owner-single-training-email",
+                "run_id": UUID("44444444-4444-4444-4444-444444444444"),
+                "delivery_status": "provider_accepted",
+                "sent_at": sent_at,
+                "reporting_period": None,
+            }
+        ]
+
+    monkeypatch.setattr(main, "get_latest_artifact_deliveries", fake_latest)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifact-deliveries/latest",
+        params=[
+            ("client_key", "srp"),
+            ("artifact_key", "pnl-owner-single-training-email"),
+        ],
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "client_key": "srp",
+        "artifact_keys": ["pnl-owner-single-training-email"],
+    }
+    assert response.json() == [
+        {
+            "artifact_key": "pnl-owner-single-training-email",
+            "run_id": "44444444-4444-4444-4444-444444444444",
+            "delivery_status": "provider_accepted",
+            "sent_at": "2026-08-28T10:06:53Z",
+            "reporting_period": None,
+        }
+    ]
+
+
 def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)
