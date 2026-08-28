@@ -347,6 +347,48 @@ def test_execution_status_serializes_database_uuid(monkeypatch):
     assert response.json()["status"] == "completed"
 
 
+def test_execution_delivery_reconcile_returns_exchange_status(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    run_id = "33333333-3333-3333-3333-333333333333"
+    started_at = datetime.now(tz=timezone.utc)
+    record = {
+        "run_id": run_id,
+        "client_key": "srp",
+        "artifact_key": "pnl-owner-single-training-email",
+        "status": "completed",
+        "started_at": started_at,
+        "completed_at": started_at,
+        "delivery_status": "provider_accepted",
+        "outputs": [],
+    }
+    monkeypatch.setattr(main, "get_run", lambda requested_run_id: record)
+    monkeypatch.setattr(
+        main,
+        "reconcile_artifact_delivery",
+        lambda requested_run_id: {**record, "delivery_status": "delivered"},
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        f"/artifact-executions/{run_id}/reconcile",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "delivered"
+
+
 def test_latest_artifact_deliveries_returns_nonrecipient_history(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

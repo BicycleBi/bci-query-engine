@@ -51,3 +51,74 @@ def test_email_service_accepted_statuses(status: str) -> None:
 @pytest.mark.parametrize("status", ["failed", "status_unknown", "", None])
 def test_email_service_nonaccepted_statuses(status: str | None) -> None:
     assert not engine._email_service_delivery_accepted({"status": status})
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("submitted", "provider_accepted"),
+        ("sent", "sent"),
+        ("delivered", "delivered"),
+    ],
+)
+def test_email_service_status_normalization_preserves_sent_evidence(
+    status: str,
+    expected: str,
+) -> None:
+    assert engine._normalized_email_service_delivery_status({"status": status}) == expected
+
+
+def test_reconcile_artifact_delivery_records_exchange_delivery(monkeypatch) -> None:
+    original = {
+        "run_id": "11111111-1111-1111-1111-111111111111",
+        "client_key": "srp",
+        "artifact_key": "pnl-owner-single-training-email",
+        "status": "completed",
+        "delivery_id": "22222222-2222-2222-2222-222222222222",
+        "delivery_status": "provider_accepted",
+    }
+    delivered = {**original, "delivery_status": "delivered"}
+    records = iter([original, delivered])
+    monkeypatch.setattr(engine, "get_run", lambda run_id: next(records))
+
+    from app import mailer
+
+    monkeypatch.setattr(
+        mailer,
+        "reconcile_delivery_trace",
+        lambda delivery_id: {
+            "reconciliation_status": "matched",
+            "trace_delivery_status": "delivered",
+        },
+    )
+
+    class FakeConnection:
+        def __init__(self):
+            self.calls = []
+            self.commits = 0
+
+        def execute(self, query, params):
+            self.calls.append((query, params))
+            return self
+
+        def commit(self):
+            self.commits += 1
+
+    class FakeContext:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    connection = FakeConnection()
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: FakeContext(connection))
+
+    result = engine.reconcile_artifact_delivery(original["run_id"])
+
+    assert result["delivery_status"] == "delivered"
+    assert any(params and params[0] == "delivered" for _, params in connection.calls)
+    assert connection.commits == 1

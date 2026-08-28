@@ -21,6 +21,7 @@ from .engine import (
     get_artifact_asset,
     get_latest_artifact_deliveries,
     get_run,
+    reconcile_artifact_delivery,
     create_delivery_batch,
     get_delivery_batch,
     retry_delivery_batch_item,
@@ -365,6 +366,22 @@ def get_artifact_execution_status(run_id: str, identity: dict[str, Any] = Depend
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     require_client_access(identity, record["client_key"])
     return ArtifactExecutionResponse(**record)
+
+
+@app.post("/artifact-executions/{run_id}/reconcile", response_model=ArtifactExecutionResponse)
+def reconcile_artifact_execution_delivery(
+    run_id: str,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Refresh one email execution from bounded Exchange delivery evidence."""
+    record = get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Artifact execution not found")
+    require_client_access(identity, record["client_key"])
+    reconciled = reconcile_artifact_delivery(run_id)
+    if reconciled is None:
+        raise HTTPException(status_code=404, detail="Artifact execution not found")
+    return ArtifactExecutionResponse(**reconciled)
 
 
 @app.get("/artifact-deliveries/latest", response_model=list[ArtifactDeliveryHistoryItem])

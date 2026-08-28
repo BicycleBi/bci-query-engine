@@ -75,6 +75,22 @@ def get_delivery(delivery_id: str) -> dict:
     return response.json()
 
 
+def reconcile_delivery_trace(delivery_id: str) -> dict:
+    """Run one bounded Exchange trace check without exposing message content or recipients."""
+    url = os.environ.get("EMAIL_SERVICE_URL", "http://email-service:8200")
+    service_token = os.environ.get("SERVICE_TOKEN", "")
+    if not service_token:
+        raise ValueError("SERVICE_TOKEN is required for email delivery")
+    response = requests.post(
+        f"{url}/deliveries/{delivery_id}/trace",
+        json={"max_attempts": 1, "poll_interval_seconds": 0},
+        headers={"Authorization": f"Bearer {service_token}"},
+        timeout=min(_email_service_timeout_seconds(), 45),
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def _attachment_payload(attachment: dict) -> dict:
     path = Path(attachment["storage_path"])
     return {

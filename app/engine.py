@@ -333,6 +333,11 @@ def _email_service_delivery_accepted(delivery: dict[str, Any]) -> bool:
     return status in {"sent", "submitted"}
 
 
+def _normalized_email_service_delivery_status(delivery: dict[str, Any]) -> str:
+    status = str(delivery.get("status") or "status_unknown").strip().lower()
+    return "provider_accepted" if status == "submitted" else status
+
+
 def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     row = meta.execute(
         """
@@ -1048,6 +1053,7 @@ def execute_artifact(
                     attachments=outputs,
                 )
                 delivery_accepted = _email_service_delivery_accepted(delivery)
+                normalized_delivery_status = _normalized_email_service_delivery_status(delivery)
                 meta.execute(
                     """
                     UPDATE log.artifact_runs
@@ -1060,7 +1066,7 @@ def execute_artifact(
                     """,
                     (
                         delivery.get("delivery_id"),
-                        "provider_accepted" if delivery_accepted else delivery.get("status"),
+                        normalized_delivery_status,
                         delivery.get("provider"),
                         delivery.get("provider_message_id"),
                         delivery.get("status_code"),
@@ -1118,7 +1124,11 @@ def execute_artifact(
                 )
             _insert_artifact_outputs(meta, outputs)
             if precreated_run:
-                _update_delivery_batch_item(meta, run_id, "provider_accepted" if send_email else "completed")
+                _update_delivery_batch_item(
+                    meta,
+                    run_id,
+                    normalized_delivery_status if send_email else "completed",
+                )
             meta.commit()
 
             return {
@@ -1204,7 +1214,7 @@ def _update_delivery_batch_item(meta, run_id: str, status: str, error_message: O
         UPDATE log.artifact_delivery_batch_items
         SET status = %s,
             error_message = %s,
-            completed_at = CASE WHEN %s IN ('provider_accepted', 'completed', 'failed') THEN NOW() ELSE NULL END,
+            completed_at = CASE WHEN %s IN ('provider_accepted', 'sent', 'delivered', 'completed', 'failed') THEN NOW() ELSE NULL END,
             updated_at = NOW()
         WHERE run_id = %s::uuid
         """,
@@ -1229,7 +1239,7 @@ def _update_delivery_batch_item(meta, run_id: str, status: str, error_message: O
                 count(*) FILTER (WHERE status IN ('queued', 'preparing', 'sending')) AS active,
                 count(*) FILTER (WHERE status = 'failed') AS failed,
                 count(*) FILTER (WHERE status = 'status_unknown') AS unknown,
-                count(*) FILTER (WHERE status = 'delivered') AS delivered
+                count(*) FILTER (WHERE status IN ('sent', 'delivered')) AS delivered
             FROM latest
         )
         UPDATE log.artifact_delivery_batches batch
@@ -1563,7 +1573,7 @@ def get_delivery_batch(batch_id: str) -> Optional[dict[str, Any]]:
     elif "failed" in statuses:
         status = "failed" if statuses == {"failed"} else "partially_failed"
         completed_at = batch[6] or _now()
-    elif statuses == {"delivered"}:
+    elif statuses and statuses.issubset({"sent", "delivered"}):
         status = "delivered"
         completed_at = batch[6] or _now()
     else:
@@ -1674,7 +1684,7 @@ def reconcile_delivery_batch(batch_id: str) -> dict[str, Any]:
             except Exception:
                 continue
             provider_status = str(delivery.get("status") or "status_unknown")
-            normalized = "provider_accepted" if provider_status == "sent" else provider_status
+            normalized = "provider_accepted" if provider_status == "submitted" else provider_status
             meta.execute(
                 """
                 UPDATE log.artifact_runs
@@ -1801,8 +1811,58 @@ def get_run(run_id: str) -> Optional[dict]:
     return result
 
 
+def reconcile_artifact_delivery(run_id: str) -> Optional[dict]:
+    """Refresh one run from bounded Exchange trace evidence without exposing correlation data."""
+    from . import mailer as _mailer
+
+    record = get_run(run_id)
+    if record is None:
+        return None
+    delivery_id = record.get("delivery_id")
+    delivery_status = str(record.get("delivery_status") or "")
+    if not delivery_id or delivery_status in {"delivered", "sent", "failed", "suppressed"}:
+        return record
+
+    try:
+        trace = _mailer.reconcile_delivery_trace(str(delivery_id))
+    except Exception:
+        return record
+
+    reconciliation_status = str(trace.get("reconciliation_status") or "")
+    trace_status = str(trace.get("trace_delivery_status") or "")
+    if reconciliation_status != "matched":
+        return record
+
+    if trace_status == "delivered":
+        normalized = "delivered"
+        run_status = record.get("status") or "completed"
+        error_message = None
+    elif trace_status in {"failed", "quarantined", "filteredAsSpam"}:
+        normalized = "failed"
+        run_status = "failed"
+        error_message = "Email delivery was not completed. Use the operator audit log for details."
+    else:
+        return record
+
+    with get_metadata_conn() as meta:
+        meta.execute(
+            """
+            UPDATE log.artifact_runs
+            SET delivery_status = %s,
+                status = %s,
+                completed_at = NOW(),
+                error_message = %s
+            WHERE run_id = %s::uuid
+            """,
+            (normalized, run_status, error_message, run_id),
+        )
+        _update_delivery_batch_item(meta, run_id, normalized, error_message)
+        meta.commit()
+    return get_run(run_id)
+
+
 def get_latest_artifact_deliveries(client_key: str, artifact_keys: list[str]) -> list[dict[str, Any]]:
-    """Return the latest provider-accepted delivery metadata without recipient data."""
+    """Return the latest accepted or Exchange-confirmed delivery metadata without recipients."""
     with get_metadata_conn() as meta:
         rows = meta.execute(
             """
@@ -1810,7 +1870,7 @@ def get_latest_artifact_deliveries(client_key: str, artifact_keys: list[str]) ->
                 run.artifact_key,
                 run.run_id,
                 CASE
-                    WHEN run.delivery_status IN ('sent', 'submitted') THEN 'provider_accepted'
+                    WHEN run.delivery_status = 'submitted' THEN 'provider_accepted'
                     ELSE COALESCE(run.delivery_status, run.status)
                 END AS delivery_status,
                 COALESCE(run.completed_at, run.started_at) AS sent_at,
