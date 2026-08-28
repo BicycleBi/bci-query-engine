@@ -405,6 +405,8 @@ def test_latest_artifact_deliveries_returns_nonrecipient_history(monkeypatch):
                 "delivery_status": "provider_accepted",
                 "sent_at": sent_at,
                 "reporting_period": None,
+                "batch_id": UUID("55555555-5555-5555-5555-555555555555"),
+                "item_id": UUID("66666666-6666-6666-6666-666666666666"),
             }
         ]
 
@@ -442,6 +444,8 @@ def test_latest_artifact_deliveries_returns_nonrecipient_history(monkeypatch):
             "delivery_status": "provider_accepted",
             "sent_at": "2026-08-28T10:06:53Z",
             "reporting_period": None,
+            "batch_id": "55555555-5555-5555-5555-555555555555",
+            "item_id": "66666666-6666-6666-6666-666666666666",
         }
     ]
 

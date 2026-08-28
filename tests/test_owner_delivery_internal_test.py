@@ -57,7 +57,7 @@ def test_email_service_nonaccepted_statuses(status: str | None) -> None:
     ("status", "expected"),
     [
         ("submitted", "provider_accepted"),
-        ("sent", "sent"),
+        ("sent", "provider_accepted"),
         ("delivered", "delivered"),
     ],
 )
@@ -122,3 +122,41 @@ def test_reconcile_artifact_delivery_records_exchange_delivery(monkeypatch) -> N
     assert result["delivery_status"] == "delivered"
     assert any(params and params[0] == "delivered" for _, params in connection.calls)
     assert connection.commits == 1
+
+
+def test_reconcile_delivery_batch_runs_one_bounded_trace_per_outstanding_item(monkeypatch) -> None:
+    run_ids = [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ]
+
+    class FakeResult:
+        def fetchall(self):
+            return [(run_id,) for run_id in run_ids]
+
+    class FakeConnection:
+        def execute(self, query, params):
+            assert "artifact_delivery_batch_items" in query
+            return FakeResult()
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    reconciled = []
+    monkeypatch.setattr(engine, "get_metadata_conn", FakeContext)
+    monkeypatch.setattr(
+        engine,
+        "reconcile_artifact_delivery",
+        lambda run_id: reconciled.append(run_id),
+    )
+    expected = {"batch_id": "33333333-3333-3333-3333-333333333333", "items": []}
+    monkeypatch.setattr(engine, "get_delivery_batch", lambda batch_id: expected)
+
+    result = engine.reconcile_delivery_batch(expected["batch_id"])
+
+    assert result == expected
+    assert reconciled == run_ids

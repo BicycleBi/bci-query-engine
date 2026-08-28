@@ -165,13 +165,15 @@ class ArtifactDeliveryHistoryItem(BaseModel):
     artifact_key: str
     run_id: str
     delivery_status: str
-    sent_at: datetime
+    sent_at: Optional[datetime] = None
     reporting_period: Optional[str] = None
+    batch_id: Optional[str] = None
+    item_id: Optional[str] = None
 
-    @field_validator("run_id", mode="before")
+    @field_validator("run_id", "batch_id", "item_id", mode="before")
     @classmethod
-    def normalize_run_id(cls, value: Any) -> str:
-        return str(value)
+    def normalize_history_identifiers(cls, value: Any) -> Optional[str]:
+        return None if value is None else str(value)
 
 
 class RunResponse(ArtifactExecutionResponse):
@@ -215,6 +217,7 @@ class DeliveryBatchItemResponse(BaseModel):
     delivery_id: Optional[str] = None
     delivery_status: Optional[str] = None
     error_message: Optional[str] = None
+    confirmed_at: Optional[datetime] = None
 
     @field_validator("item_id", "run_id", "delivery_id", mode="before")
     @classmethod

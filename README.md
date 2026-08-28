@@ -32,13 +32,22 @@ normal Postgres-backed execution path.
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
+| `POST` | `/artifact-executions/{run_id}/reconcile` | Run one bounded Exchange trace attempt |
+| `GET` | `/artifact-deliveries/latest` | Restore non-recipient delivery status and batch tracking identifiers |
 | `POST` | `/delivery-batches` | Create one governed multi-owner delivery batch |
 | `GET` | `/delivery-batches/{batch_id}` | Get non-recipient batch and item status |
-| `POST` | `/delivery-batches/{batch_id}/reconcile` | Refresh Email Service delivery evidence |
+| `POST` | `/delivery-batches/{batch_id}/reconcile` | Run one bounded Exchange trace attempt per outstanding item |
 | `POST` | `/delivery-batches/{batch_id}/items/{item_id}/retry` | Retry one definitively failed item with a reason |
 | `GET`  | `/health` | Health check |
 
 Legacy compatibility routes still exist for `/run/{client_key}/{artifact_key}` and `/run/{run_id}`, but they are no longer the primary API surface.
+
+Graph acceptance is recorded as `provider_accepted`; it is never presented as
+proof of delivery. A reconciliation route advances a delivery to `delivered`
+only after the Email Service returns a matched Exchange trace. Batch items
+include `confirmed_at`, and latest-delivery history includes `batch_id` and
+`item_id`, allowing dashboards to resume 15-second background tracking after a
+page refresh without exposing recipients or message content.
 
 ### `POST /artifacts`
 
