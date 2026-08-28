@@ -327,6 +327,12 @@ def _internal_test_delivery_envelope(
     return [(email, "to") for email in internal_recipients], subject, html
 
 
+def _email_service_delivery_accepted(delivery: dict[str, Any]) -> bool:
+    """Recognize accepted delivery outcomes across Email Service versions."""
+    status = str(delivery.get("status") or "").strip().lower()
+    return status in {"sent", "submitted"}
+
+
 def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     row = meta.execute(
         """
@@ -1041,6 +1047,7 @@ def execute_artifact(
                     request_id=run_id,
                     attachments=outputs,
                 )
+                delivery_accepted = _email_service_delivery_accepted(delivery)
                 meta.execute(
                     """
                     UPDATE log.artifact_runs
@@ -1053,7 +1060,7 @@ def execute_artifact(
                     """,
                     (
                         delivery.get("delivery_id"),
-                        "provider_accepted" if delivery.get("status") == "sent" else delivery.get("status"),
+                        "provider_accepted" if delivery_accepted else delivery.get("status"),
                         delivery.get("provider"),
                         delivery.get("provider_message_id"),
                         delivery.get("status_code"),
@@ -1061,7 +1068,7 @@ def execute_artifact(
                     ),
                 )
                 meta.commit()
-                if delivery.get("status") != "sent":
+                if not delivery_accepted:
                     raise RuntimeError(
                         delivery.get("error_message")
                         or "Email Service did not accept the delivery"

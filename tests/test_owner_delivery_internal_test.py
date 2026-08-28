@@ -41,3 +41,13 @@ def test_internal_test_requires_a_recipient_allowlist(monkeypatch) -> None:
         match="Internal test recipient allowlist is not configured",
     ):
         engine._internal_test_delivery_envelope("Subject", "<body>Message</body>")
+
+
+@pytest.mark.parametrize("status", ["sent", "submitted", " Submitted "])
+def test_email_service_accepted_statuses(status: str) -> None:
+    assert engine._email_service_delivery_accepted({"status": status})
+
+
+@pytest.mark.parametrize("status", ["failed", "status_unknown", "", None])
+def test_email_service_nonaccepted_statuses(status: str | None) -> None:
+    assert not engine._email_service_delivery_accepted({"status": status})
