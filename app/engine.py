@@ -5,7 +5,7 @@ Flow:
   1. Read app.artifacts + app.templates from metadata DB
   2. Execute artifact.view_name against data DB
   3. Render Jinja2 template
-  4. If delivery_mode in (email, both): read recipients, POST to email service
+  4. If delivery_mode in (email, both): resolve governed recipients, POST to email service
   5. Write log.artifact_runs
   6. Return run_id + status
 """
@@ -594,6 +594,68 @@ def _safe_view_name(view_name: str) -> str:
     return view_name
 
 
+def _artifact_recipient_source_view(meta, artifact_id: str) -> str | None:
+    registry = meta.execute(
+        "SELECT to_regclass('app.artifact_recipient_sources')"
+    ).fetchone()
+    if not registry or registry[0] is None:
+        return None
+
+    row = meta.execute(
+        """
+        SELECT source_view_name
+        FROM app.artifact_recipient_sources
+        WHERE artifact_id = %s::uuid
+          AND active
+        """,
+        (artifact_id,),
+    ).fetchone()
+    return _safe_view_name(str(row[0])) if row else None
+
+
+def _delivery_recipients(
+    meta,
+    artifact_id: str,
+    artifact_key: str,
+) -> list[tuple[str, str]]:
+    source_view = _artifact_recipient_source_view(meta, artifact_id)
+    if source_view is None:
+        return meta.execute(
+            """
+            SELECT email, delivery_type
+            FROM app.artifact_recipients
+            WHERE artifact_id = %s::uuid AND active
+            ORDER BY delivery_type, email
+            """,
+            (artifact_id,),
+        ).fetchall()
+
+    with get_data_conn() as data:
+        rows = data.execute(
+            f"""
+            SELECT recipient_email, recipient_type
+            FROM {source_view}
+            WHERE artifact_key = %s
+            ORDER BY recipient_type, recipient_email
+            """,  # noqa: S608 - source_view is validated by _safe_view_name
+            (artifact_key,),
+        ).fetchall()
+
+    if not rows:
+        raise ValueError(
+            "No eligible recipient is available from the configured server-side source"
+        )
+
+    recipients: list[tuple[str, str]] = []
+    for recipient_email, recipient_type in rows:
+        normalized_email = str(recipient_email or "").strip()
+        normalized_type = str(recipient_type or "").strip().lower()
+        if not normalized_email or normalized_type not in {"to", "cc", "bcc"}:
+            raise ValueError("Configured server-side recipient source returned an invalid row")
+        recipients.append((normalized_email, normalized_type))
+    return recipients
+
+
 def _query_function_name(view_name: str) -> str:
     """Return the database-owned query contract associated with a render view."""
     return _safe_view_name(f"{_safe_view_name(view_name)}_query")
@@ -1017,15 +1079,11 @@ def execute_artifact(
                         html,
                     )
                 else:
-                    recipient_rows = meta.execute(
-                        """
-                        SELECT email, delivery_type
-                        FROM app.artifact_recipients
-                        WHERE artifact_id = %s AND active
-                        ORDER BY delivery_type, email
-                        """,
-                        (artifact_id,),
-                    ).fetchall()
+                    recipient_rows = _delivery_recipients(
+                        meta,
+                        artifact_id,
+                        artifact_key,
+                    )
                 to  = [r[0] for r in recipient_rows if r[1] == "to"]
                 cc  = [r[0] for r in recipient_rows if r[1] == "cc"]
                 bcc = [r[0] for r in recipient_rows if r[1] == "bcc"]
