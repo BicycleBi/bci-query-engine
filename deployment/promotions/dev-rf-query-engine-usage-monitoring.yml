@@ -1,0 +1,20 @@
+schema_version: 1
+client: rf
+environment: dev
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/rfdev
+  compose_project: rfdev
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: RF Dev privacy-preserving artifact usage event capture and aggregate usage API
+
+validate:
+  - type: compose-config
+  - type: service-health

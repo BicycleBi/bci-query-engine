@@ -11,6 +11,7 @@ Flow:
 """
 import csv
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
@@ -707,6 +708,99 @@ def _subject_hash(authenticated_subject: Optional[str]) -> Optional[str]:
     return hashlib.sha256(authenticated_subject.encode("utf-8")).hexdigest()
 
 
+def _usage_subject_hash(authenticated_subject: Optional[str]) -> Optional[str]:
+    if not authenticated_subject:
+        return None
+    secret = (
+        os.getenv("ARTIFACT_USAGE_HASH_SECRET")
+        or os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET")
+        or os.getenv("SECURITY_TOKEN_SECRET")
+    )
+    if not secret:
+        return None
+    return hmac.new(
+        secret.encode("utf-8"),
+        authenticated_subject.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _record_artifact_usage_event(
+    *,
+    run_id: str,
+    artifact_id: Optional[str],
+    client_key: str,
+    artifact_key: str,
+    event_type: str,
+    authenticated_subject: Optional[str],
+    started_at: datetime,
+    completed_at: datetime,
+    status: str,
+) -> None:
+    """Write privacy-preserving usage evidence when the optional schema exists."""
+    try:
+        with get_metadata_conn() as usage_meta:
+            relation = usage_meta.execute(
+                "SELECT to_regclass('log.artifact_usage_events')"
+            ).fetchone()
+            if not relation or relation[0] is None:
+                return
+            duration_ms = max(0, int((completed_at - started_at).total_seconds() * 1000))
+            usage_meta.execute(
+                """
+                INSERT INTO log.artifact_usage_events
+                    (event_id, run_id, artifact_id, client_key, artifact_key,
+                     event_type, authenticated_subject_hash, started_at, completed_at,
+                     duration_ms, status)
+                VALUES
+                    (gen_random_uuid(), %s::uuid, %s::uuid, %s, %s,
+                     %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id) DO UPDATE
+                SET completed_at = EXCLUDED.completed_at,
+                    duration_ms = EXCLUDED.duration_ms,
+                    status = EXCLUDED.status
+                """,
+                (
+                    run_id, artifact_id, client_key, artifact_key,
+                    event_type, _usage_subject_hash(authenticated_subject), started_at,
+                    completed_at, duration_ms, status,
+                ),
+            )
+            usage_meta.commit()
+    except Exception:
+        # Observability must never interrupt artifact rendering or delivery.
+        return
+
+
+def get_artifact_usage_summary(
+    client_key: str,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+) -> dict[str, Any]:
+    """Return aggregate-only artifact usage for one authorized client scope."""
+    if period_end <= period_start:
+        raise ValueError("Usage period_end must be after period_start")
+    if period_end - period_start > timedelta(days=366):
+        raise ValueError("Usage period cannot exceed 366 days")
+    with get_metadata_conn() as meta:
+        function_exists = meta.execute(
+            "SELECT to_regprocedure('log.artifact_usage_summary(text,timestamptz,timestamptz)')"
+        ).fetchone()
+        if not function_exists or function_exists[0] is None:
+            raise ValueError("Artifact usage monitoring is not configured")
+        row = meta.execute(
+            "SELECT log.artifact_usage_summary(%s, %s, %s)",
+            (client_key, period_start, period_end),
+        ).fetchone()
+    result = row[0] if row else None
+    if isinstance(result, str):
+        result = json.loads(result)
+    if not isinstance(result, dict):
+        raise ValueError("Artifact usage monitoring returned an invalid contract")
+    return result
+
+
 def _authorization_context_hash(authorized_roles: Optional[list[str]]) -> Optional[str]:
     if not authorized_roles:
         return None
@@ -1277,6 +1371,17 @@ def execute_artifact(
                 )
             _insert_artifact_outputs(meta, outputs)
             meta.commit()
+            _record_artifact_usage_event(
+                run_id=run_id,
+                artifact_id=artifact_id,
+                client_key=client_key,
+                artifact_key=artifact_key,
+                event_type=behavior,
+                authenticated_subject=authenticated_subject,
+                started_at=started_at,
+                completed_at=completed_at,
+                status="completed",
+            )
 
             return {
                 "run_id": run_id,
@@ -1338,6 +1443,17 @@ def execute_artifact(
                             ).fetchone()[0]
                         )
                     meta.commit()
+                    _record_artifact_usage_event(
+                        run_id=run_id,
+                        artifact_id=aid,
+                        client_key=client_key,
+                        artifact_key=artifact_key,
+                        event_type=behavior,
+                        authenticated_subject=authenticated_subject,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        status="failed",
+                    )
         except Exception:
             pass
 

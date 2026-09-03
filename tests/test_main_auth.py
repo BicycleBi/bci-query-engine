@@ -177,6 +177,72 @@ def test_distribution_group_route_returns_approved_group_labels(monkeypatch):
     }
 
 
+def test_usage_route_returns_only_client_scoped_aggregates(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    period_start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    period_end = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    captured = {}
+
+    def fake_usage_summary(client_key, *, period_start, period_end):
+        captured.update(
+            client_key=client_key,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        return {
+            "client_key": client_key,
+            "period_start": period_start,
+            "period_end": period_end,
+            "total_events": 9,
+            "page_views": 8,
+            "active_users": 3,
+            "successful_events": 8,
+            "failed_events": 1,
+            "average_response_ms": 125.5,
+            "p95_response_ms": 250.0,
+            "artifacts_used": 2,
+            "by_artifact": [],
+        }
+
+    monkeypatch.setattr(main, "get_artifact_usage_summary", fake_usage_summary)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifact-usage/rf",
+        params={
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+        },
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["active_users"] == 3
+    assert "authenticated_subject_hash" not in response.text
+    assert captured["client_key"] == "rf"
+
+    denied = client.get(
+        "/artifact-usage/srp",
+        params={
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+        },
+        headers=_auth_headers(token),
+    )
+    assert denied.status_code == 403
+
+
 def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

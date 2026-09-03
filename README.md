@@ -31,6 +31,7 @@ normal Postgres-backed execution path.
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/distribution-groups` | List approved active distribution groups without recipient details |
+| `GET`  | `/artifact-usage/{client_key}` | Return aggregate-only artifact usage for a bounded period |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `GET`  | `/health` | Health check |
@@ -92,6 +93,22 @@ Supported behaviors:
 - `deliver` — render and deliver if the artifact metadata allows it
 - `display` — render and log while returning HTML in `preview_html`
 - `dry-run` — render and log without sending
+
+### `GET /artifact-usage/{client_key}`
+
+Returns privacy-preserving usage totals for the authenticated client scope.
+Supply inclusive `period_start` and exclusive `period_end` ISO-8601 query
+parameters. The response includes page views, distinct active-user counts,
+success/failure counts, average and p95 server response duration, artifacts
+used, and the same bounded measures by artifact. It never returns subjects,
+hashes, roles, addresses, filter selections, or report data. Subjects are
+pseudonymized with keyed HMAC-SHA-256 when a runtime security secret is set.
+
+The endpoint is available only after the client metadata database installs the
+optional `log.artifact_usage_events` table and
+`log.artifact_usage_summary(text,timestamptz,timestamptz)` function. Event
+recording safely no-ops before that migration and never interrupts rendering
+or delivery.
 
 Supported optional output formats:
 - `pdf` — render one PDF per data row returned by the artifact view
@@ -187,6 +204,7 @@ curl -X POST http://127.0.0.1:18300/artifact-executions \
 | `SERVICE_TOKEN` | Shared bearer token used for internal calls to bci-email-service |
 | `SECURITY_TOKEN_SECRET` | Shared signing secret for internal BCI bearer tokens accepted on protected query-engine routes |
 | `QUERY_ENGINE_SECURITY_TOKEN_SECRET` | Optional query-engine-specific override for `SECURITY_TOKEN_SECRET` |
+| `ARTIFACT_USAGE_HASH_SECRET` | Optional dedicated HMAC secret for usage pseudonyms; falls back to the configured token-signing secret and records no user pseudonym if neither is configured |
 | `SECURITY_TOKEN_ISSUER` | Expected internal token issuer (default: `bci-security`) |
 | `QUERY_ENGINE_SECURITY_TOKEN_ISSUER` | Optional query-engine-specific override for `SECURITY_TOKEN_ISSUER` |
 | `SECURITY_TOKEN_AUDIENCE` | Expected internal token audience (default: `bci-client`) |

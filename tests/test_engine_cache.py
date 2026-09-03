@@ -38,6 +38,8 @@ class FakeMeta:
         self.commits = 0
 
     def execute(self, sql, params=None):
+        if "to_regclass('log.artifact_usage_events')" in sql:
+            return FakeResult(row=(None,))
         if "FROM app.artifacts a" in sql:
             return FakeResult(
                 row=(

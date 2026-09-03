@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header
@@ -18,6 +19,7 @@ from .engine import (
     execute_queued_artifact,
     get_artifact_asset,
     get_artifact_distribution_groups,
+    get_artifact_usage_summary,
     get_run,
     prewarm_artifact_query_cache,
     queue_artifact_execution,
@@ -27,6 +29,7 @@ from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
     ArtifactDistributionGroupsResponse,
+    ArtifactUsageSummary,
     ArtifactQueryCachePrewarmRequest,
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
@@ -216,6 +219,30 @@ def list_artifact_distribution_groups(
         artifact_key=artifact_key,
         groups=groups,
     )
+
+
+@app.get(
+    "/artifact-usage/{client_key}",
+    response_model=ArtifactUsageSummary,
+)
+def artifact_usage_summary(
+    client_key: str,
+    period_start: datetime,
+    period_end: datetime,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return client-scoped, aggregate-only artifact usage evidence."""
+    require_client_access(identity, client_key)
+    authenticated_subject(identity)
+    try:
+        result = get_artifact_usage_summary(
+            client_key,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ArtifactUsageSummary(**result)
 
 
 @app.post(

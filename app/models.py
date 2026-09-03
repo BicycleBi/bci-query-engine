@@ -128,6 +128,21 @@ class ArtifactDistributionGroupsResponse(BaseModel):
     groups: list[DistributionGroupSummary] = Field(default_factory=list)
 
 
+class ArtifactUsageSummary(BaseModel):
+    client_key: str
+    period_start: datetime
+    period_end: datetime
+    total_events: int
+    page_views: int
+    active_users: int
+    successful_events: int
+    failed_events: int
+    average_response_ms: Optional[float] = None
+    p95_response_ms: Optional[float] = None
+    artifacts_used: int
+    by_artifact: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ArtifactExecutionRequest(BaseModel):
     client_key: str
     artifact_key: str
