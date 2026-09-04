@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
 MONITORING = (ROOT / "app" / "monitoring.py").read_text(encoding="utf-8")
 MODELS = (ROOT / "app" / "models.py").read_text(encoding="utf-8")
+SCHEMA = (ROOT / "docs" / "usage-monitoring-schema.sql").read_text(encoding="utf-8")
 
 
 class UsageMonitoringContractTests(unittest.TestCase):
@@ -25,6 +26,22 @@ class UsageMonitoringContractTests(unittest.TestCase):
         self.assertIn("dashboard_open|filter_apply|refresh|navigation|export_request|custom_action", MODELS)
         self.assertNotIn("metadata: dict", MODELS)
         self.assertIn('"/usage/interactions/{client_key}/{artifact_key}"', MAIN)
+
+    def test_query_engine_is_the_single_ingestion_and_database_boundary(self) -> None:
+        self.assertIn('"/internal/usage/events"', MAIN)
+        self.assertIn("class UsageEventIngestRequest", MODELS)
+        self.assertIn("def record_ingested_event", MONITORING)
+        self.assertIn("def record_gateway_span", MONITORING)
+        self.assertIn("CREATE TABLE IF NOT EXISTS monitoring.events", SCHEMA)
+        self.assertIn("gateway_duration_ms", SCHEMA)
+
+    def test_schema_and_writers_exclude_sensitive_payload_content(self) -> None:
+        combined = (SCHEMA + MONITORING).lower()
+        for forbidden in (
+            "password text", "token text", "cookie text", "authorization_code",
+            "request_body", "response_body", "rendered_html",
+        ):
+            self.assertNotIn(forbidden, combined)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,16 @@
 
 Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Intelligence.
 
+Query Engine is also the single persistence boundary for the shared Usage
+Monitoring System. Security submits bounded login and authorization events to
+`POST /internal/usage/events` using the existing service token. Nginx sends its
+metadata-only timing log to the private UDP listener on port `8514`. Query
+Engine validates both contracts before writing `monitoring.events` or
+`monitoring.request_spans`; bodies, filters, credentials, cookies, tokens,
+rendered content, and client-data values are not accepted.
+
+The canonical schema is [docs/usage-monitoring-schema.sql](docs/usage-monitoring-schema.sql).
+
 ## What it does
 
 1. Reads artifact config from the `metadata` Postgres database (`app.*` tables)

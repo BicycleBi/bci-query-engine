@@ -8,6 +8,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -38,10 +39,27 @@ from .models import (
     RunResponse,
     UsageInteractionRequest,
     UsageInteractionResponse,
+    UsageEventIngestRequest,
+    UsageEventIngestResponse,
 )
-from .monitoring import record_interaction_event_async, record_request_span_async
+from .monitoring import (
+    record_ingested_event_async,
+    record_interaction_event_async,
+    record_request_span_async,
+    start_gateway_listener,
+    stop_gateway_listener,
+)
 
-app = FastAPI(title="BCI Query Engine", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    start_gateway_listener()
+    try:
+        yield
+    finally:
+        stop_gateway_listener()
+
+
+app = FastAPI(title="BCI Query Engine", version="0.2.0", lifespan=lifespan)
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))
@@ -194,7 +212,7 @@ async def monitor_request_lifecycle(request: Request, call_next):
             except (TypeError, ValueError):
                 return None
 
-        if request.url.path != "/health":
+        if request.url.path not in {"/health", "/internal/usage/events"}:
             record_request_span_async(
                 request_id=request_id,
                 identity=identity,
@@ -222,6 +240,18 @@ async def monitor_request_lifecycle(request: Request, call_next):
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
+
+
+@app.post(
+    "/internal/usage/events",
+    response_model=UsageEventIngestResponse,
+    status_code=202,
+    dependencies=[Depends(require_service_identity)],
+)
+def ingest_usage_event(event: UsageEventIngestRequest) -> UsageEventIngestResponse:
+    """Accept only bounded metadata from trusted stack services."""
+    record_ingested_event_async(**event.model_dump())
+    return UsageEventIngestResponse()
 
 
 @app.post("/artifacts", response_model=ArtifactWriteResponse, status_code=201)

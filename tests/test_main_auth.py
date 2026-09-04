@@ -133,6 +133,58 @@ def test_interaction_endpoint_accepts_only_metadata(monkeypatch):
     assert captured[0]["event_key"] == "region-selector"
 
 
+def test_internal_usage_ingestion_requires_service_token_and_accepts_bounded_event(monkeypatch):
+    main = _load_main(monkeypatch)
+    captured = []
+    monkeypatch.setattr(main, "record_ingested_event_async", lambda **values: captured.append(values))
+    client = TestClient(main.app)
+    event = {
+        "source_service": "security",
+        "event_type": "login_completed",
+        "event_status": "succeeded",
+        "client_key": "rf",
+        "username": "Jeanre",
+        "request_id": "login-123",
+    }
+
+    assert client.post("/internal/usage/events", json=event).status_code == 401
+    response = client.post(
+        "/internal/usage/events",
+        headers={"Authorization": "Bearer test-service-token"},
+        json=event,
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    assert captured == [event | {
+        "user_id": None,
+        "email": None,
+        "display_name": None,
+        "session_id": None,
+        "artifact_key": None,
+        "run_id": None,
+        "reason_code": None,
+        "duration_ms": None,
+        "http_status": None,
+    }]
+
+
+def test_internal_usage_ingestion_rejects_arbitrary_payload_fields(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    response = client.post(
+        "/internal/usage/events",
+        headers={"Authorization": "Bearer test-service-token"},
+        json={
+            "source_service": "security",
+            "event_type": "login_denied",
+            "event_status": "denied",
+            "password": "must-not-be-accepted",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_protected_routes_require_internal_token(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

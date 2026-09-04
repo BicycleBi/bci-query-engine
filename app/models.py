@@ -212,3 +212,27 @@ class UsageInteractionRequest(BaseModel):
 
 class UsageInteractionResponse(BaseModel):
     status: str = "accepted"
+
+
+class UsageEventIngestRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_service: str = Field(pattern=r"^(security|nginx)$")
+    event_type: str = Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")
+    event_status: str = Field(pattern=r"^(started|completed|succeeded|failed|denied)$")
+    client_key: Optional[str] = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    user_id: Optional[str] = Field(default=None, max_length=255)
+    username: Optional[str] = Field(default=None, max_length=320)
+    email: Optional[str] = Field(default=None, max_length=320)
+    display_name: Optional[str] = Field(default=None, max_length=320)
+    session_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F-]{36}$")
+    request_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,128}$")
+    artifact_key: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    run_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F-]{36}$")
+    reason_code: Optional[str] = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,79}$")
+    duration_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    http_status: Optional[int] = Field(default=None, ge=100, le=599)
+
+
+class UsageEventIngestResponse(BaseModel):
+    status: str = "accepted"
