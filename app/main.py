@@ -7,9 +7,11 @@ import hmac
 import json
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .engine import (
@@ -34,7 +36,10 @@ from .models import (
     HealthResponse,
     RunMode,
     RunResponse,
+    UsageInteractionRequest,
+    UsageInteractionResponse,
 )
+from .monitoring import record_interaction_event_async, record_request_span_async
 
 app = FastAPI(title="BCI Query Engine", version="0.1.0")
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
@@ -82,11 +87,16 @@ def _verify_internal_token(token: str) -> dict[str, Any]:
     return payload
 
 
-def require_internal_identity(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def require_internal_identity(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing internal authorization token")
     token = authorization.removeprefix("Bearer ").strip()
-    return _verify_internal_token(token)
+    identity = _verify_internal_token(token)
+    request.state.monitoring_identity = identity
+    return identity
 
 
 def require_service_identity(authorization: Optional[str] = Header(default=None)) -> None:
@@ -131,6 +141,84 @@ def authorized_roles(
     return normalized_roles
 
 
+def _safe_request_id(value: Optional[str]) -> str:
+    candidate = (value or "").strip()
+    if candidate and len(candidate) <= 128 and all(
+        character.isalnum() or character in "-_." for character in candidate
+    ):
+        return candidate
+    return uuid.uuid4().hex
+
+
+def _request_scope(path: str) -> tuple[Optional[str], Optional[str]]:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 3 and parts[0] == "artifacts":
+        return parts[1], parts[2]
+    if len(parts) >= 3 and parts[0] == "run":
+        return parts[1], parts[2]
+    if len(parts) >= 2 and parts[0] == "artifact-executions":
+        return None, None
+    if len(parts) >= 3 and parts[0] == "usage" and parts[1] == "interactions":
+        return parts[2], parts[3] if len(parts) >= 4 else None
+    return None, None
+
+
+@app.middleware("http")
+async def monitor_request_lifecycle(request: Request, call_next):
+    started_at = datetime.now(tz=timezone.utc)
+    started_perf = time.perf_counter()
+    request_id = _safe_request_id(request.headers.get("X-Request-ID"))
+    request.state.monitoring_request_id = request_id
+    response_status = 500
+    response = None
+    try:
+        response = await call_next(request)
+        response_status = response.status_code
+        return response
+    finally:
+        completed_at = datetime.now(tz=timezone.utc)
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", None) or "unmatched"
+        client_key, artifact_key = _request_scope(request.url.path)
+        client_key = getattr(request.state, "monitoring_client_key", None) or client_key
+        artifact_key = getattr(request.state, "monitoring_artifact_key", None) or artifact_key
+        identity = getattr(request.state, "monitoring_identity", None)
+        if identity and not client_key:
+            client_key = str(identity.get("client_key") or "").strip() or None
+        headers = response.headers if response is not None else {}
+
+        def _numeric_header(name: str) -> Optional[float]:
+            try:
+                value = headers.get(name)
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        if request.url.path != "/health":
+            record_request_span_async(
+                request_id=request_id,
+                identity=identity,
+                client_key=client_key,
+                method=request.method.upper(),
+                route_template=route_template,
+                artifact_key=artifact_key,
+                run_id=getattr(request.state, "monitoring_run_id", None),
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=max(0, int((time.perf_counter() - started_perf) * 1000)),
+                response_status=response_status,
+                reason_code=(
+                    "authentication_denied" if response_status in {401, 403} else
+                    "request_failed" if response_status >= 400 else None
+                ),
+                database_ms=_numeric_header("X-BCI-Data-Query-Ms"),
+                render_ms=_numeric_header("X-BCI-Render-Ms"),
+                cache_status=headers.get("X-BCI-Cache"),
+            )
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -148,6 +236,7 @@ def save_artifact(definition: ArtifactWriteRequest, identity: dict[str, Any] = D
 def get_artifact_html(
     client_key: str,
     artifact_key: str,
+    request: Request,
     refresh: bool = False,
     x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
@@ -162,6 +251,7 @@ def get_artifact_html(
         authenticated_subject=authenticated_subject(identity),
         authorized_roles=authorized_roles(identity, x_identity_roles),
     )
+    request.state.monitoring_run_id = result.get("run_id")
 
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("error_message"))
@@ -172,6 +262,36 @@ def get_artifact_html(
 
     headers = _cache_headers(result.get("cache") or {})
     return HTMLResponse(content=html, headers=headers)
+
+
+@app.post(
+    "/usage/interactions/{client_key}/{artifact_key}",
+    response_model=UsageInteractionResponse,
+    status_code=202,
+)
+def record_usage_interaction(
+    client_key: str,
+    artifact_key: str,
+    interaction: UsageInteractionRequest,
+    request: Request,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Accept a payload-free, allowlisted dashboard interaction event."""
+    require_client_access(identity, client_key)
+    if interaction.client_key != client_key or interaction.artifact_key != artifact_key:
+        raise HTTPException(status_code=400, detail="Interaction route and body do not match")
+    record_interaction_event_async(
+        identity=identity,
+        client_key=client_key,
+        artifact_key=artifact_key,
+        event_type=interaction.interaction_type,
+        event_key=interaction.interaction_key,
+        event_status=interaction.status,
+        request_id=getattr(request.state, "monitoring_request_id", None),
+        duration_ms=interaction.duration_ms,
+        reason_code=interaction.reason_code,
+    )
+    return UsageInteractionResponse()
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
@@ -294,29 +414,33 @@ def _cache_headers(cache: dict) -> dict[str, str]:
 
 @app.post("/artifact-executions", response_model=ArtifactExecutionResponse, status_code=202)
 def create_artifact_execution(
-    request: ArtifactExecutionRequest,
+    execution: ArtifactExecutionRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Create an execution request for an artifact."""
-    require_client_access(identity, request.client_key)
+    require_client_access(identity, execution.client_key)
+    http_request.state.monitoring_client_key = execution.client_key
+    http_request.state.monitoring_artifact_key = execution.artifact_key
     subject = authenticated_subject(identity)
     roles = authorized_roles(identity, x_identity_roles)
 
-    if request.behavior.value == "deliver":
+    if execution.behavior.value == "deliver":
         try:
-            result = queue_artifact_execution(request.client_key, request.artifact_key)
+            result = queue_artifact_execution(execution.client_key, execution.artifact_key)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        http_request.state.monitoring_run_id = result.get("run_id")
         background_tasks.add_task(
             execute_queued_artifact,
-            request.client_key,
-            request.artifact_key,
-            behavior=request.behavior.value,
-            output_formats=[output_format.value for output_format in request.output_formats],
-            execution_query=request.query,
-            distribution_group_keys=request.distribution_group_keys,
+            execution.client_key,
+            execution.artifact_key,
+            behavior=execution.behavior.value,
+            output_formats=[output_format.value for output_format in execution.output_formats],
+            execution_query=execution.query,
+            distribution_group_keys=execution.distribution_group_keys,
             authenticated_subject=subject,
             authorized_roles=roles,
             run_id=result["run_id"],
@@ -326,15 +450,16 @@ def create_artifact_execution(
         return ArtifactExecutionResponse(**result)
 
     result = execute_artifact(
-        request.client_key,
-        request.artifact_key,
-        behavior=request.behavior.value,
-        output_formats=[output_format.value for output_format in request.output_formats],
-        execution_query=request.query,
-        distribution_group_keys=request.distribution_group_keys,
+        execution.client_key,
+        execution.artifact_key,
+        behavior=execution.behavior.value,
+        output_formats=[output_format.value for output_format in execution.output_formats],
+        execution_query=execution.query,
+        distribution_group_keys=execution.distribution_group_keys,
         authenticated_subject=subject,
         authorized_roles=roles,
     )
+    http_request.state.monitoring_run_id = result.get("run_id")
 
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("error_message"))

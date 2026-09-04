@@ -196,3 +196,19 @@ class RunResponse(ArtifactExecutionResponse):
 class HealthResponse(BaseModel):
     status: str
     service: str = "bci-query-engine"
+
+
+class UsageInteractionRequest(BaseModel):
+    client_key: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    artifact_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    interaction_type: str = Field(
+        pattern=r"^(dashboard_open|filter_apply|refresh|navigation|export_request|custom_action)$"
+    )
+    interaction_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    status: str = Field(default="completed", pattern=r"^(completed|succeeded|failed)$")
+    duration_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    reason_code: Optional[str] = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,79}$")
+
+
+class UsageInteractionResponse(BaseModel):
+    status: str = "accepted"

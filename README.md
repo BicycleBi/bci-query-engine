@@ -325,3 +325,24 @@ curl -X POST http://127.0.0.1:18300/artifact-executions \
 ../bci-container-orch/
 ../vault-credentials/
 ```
+## Usage Monitoring System
+
+When the common `monitoring.events` and `monitoring.request_spans` tables are
+installed in a client Metadata database, Query Engine records a metadata-only
+request/response span for protected routes. The span includes the authenticated
+user name/email, route template, response status, elapsed time, artifact key,
+run ID, and available database/render/cache timings. It never stores request
+bodies, query/filter values, rendered HTML, response bodies, recipient data, or
+credentials.
+
+Dashboards can emit explicit, allowlisted interaction events through:
+
+```text
+POST /usage/interactions/{client_key}/{artifact_key}
+```
+
+The interaction contract accepts only a type, stable interaction key, status,
+and optional duration/reason code. Monitoring writes are best-effort and run
+outside the response path so an observability outage cannot break a dashboard.
+`log.artifact_runs` remains the authoritative dashboard execution lifecycle and
+is correlated to request spans by `run_id`.
