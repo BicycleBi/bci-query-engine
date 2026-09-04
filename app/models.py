@@ -236,3 +236,64 @@ class UsageEventIngestRequest(BaseModel):
 
 class UsageEventIngestResponse(BaseModel):
     status: str = "accepted"
+
+
+class UsageSummaryTotals(BaseModel):
+    requests: int = 0
+    active_users: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    average_response_ms: Optional[float] = None
+    p95_response_ms: Optional[float] = None
+    interactions: int = 0
+    login_started: int = 0
+    login_succeeded: int = 0
+    login_denied: int = 0
+
+
+class UsageDailySummary(BaseModel):
+    date: str
+    requests: int = 0
+    active_users: int = 0
+    failed_requests: int = 0
+    average_response_ms: Optional[float] = None
+
+
+class UsageArtifactSummary(BaseModel):
+    artifact_key: str
+    display_name: str
+    requests: int = 0
+    active_users: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    average_response_ms: Optional[float] = None
+    p95_response_ms: Optional[float] = None
+    last_activity_at: Optional[datetime] = None
+
+
+class UsageUserSummary(BaseModel):
+    display_name: str
+    username: Optional[str] = None
+    requests: int = 0
+    artifacts_used: int = 0
+    failed_requests: int = 0
+    average_response_ms: Optional[float] = None
+    last_activity_at: Optional[datetime] = None
+
+
+class UsageLoginSummary(BaseModel):
+    outcome: str
+    reason_code: Optional[str] = None
+    events: int = 0
+
+
+class UsageSummaryResponse(BaseModel):
+    client_key: str
+    days: int
+    period_start: datetime
+    period_end: datetime
+    totals: UsageSummaryTotals
+    daily: list[UsageDailySummary] = Field(default_factory=list)
+    artifacts: list[UsageArtifactSummary] = Field(default_factory=list)
+    users: list[UsageUserSummary] = Field(default_factory=list)
+    login_outcomes: list[UsageLoginSummary] = Field(default_factory=list)
