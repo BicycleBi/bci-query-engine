@@ -41,6 +41,7 @@ normal Postgres-backed execution path.
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/distribution-groups` | List approved active distribution groups without recipient details |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/usage-summary?days=30` | Return a bounded client-scoped usage and response-time summary |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `POST` | `/artifact-executions/{run_id}/reconcile` | Run one bounded Exchange trace attempt |
@@ -59,6 +60,16 @@ only after the Email Service returns a matched Exchange trace. Batch items
 include `confirmed_at`, and latest-delivery history includes `batch_id` and
 `item_id`, allowing dashboards to resume 15-second background tracking after a
 page refresh without exposing recipients or message content.
+
+
+The usage summary route is nested below the `usage-monitoring-dashboard`
+artifact so the gateway applies the dashboard's artifact-read authorization.
+It accepts only `7`, `30`, or `90` day windows and applies the same authenticated
+client boundary as artifact routes. It returns aggregate
+request, artifact, login, interaction, and response-time measures plus the
+recorded display name/username for active users. It does not return email
+addresses, request IDs, session IDs, raw events, request or response bodies,
+filters, payloads, or rendered output.
 
 ### `POST /artifacts`
 

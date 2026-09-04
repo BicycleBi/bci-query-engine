@@ -39,6 +39,229 @@ _GATEWAY_THREAD: Optional[threading.Thread] = None
 logger = logging.getLogger("bci-query-engine.monitoring")
 
 
+def _rounded_ms(value: Any) -> Optional[float]:
+    return round(float(value), 1) if value is not None else None
+
+
+def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
+    """Return a bounded client-scoped reporting summary, never raw telemetry."""
+    period_end = datetime.now(tz=timezone.utc)
+    period_start = period_end - timedelta(days=days)
+    parameters = (client_key, period_start, period_end)
+
+    with get_metadata_conn() as meta:
+        relation = meta.execute(
+            "SELECT to_regclass('monitoring.request_spans'), to_regclass('monitoring.events')"
+        ).fetchone()
+        if not relation or relation[0] is None or relation[1] is None:
+            return {
+                "client_key": client_key,
+                "days": days,
+                "period_start": period_start,
+                "period_end": period_end,
+                "totals": {},
+                "daily": [],
+                "artifacts": [],
+                "users": [],
+                "login_outcomes": [],
+            }
+
+        totals_row = meta.execute(
+            """
+            WITH request_totals AS (
+                SELECT
+                    count(*)::integer AS requests,
+                    count(DISTINCT COALESCE(NULLIF(user_id, ''), NULLIF(username, '')))::integer AS active_users,
+                    count(*) FILTER (WHERE outcome = 'completed')::integer AS successful_requests,
+                    count(*) FILTER (WHERE outcome <> 'completed')::integer AS failed_requests,
+                    avg(duration_ms)::numeric AS average_response_ms,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::numeric AS p95_response_ms
+                FROM monitoring.request_spans
+                WHERE client_key = %s
+                  AND artifact_key IS NOT NULL
+                  AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+                  AND started_at >= %s
+                  AND started_at < %s
+            ),
+            event_totals AS (
+                SELECT
+                    count(*) FILTER (WHERE event_type IN (
+                        'dashboard_open', 'filter_apply', 'refresh', 'navigation',
+                        'export_request', 'custom_action'
+                    ))::integer AS interactions,
+                    count(*) FILTER (WHERE event_type = 'login_started')::integer AS login_started,
+                    count(*) FILTER (WHERE event_type = 'login_completed' AND event_status = 'succeeded')::integer AS login_succeeded,
+                    count(*) FILTER (WHERE event_type IN ('login_denied', 'auth_denied'))::integer AS login_denied
+                FROM monitoring.events
+                WHERE client_key = %s
+                  AND occurred_at >= %s
+                  AND occurred_at < %s
+            )
+            SELECT
+                r.requests, r.active_users, r.successful_requests, r.failed_requests,
+                r.average_response_ms, r.p95_response_ms,
+                e.interactions, e.login_started, e.login_succeeded, e.login_denied
+            FROM request_totals r CROSS JOIN event_totals e
+            """,
+            parameters + parameters,
+        ).fetchone()
+
+        daily_rows = meta.execute(
+            """
+            SELECT
+                started_at::date,
+                count(*)::integer,
+                count(DISTINCT COALESCE(NULLIF(user_id, ''), NULLIF(username, '')))::integer,
+                count(*) FILTER (WHERE outcome <> 'completed')::integer,
+                avg(duration_ms)::numeric
+            FROM monitoring.request_spans
+            WHERE client_key = %s
+              AND artifact_key IS NOT NULL
+              AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND started_at >= %s
+              AND started_at < %s
+            GROUP BY started_at::date
+            ORDER BY started_at::date
+            """,
+            parameters,
+        ).fetchall()
+
+        artifact_rows = meta.execute(
+            """
+            SELECT
+                s.artifact_key,
+                COALESCE(NULLIF(a.display_name, ''), s.artifact_key),
+                count(*)::integer,
+                count(DISTINCT COALESCE(NULLIF(s.user_id, ''), NULLIF(s.username, '')))::integer,
+                count(*) FILTER (WHERE s.outcome = 'completed')::integer,
+                count(*) FILTER (WHERE s.outcome <> 'completed')::integer,
+                avg(s.duration_ms)::numeric,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY s.duration_ms)::numeric,
+                max(s.started_at)
+            FROM monitoring.request_spans s
+            LEFT JOIN app.artifacts a
+              ON a.client_key = s.client_key
+             AND a.artifact_key = s.artifact_key
+            WHERE s.client_key = %s
+              AND s.artifact_key IS NOT NULL
+              AND s.route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND s.started_at >= %s
+              AND s.started_at < %s
+            GROUP BY s.artifact_key, a.display_name
+            ORDER BY count(*) DESC, s.artifact_key
+            LIMIT 20
+            """,
+            parameters,
+        ).fetchall()
+
+        user_rows = meta.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), 'Unknown user'),
+                NULLIF(username, ''),
+                count(*)::integer,
+                count(DISTINCT artifact_key)::integer,
+                count(*) FILTER (WHERE outcome <> 'completed')::integer,
+                avg(duration_ms)::numeric,
+                max(started_at)
+            FROM monitoring.request_spans
+            WHERE client_key = %s
+              AND artifact_key IS NOT NULL
+              AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND started_at >= %s
+              AND started_at < %s
+            GROUP BY COALESCE(NULLIF(user_id, ''), NULLIF(username, ''), 'unknown'),
+                     COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), 'Unknown user'),
+                     NULLIF(username, '')
+            ORDER BY max(started_at) DESC
+            LIMIT 50
+            """,
+            parameters,
+        ).fetchall()
+
+        login_rows = meta.execute(
+            """
+            SELECT
+                CASE
+                    WHEN event_type = 'login_completed' AND event_status = 'succeeded' THEN 'Succeeded'
+                    WHEN event_type IN ('login_denied', 'auth_denied') THEN 'Denied'
+                    ELSE 'Started'
+                END,
+                reason_code,
+                count(*)::integer
+            FROM monitoring.events
+            WHERE client_key = %s
+              AND event_type IN ('login_started', 'login_completed', 'login_denied', 'auth_denied')
+              AND occurred_at >= %s
+              AND occurred_at < %s
+            GROUP BY 1, reason_code
+            ORDER BY 1, count(*) DESC, reason_code NULLS FIRST
+            LIMIT 20
+            """,
+            parameters,
+        ).fetchall()
+
+    totals_row = totals_row or (0, 0, 0, 0, None, None, 0, 0, 0, 0)
+    return {
+        "client_key": client_key,
+        "days": days,
+        "period_start": period_start,
+        "period_end": period_end,
+        "totals": {
+            "requests": totals_row[0],
+            "active_users": totals_row[1],
+            "successful_requests": totals_row[2],
+            "failed_requests": totals_row[3],
+            "average_response_ms": _rounded_ms(totals_row[4]),
+            "p95_response_ms": _rounded_ms(totals_row[5]),
+            "interactions": totals_row[6],
+            "login_started": totals_row[7],
+            "login_succeeded": totals_row[8],
+            "login_denied": totals_row[9],
+        },
+        "daily": [
+            {
+                "date": str(row[0]),
+                "requests": row[1],
+                "active_users": row[2],
+                "failed_requests": row[3],
+                "average_response_ms": _rounded_ms(row[4]),
+            }
+            for row in daily_rows
+        ],
+        "artifacts": [
+            {
+                "artifact_key": row[0],
+                "display_name": row[1],
+                "requests": row[2],
+                "active_users": row[3],
+                "successful_requests": row[4],
+                "failed_requests": row[5],
+                "average_response_ms": _rounded_ms(row[6]),
+                "p95_response_ms": _rounded_ms(row[7]),
+                "last_activity_at": row[8],
+            }
+            for row in artifact_rows
+        ],
+        "users": [
+            {
+                "display_name": row[0],
+                "username": row[1],
+                "requests": row[2],
+                "artifacts_used": row[3],
+                "failed_requests": row[4],
+                "average_response_ms": _rounded_ms(row[5]),
+                "last_activity_at": row[6],
+            }
+            for row in user_rows
+        ],
+        "login_outcomes": [
+            {"outcome": row[0], "reason_code": row[1], "events": row[2]}
+            for row in login_rows
+        ],
+    }
+
+
 def safe_reason_code(value: Optional[str]) -> Optional[str]:
     if value and _SAFE_REASON.fullmatch(value):
         return value
