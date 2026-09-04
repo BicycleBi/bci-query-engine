@@ -23,6 +23,6 @@ RUN mkdir -p /tmp/bci-query-engine/.config /tmp/bci-query-engine/.cache \
     && chown -R appuser:appuser /tmp/bci-query-engine
 USER appuser
 
-EXPOSE 8300
+EXPOSE 8300 8514/udp
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8300"]

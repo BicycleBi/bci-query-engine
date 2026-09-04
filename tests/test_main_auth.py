@@ -47,6 +47,144 @@ def test_health_is_public(monkeypatch):
     assert response.status_code == 200
 
 
+def test_request_span_keeps_named_identity_and_correlation(monkeypatch):
+    main = _load_main(monkeypatch)
+    captured = []
+    monkeypatch.setattr(main, "record_request_span_async", lambda **values: captured.append(values))
+    monkeypatch.setattr(
+        main,
+        "execute_artifact",
+        lambda *args, **kwargs: {
+            "run_id": "11111111-1111-1111-1111-111111111111",
+            "status": "success",
+            "client_key": "rf",
+            "artifact_key": "market-penetration",
+            "started_at": datetime.now(tz=timezone.utc),
+            "completed_at": datetime.now(tz=timezone.utc),
+            "preview_html": "<p>ok</p>",
+            "outputs": [],
+            "cache": {"status": "hit", "data_query_ms": 4.5, "render_ms": 1.5},
+        },
+    )
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "display_name": "Jeanre",
+            "email": "jeanre@example.test",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "session_id": "11111111-1111-1111-1111-111111111112",
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/rf/market-penetration",
+        headers={**_auth_headers(token), "X-Request-ID": "gateway-request-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "gateway-request-1"
+    assert len(captured) == 1
+    assert captured[0]["identity"]["email"] == "jeanre@example.test"
+    assert captured[0]["identity"]["display_name"] == "Jeanre"
+    assert captured[0]["route_template"] == "/artifacts/{client_key}/{artifact_key}"
+    assert captured[0]["run_id"] == "11111111-1111-1111-1111-111111111111"
+
+
+def test_interaction_endpoint_accepts_only_metadata(monkeypatch):
+    main = _load_main(monkeypatch)
+    captured = []
+    monkeypatch.setattr(main, "record_interaction_event_async", lambda **values: captured.append(values))
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "display_name": "Jeanre",
+            "email": "jeanre@example.test",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/usage/interactions/rf/market-penetration",
+        headers=_auth_headers(token),
+        json={
+            "client_key": "rf",
+            "artifact_key": "market-penetration",
+            "interaction_type": "filter_apply",
+            "interaction_key": "region-selector",
+            "duration_ms": 125,
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    assert captured[0]["event_type"] == "filter_apply"
+    assert captured[0]["event_key"] == "region-selector"
+
+
+def test_internal_usage_ingestion_requires_service_token_and_accepts_bounded_event(monkeypatch):
+    main = _load_main(monkeypatch)
+    captured = []
+    monkeypatch.setattr(main, "record_ingested_event_async", lambda **values: captured.append(values))
+    client = TestClient(main.app)
+    event = {
+        "source_service": "security",
+        "event_type": "login_completed",
+        "event_status": "succeeded",
+        "client_key": "rf",
+        "username": "Jeanre",
+        "request_id": "login-123",
+    }
+
+    assert client.post("/internal/usage/events", json=event).status_code == 401
+    response = client.post(
+        "/internal/usage/events",
+        headers={"Authorization": "Bearer test-service-token"},
+        json=event,
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    assert captured == [event | {
+        "user_id": None,
+        "email": None,
+        "display_name": None,
+        "session_id": None,
+        "artifact_key": None,
+        "run_id": None,
+        "reason_code": None,
+        "duration_ms": None,
+        "http_status": None,
+    }]
+
+
+def test_internal_usage_ingestion_rejects_arbitrary_payload_fields(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    response = client.post(
+        "/internal/usage/events",
+        headers={"Authorization": "Bearer test-service-token"},
+        json={
+            "source_service": "security",
+            "event_type": "login_denied",
+            "event_status": "denied",
+            "password": "must-not-be-accepted",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_protected_routes_require_internal_token(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)
