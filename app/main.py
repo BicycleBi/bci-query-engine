@@ -39,6 +39,7 @@ from .models import (
     RunResponse,
     UsageInteractionRequest,
     UsageInteractionResponse,
+    UsageSummaryResponse,
     UsageEventIngestRequest,
     UsageEventIngestResponse,
 )
@@ -46,6 +47,7 @@ from .monitoring import (
     record_ingested_event_async,
     record_interaction_event_async,
     record_request_span_async,
+    get_usage_summary,
     start_gateway_listener,
     stop_gateway_listener,
 )
@@ -59,7 +61,7 @@ async def lifespan(_app: FastAPI):
         stop_gateway_listener()
 
 
-app = FastAPI(title="BCI Query Engine", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="BCI Query Engine", version="0.3.0", lifespan=lifespan)
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))
@@ -322,6 +324,25 @@ def record_usage_interaction(
         reason_code=interaction.reason_code,
     )
     return UsageInteractionResponse()
+
+
+@app.get(
+    "/artifacts/{client_key}/{artifact_key}/usage-summary",
+    response_model=UsageSummaryResponse,
+)
+def usage_summary(
+    client_key: str,
+    artifact_key: str,
+    days: int = 30,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return bounded monitoring aggregates for one authorized client."""
+    require_client_access(identity, client_key)
+    if artifact_key != "usage-monitoring-dashboard":
+        raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
+    if days not in {7, 30, 90}:
+        raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
+    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
