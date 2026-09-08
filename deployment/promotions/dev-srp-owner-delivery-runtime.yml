@@ -1,0 +1,49 @@
+schema_version: 1
+client: srp
+environment: dev
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srpdev
+  compose_project: srpdev
+
+runtime_config:
+  services:
+    query-engine:
+      env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "true"
+        ARTIFACT_DELIVERY_WORKERS: "2"
+        ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+        ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+        ARTIFACT_DELIVERY_CONTROL_ROLES: "srpdev_pnl_delivery_operator"
+        ARTIFACT_INTERNAL_TEST_RECIPIENTS: "jeanre@bicyclebi.com"
+      container_env:
+        ARTIFACT_DELIVERY_WORKER_ENABLED: "true"
+        ARTIFACT_DELIVERY_WORKERS: "2"
+        ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+        ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+        ARTIFACT_DELIVERY_CONTROL_ROLES: "srpdev_pnl_delivery_operator"
+        ARTIFACT_INTERNAL_TEST_RECIPIENTS: "jeanre@bicyclebi.com"
+      reconcile: recreate-if-env-changed
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: SRP Dev durable owner-level P&L delivery batches, governed internal tests, status correlation and safe retries
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      ARTIFACT_DELIVERY_WORKER_ENABLED: "true"
+      ARTIFACT_DELIVERY_WORKERS: "2"
+      ARTIFACT_DELIVERY_POLL_SECONDS: "1"
+      ARTIFACT_DELIVERY_LEASE_SECONDS: "1200"
+      ARTIFACT_DELIVERY_CONTROL_ROLES: "srpdev_pnl_delivery_operator"
+      ARTIFACT_INTERNAL_TEST_RECIPIENTS: "jeanre@bicyclebi.com"

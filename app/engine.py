@@ -5,7 +5,7 @@ Flow:
   1. Read app.artifacts + app.templates from metadata DB
   2. Execute artifact.view_name against data DB
   3. Render Jinja2 template
-  4. If delivery_mode in (email, both): read recipients, POST to email service
+  4. If delivery_mode in (email, both): resolve governed recipients, POST to email service
   5. Write log.artifact_runs
   6. Return run_id + status
 """
@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,13 @@ def _delivery_worker_count() -> int:
         return max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
     except ValueError:
         return 2
+
+
+def _delivery_lease_seconds() -> int:
+    try:
+        return max(600, int(os.getenv("ARTIFACT_DELIVERY_LEASE_SECONDS", "1200")))
+    except ValueError:
+        return 1200
 
 
 _DELIVERY_EXECUTION_SLOTS = threading.BoundedSemaphore(_delivery_worker_count())
@@ -483,6 +491,63 @@ def _fetch_artifact(
     return artifact
 
 
+def _delivery_target_mode_allowed(meta, artifact_id: str, mode: str) -> bool:
+    row = meta.execute(
+        """
+        SELECT CASE
+                 WHEN %s = 'live' THEN target.live_enabled
+                 WHEN %s = 'internal_test' THEN target.internal_test_enabled
+                 ELSE false
+               END
+        FROM app.artifact_delivery_targets target
+        WHERE target.artifact_id = %s::uuid
+          AND target.active
+        """,
+        (mode, mode, artifact_id),
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _artifact_requires_batch(meta, artifact_id: str) -> bool:
+    row = meta.execute(
+        """
+        SELECT COALESCE(bool_or(batch_only), false)
+        FROM app.artifact_delivery_targets
+        WHERE artifact_id = %s::uuid AND active
+        """,
+        (artifact_id,),
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _internal_test_delivery_envelope(
+    subject: str,
+    html: str,
+) -> tuple[list[tuple[str, str]], str, str]:
+    """Override only recipients while preserving the production message exactly."""
+    internal_recipients = [
+        email.strip()
+        for email in os.getenv("ARTIFACT_INTERNAL_TEST_RECIPIENTS", "").split(",")
+        if email.strip()
+    ]
+    if not internal_recipients:
+        raise ValueError("Internal test recipient allowlist is not configured")
+    return [(email, "to") for email in internal_recipients], subject, html
+
+
+def _email_service_delivery_accepted(delivery: dict[str, Any]) -> bool:
+    """Recognize accepted delivery outcomes across Email Service versions."""
+    status = str(delivery.get("status") or "").strip().lower()
+    return status in {"sent", "submitted"}
+
+
+def _normalized_email_service_delivery_status(delivery: dict[str, Any]) -> str:
+    status = str(delivery.get("status") or "status_unknown").strip().lower()
+    # Graph accepting the request is not evidence that Exchange delivered it.
+    # Older Email Service versions used both values for the accepted state.
+    return "provider_accepted" if status in {"submitted", "sent"} else status
+
+
 def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     row = meta.execute(
         """
@@ -737,6 +802,68 @@ def _safe_view_name(view_name: str) -> str:
     return view_name
 
 
+def _artifact_recipient_source_view(meta, artifact_id: str) -> str | None:
+    registry = meta.execute(
+        "SELECT to_regclass('app.artifact_recipient_sources')"
+    ).fetchone()
+    if not registry or registry[0] is None:
+        return None
+
+    row = meta.execute(
+        """
+        SELECT source_view_name
+        FROM app.artifact_recipient_sources
+        WHERE artifact_id = %s::uuid
+          AND active
+        """,
+        (artifact_id,),
+    ).fetchone()
+    return _safe_view_name(str(row[0])) if row else None
+
+
+def _delivery_recipients(
+    meta,
+    artifact_id: str,
+    artifact_key: str,
+) -> list[tuple[str, str]]:
+    source_view = _artifact_recipient_source_view(meta, artifact_id)
+    if source_view is None:
+        return meta.execute(
+            """
+            SELECT email, delivery_type
+            FROM app.artifact_recipients
+            WHERE artifact_id = %s::uuid AND active
+            ORDER BY delivery_type, email
+            """,
+            (artifact_id,),
+        ).fetchall()
+
+    with get_data_conn() as data:
+        rows = data.execute(
+            f"""
+            SELECT recipient_email, recipient_type
+            FROM {source_view}
+            WHERE artifact_key = %s
+            ORDER BY recipient_type, recipient_email
+            """,  # noqa: S608 - source_view is validated by _safe_view_name
+            (artifact_key,),
+        ).fetchall()
+
+    if not rows:
+        raise ValueError(
+            "No eligible recipient is available from the configured server-side source"
+        )
+
+    recipients: list[tuple[str, str]] = []
+    for recipient_email, recipient_type in rows:
+        normalized_email = str(recipient_email or "").strip()
+        normalized_type = str(recipient_type or "").strip().lower()
+        if not normalized_email or normalized_type not in {"to", "cc", "bcc"}:
+            raise ValueError("Configured server-side recipient source returned an invalid row")
+        recipients.append((normalized_email, normalized_type))
+    return recipients
+
+
 def _query_function_name(view_name: str) -> str:
     """Return the database-owned query contract associated with a render view."""
     return _safe_view_name(f"{_safe_view_name(view_name)}_query")
@@ -984,6 +1111,7 @@ def execute_artifact(
     run_id: Optional[str] = None,
     started_at: Optional[datetime] = None,
     precreated_run: bool = False,
+    delivery_mode_override: str = "live",
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -1189,7 +1317,12 @@ def execute_artifact(
             send_email = behavior == "deliver" and delivery_mode in ("email", "both")
             recipient_count = 0
             if send_email:
-                if distribution_group_keys:
+                if delivery_mode_override == "internal_test":
+                    recipient_rows, subject, html = _internal_test_delivery_envelope(
+                        subject,
+                        html,
+                    )
+                elif distribution_group_keys:
                     recipient_rows = _resolve_distribution_recipients(
                         meta,
                         artifact_id=artifact_id,
@@ -1197,15 +1330,11 @@ def execute_artifact(
                         group_keys=distribution_group_keys,
                     )
                 else:
-                    recipient_rows = meta.execute(
-                        """
-                        SELECT email, delivery_type
-                        FROM app.artifact_recipients
-                        WHERE artifact_id = %s AND active
-                        ORDER BY delivery_type, email
-                        """,
-                        (artifact_id,),
-                    ).fetchall()
+                    recipient_rows = _delivery_recipients(
+                        meta,
+                        artifact_id,
+                        artifact_key,
+                    )
                 to  = [r[0] for r in recipient_rows if r[1] == "to"]
                 cc  = [r[0] for r in recipient_rows if r[1] == "cc"]
                 bcc = [r[0] for r in recipient_rows if r[1] == "bcc"]
@@ -1215,13 +1344,14 @@ def execute_artifact(
                         """
                         UPDATE log.artifact_runs
                         SET status = %s,
-                            recipient_count = %s
+                            recipient_count = %s,
+                            lease_expires_at = NOW() + (%s * INTERVAL '1 second')
                         WHERE run_id = %s::uuid
                         """,
-                        ("sending", recipient_count, run_id),
+                        ("sending", recipient_count, _delivery_lease_seconds(), run_id),
                     )
                     meta.commit()
-                _mailer.send(
+                delivery = _mailer.send(
                     subject=subject,
                     html=html,
                     to=to,
@@ -1230,8 +1360,36 @@ def execute_artifact(
                     client_key=client_key,
                     artifact_key=artifact_key,
                     run_id=run_id,
+                    request_id=run_id,
                     attachments=outputs,
                 )
+                delivery_accepted = _email_service_delivery_accepted(delivery)
+                normalized_delivery_status = _normalized_email_service_delivery_status(delivery)
+                meta.execute(
+                    """
+                    UPDATE log.artifact_runs
+                    SET delivery_id = %s::uuid,
+                        delivery_status = %s,
+                        delivery_provider = %s,
+                        provider_message_id = %s,
+                        provider_status_code = %s
+                    WHERE run_id = %s::uuid
+                    """,
+                    (
+                        delivery.get("delivery_id"),
+                        normalized_delivery_status,
+                        delivery.get("provider"),
+                        delivery.get("provider_message_id"),
+                        delivery.get("status_code"),
+                        run_id,
+                    ),
+                )
+                meta.commit()
+                if not delivery_accepted:
+                    raise RuntimeError(
+                        delivery.get("error_message")
+                        or "Email Service did not accept the delivery"
+                    )
 
             # ── 7. Log the run and generated outputs ───────────────────
             completed_at = _now()
@@ -1276,6 +1434,12 @@ def execute_artifact(
                     ),
                 )
             _insert_artifact_outputs(meta, outputs)
+            if precreated_run:
+                _update_delivery_batch_item(
+                    meta,
+                    run_id,
+                    normalized_delivery_status if send_email else "completed",
+                )
             meta.commit()
 
             return {
@@ -1337,6 +1501,8 @@ def execute_artifact(
                                 ),
                             ).fetchone()[0]
                         )
+                    if precreated_run:
+                        _update_delivery_batch_item(meta, run_id, "failed", str(exc))
                     meta.commit()
         except Exception:
             pass
@@ -1353,9 +1519,71 @@ def execute_artifact(
         }
 
 
-def queue_artifact_execution(client_key: str, artifact_key: str) -> dict:
+def _update_delivery_batch_item(meta, run_id: str, status: str, error_message: Optional[str] = None) -> None:
+    meta.execute(
+        """
+        UPDATE log.artifact_delivery_batch_items
+        SET status = %s,
+            error_message = %s,
+            completed_at = CASE WHEN %s IN ('delivered', 'completed', 'failed') THEN NOW() ELSE NULL END,
+            updated_at = NOW()
+        WHERE run_id = %s::uuid
+        """,
+        (status, error_message, status, run_id),
+    )
+    meta.execute(
+        """
+        WITH target_batch AS (
+            SELECT batch_id
+            FROM log.artifact_delivery_batch_items
+            WHERE run_id = %s::uuid
+        ),
+        latest AS (
+            SELECT DISTINCT ON (artifact_key) artifact_key, status
+            FROM log.artifact_delivery_batch_items
+            WHERE batch_id = (SELECT batch_id FROM target_batch)
+            ORDER BY artifact_key, attempt_number DESC, created_at DESC
+        ),
+        summary AS (
+            SELECT
+                count(*) AS total,
+                count(*) FILTER (WHERE status IN ('queued', 'preparing', 'sending')) AS active,
+                count(*) FILTER (WHERE status = 'failed') AS failed,
+                count(*) FILTER (WHERE status = 'status_unknown') AS unknown,
+                count(*) FILTER (WHERE status = 'delivered') AS delivered
+            FROM latest
+        )
+        UPDATE log.artifact_delivery_batches batch
+        SET status = CASE
+                WHEN summary.active > 0 THEN 'in_progress'
+                WHEN summary.unknown > 0 THEN 'attention_required'
+                WHEN summary.failed = summary.total THEN 'failed'
+                WHEN summary.failed > 0 THEN 'partially_failed'
+                WHEN summary.delivered = summary.total THEN 'delivered'
+                ELSE 'provider_accepted'
+            END,
+            completed_at = CASE
+                WHEN summary.delivered + summary.failed + summary.unknown = summary.total THEN NOW()
+                ELSE NULL
+            END
+        FROM target_batch, summary
+        WHERE batch.batch_id = target_batch.batch_id
+        """,
+        (run_id,),
+    )
+
+
+def queue_artifact_execution(
+    client_key: str,
+    artifact_key: str,
+    *,
+    authenticated_subject: Optional[str] = None,
+    authorized_roles: Optional[list[str]] = None,
+    execution_mode: str = "live",
+    run_id: Optional[str] = None,
+) -> dict:
     """Persist an execution before asynchronous work begins."""
-    run_id = str(uuid.uuid4())
+    run_id = run_id or str(uuid.uuid4())
     started_at = _now()
     with get_metadata_conn() as meta:
         artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
@@ -1363,16 +1591,25 @@ def queue_artifact_execution(client_key: str, artifact_key: str) -> dict:
             raise ValueError(
                 f"No active artifact found: client={client_key} artifact={artifact_key}"
             )
+        if _artifact_requires_batch(meta, artifact["artifact_id"]):
+            raise ValueError(
+                f"Artifact requires the governed delivery batch API: {artifact_key}"
+            )
         meta.execute(
             """
             INSERT INTO log.artifact_runs
                 (run_id, artifact_id, artifact_key, client_key,
-                 triggered_by, status, delivery_mode, started_at)
-            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s)
+                 triggered_by, status, delivery_mode, started_at,
+                 authenticated_subject, authorized_roles, execution_mode)
+            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s::jsonb, %s)
             """,
             (
                 run_id, artifact["artifact_id"], artifact_key, client_key,
                 "api", "queued", artifact["delivery_mode"], started_at,
+                authenticated_subject,
+                json.dumps(sorted(set(authorized_roles or []))),
+                execution_mode,
             ),
         )
         meta.commit()
@@ -1392,6 +1629,430 @@ def execute_queued_artifact(*args: Any, **kwargs: Any) -> dict:
     """Run one queued artifact within the bounded delivery worker pool."""
     with _DELIVERY_EXECUTION_SLOTS:
         return execute_artifact(*args, **kwargs)
+
+
+def cancel_queued_artifact_executions(
+    client_key: str,
+    run_ids: list[str],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Move an exact set of non-batch queued runs to a terminal audit state."""
+    unique_run_ids = list(dict.fromkeys(str(run_id).strip() for run_id in run_ids))
+    if len(unique_run_ids) != len(run_ids) or any(not run_id for run_id in unique_run_ids):
+        raise ValueError("Queue cancellation requires unique non-empty run IDs")
+
+    with get_metadata_conn() as meta:
+        matched = meta.execute(
+            """
+            SELECT count(*)
+            FROM log.artifact_runs run
+            WHERE run.client_key = %s
+              AND run.run_id = ANY(%s::uuid[])
+              AND run.status = 'queued'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM log.artifact_delivery_batch_items item
+                  WHERE item.run_id = run.run_id
+              )
+            """,
+            (client_key, unique_run_ids),
+        ).fetchone()[0]
+        if matched != len(unique_run_ids):
+            raise ValueError("Queue cancellation target mismatch; no rows changed")
+
+        updated = meta.execute(
+            """
+            UPDATE log.artifact_runs
+            SET status = 'cancelled',
+                completed_at = NOW(),
+                error_message = %s,
+                lease_owner = NULL,
+                lease_expires_at = NULL
+            WHERE client_key = %s
+              AND run_id = ANY(%s::uuid[])
+              AND status = 'queued'
+            RETURNING run_id
+            """,
+            (reason, client_key, unique_run_ids),
+        ).fetchall()
+        if len(updated) != len(unique_run_ids):
+            raise RuntimeError("Queue cancellation changed an unexpected number of rows")
+        meta.commit()
+
+    return {"status": "cancelled", "cancelled_count": len(updated)}
+
+
+def claim_queued_artifact_execution() -> Optional[dict[str, Any]]:
+    """Atomically lease one queued delivery so only one process can execute it."""
+    with get_metadata_conn() as meta:
+        row = meta.execute(
+            """
+            WITH candidate AS (
+                SELECT run_id
+                FROM log.artifact_runs
+                WHERE status = 'queued'
+                  AND delivery_mode IN ('email', 'both')
+                  AND COALESCE(execution_mode, 'live') <> 'background'
+                ORDER BY started_at, run_id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE log.artifact_runs run
+            SET status = 'preparing',
+                lease_owner = %s,
+                lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                attempt_count = COALESCE(attempt_count, 0) + 1
+            FROM candidate
+            WHERE run.run_id = candidate.run_id
+            RETURNING run.run_id, run.client_key, run.artifact_key, run.started_at,
+                      run.authenticated_subject, run.authorized_roles, run.execution_mode
+            """,
+            (f"query-engine:{os.getpid()}", _delivery_lease_seconds()),
+        ).fetchone()
+        meta.commit()
+    if row is None:
+        return None
+    return {
+        "run_id": str(row[0]),
+        "client_key": row[1],
+        "artifact_key": row[2],
+        "started_at": row[3],
+        "authenticated_subject": row[4],
+        "authorized_roles": list(row[5] or []),
+        "execution_mode": row[6] or "live",
+    }
+
+
+def run_delivery_worker() -> None:
+    """Continuously execute durable queued deliveries; safe across process restarts."""
+    poll_seconds = max(0.25, float(os.getenv("ARTIFACT_DELIVERY_POLL_SECONDS", "1")))
+    while True:
+        try:
+            recover_expired_delivery_leases()
+            claimed = claim_queued_artifact_execution()
+            if claimed is None:
+                time.sleep(poll_seconds)
+                continue
+            execute_queued_artifact(
+                claimed["client_key"],
+                claimed["artifact_key"],
+                behavior="deliver",
+                authenticated_subject=claimed["authenticated_subject"],
+                authorized_roles=claimed["authorized_roles"],
+                run_id=claimed["run_id"],
+                started_at=claimed["started_at"],
+                precreated_run=True,
+                delivery_mode_override=claimed["execution_mode"],
+            )
+        except Exception:
+            time.sleep(poll_seconds)
+
+
+def recover_expired_delivery_leases() -> None:
+    """Retry pre-send work only; quarantine a send whose outcome is uncertain."""
+    with get_metadata_conn() as meta:
+        meta.execute(
+            """
+            UPDATE log.artifact_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL
+            WHERE status = 'preparing'
+              AND lease_expires_at < NOW()
+            """
+        )
+        uncertain = meta.execute(
+            """
+            UPDATE log.artifact_runs
+            SET status = 'status_unknown',
+                delivery_status = 'status_unknown',
+                completed_at = NOW(),
+                error_message = 'Worker lease expired after send began; manual reconciliation required'
+            WHERE status = 'sending'
+              AND lease_expires_at < NOW()
+            RETURNING run_id
+            """
+        ).fetchall()
+        for row in uncertain:
+            _update_delivery_batch_item(
+                meta,
+                str(row[0]),
+                "status_unknown",
+                "Worker lease expired after send began; manual reconciliation required",
+            )
+        meta.commit()
+
+
+def create_delivery_batch(
+    client_key: str,
+    artifact_keys: list[str],
+    *,
+    reporting_period: str,
+    idempotency_key: str,
+    mode: str,
+    authenticated_subject: str,
+    authorized_roles: list[str],
+) -> dict[str, Any]:
+    """Persist one logical owner-delivery batch and all of its durable queue items."""
+    batch_id = str(uuid.uuid4())
+    created_at = _now()
+    with get_metadata_conn() as meta:
+        existing = meta.execute(
+            """
+            SELECT batch_id
+            FROM log.artifact_delivery_batches
+            WHERE client_key = %s AND idempotency_key = %s
+            """,
+            (client_key, idempotency_key),
+        ).fetchone()
+        if existing:
+            meta.commit()
+            return get_delivery_batch(str(existing[0]))
+
+        artifacts: list[dict[str, Any]] = []
+        for artifact_key in artifact_keys:
+            artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
+            if artifact is None:
+                raise ValueError(f"No active delivery target found: {artifact_key}")
+            if artifact["delivery_mode"] not in {"email", "both"}:
+                raise ValueError(f"Artifact is not configured for email delivery: {artifact_key}")
+            if not _delivery_target_mode_allowed(meta, artifact["artifact_id"], mode):
+                raise ValueError(
+                    f"Artifact is not approved for {mode} owner delivery: {artifact_key}"
+                )
+            artifacts.append(artifact)
+
+        try:
+            meta.execute(
+                """
+                INSERT INTO log.artifact_delivery_batches
+                    (batch_id, client_key, reporting_period, mode, idempotency_key,
+                     status, requested_by, authorized_roles, created_at)
+                VALUES (%s::uuid, %s, %s, %s, %s, 'queued', %s, %s::jsonb, %s)
+                """,
+                (
+                    batch_id, client_key, reporting_period, mode, idempotency_key,
+                    authenticated_subject, json.dumps(sorted(set(authorized_roles))), created_at,
+                ),
+            )
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) != "23505":
+                raise
+            meta.rollback()
+            existing = meta.execute(
+                """
+                SELECT batch_id
+                FROM log.artifact_delivery_batches
+                WHERE client_key = %s AND idempotency_key = %s
+                """,
+                (client_key, idempotency_key),
+            ).fetchone()
+            if existing is None:
+                raise
+            return get_delivery_batch(str(existing[0]))
+        for artifact in artifacts:
+            run_id = str(uuid.uuid4())
+            item_id = str(uuid.uuid4())
+            meta.execute(
+                """
+                INSERT INTO log.artifact_runs
+                    (run_id, artifact_id, artifact_key, client_key, triggered_by,
+                     status, delivery_mode, started_at, authenticated_subject,
+                     authorized_roles, execution_mode)
+                VALUES (%s::uuid, %s::uuid, %s, %s, 'delivery-batch', 'queued',
+                        %s, %s, %s, %s::jsonb, %s)
+                """,
+                (
+                    run_id, artifact["artifact_id"], artifact["artifact_key"], client_key,
+                    artifact["delivery_mode"], created_at, authenticated_subject,
+                    json.dumps(sorted(set(authorized_roles))), mode,
+                ),
+            )
+            meta.execute(
+                """
+                INSERT INTO log.artifact_delivery_batch_items
+                    (item_id, batch_id, artifact_id, artifact_key, run_id,
+                     status, attempt_number, created_at, updated_at)
+                VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s::uuid,
+                        'queued', 1, %s, %s)
+                """,
+                (
+                    item_id, batch_id, artifact["artifact_id"], artifact["artifact_key"],
+                    run_id, created_at, created_at,
+                ),
+            )
+        meta.commit()
+    result = get_delivery_batch(batch_id)
+    if result is None:
+        raise RuntimeError("Delivery batch could not be reloaded after creation")
+    return result
+
+
+def get_delivery_batch(batch_id: str) -> Optional[dict[str, Any]]:
+    with get_metadata_conn() as meta:
+        batch = meta.execute(
+            """
+            SELECT batch_id, client_key, reporting_period, mode, status, created_at, completed_at
+            FROM log.artifact_delivery_batches
+            WHERE batch_id = %s::uuid
+            """,
+            (batch_id,),
+        ).fetchone()
+        if batch is None:
+            return None
+        rows = meta.execute(
+            """
+            SELECT DISTINCT ON (item.artifact_key)
+                   item.item_id, item.artifact_key, item.run_id,
+                   COALESCE(run.delivery_status, run.status, item.status),
+                   item.attempt_number, run.delivery_id, run.delivery_status,
+                   COALESCE(run.error_message, item.error_message),
+                   CASE WHEN run.delivery_status = 'delivered' THEN run.completed_at END
+            FROM log.artifact_delivery_batch_items item
+            JOIN log.artifact_runs run ON run.run_id = item.run_id
+            WHERE item.batch_id = %s::uuid
+            ORDER BY item.artifact_key, item.attempt_number DESC, item.created_at DESC
+            """,
+            (batch_id,),
+        ).fetchall()
+    items = [
+        {
+            "item_id": str(row[0]),
+            "artifact_key": row[1],
+            "run_id": str(row[2]),
+            "status": row[3],
+            "attempt_number": row[4],
+            "delivery_id": str(row[5]) if row[5] else None,
+            "delivery_status": row[6],
+            "error_message": (
+                "Delivery failed. Use the operator audit log for details."
+                if row[7]
+                else None
+            ),
+            "confirmed_at": row[8],
+        }
+        for row in rows
+    ]
+    statuses = {item["status"] for item in items}
+    if any(status in {"queued", "preparing", "sending"} for status in statuses):
+        status = "in_progress"
+        completed_at = None
+    elif "status_unknown" in statuses:
+        status = "attention_required"
+        completed_at = batch[6] or _now()
+    elif "failed" in statuses:
+        status = "failed" if statuses == {"failed"} else "partially_failed"
+        completed_at = batch[6] or _now()
+    elif statuses and statuses == {"delivered"}:
+        status = "delivered"
+        completed_at = batch[6] or _now()
+    else:
+        status = "provider_accepted"
+        completed_at = None
+    return {
+        "batch_id": str(batch[0]),
+        "client_key": batch[1],
+        "reporting_period": batch[2],
+        "mode": batch[3],
+        "status": status,
+        "created_at": batch[5],
+        "completed_at": completed_at,
+        "items": items,
+    }
+
+
+def retry_delivery_batch_item(
+    batch_id: str,
+    item_id: str,
+    *,
+    reason: str,
+    authenticated_subject: str,
+    authorized_roles: list[str],
+) -> dict[str, Any]:
+    """Create a new attempt only for a definitively failed delivery item."""
+    now = _now()
+    new_item_id = str(uuid.uuid4())
+    new_run_id = str(uuid.uuid4())
+    with get_metadata_conn() as meta:
+        row = meta.execute(
+            """
+            SELECT batch.client_key, batch.mode, item.artifact_id, item.artifact_key,
+                   item.attempt_number, run.status, run.delivery_status
+            FROM log.artifact_delivery_batch_items item
+            JOIN log.artifact_delivery_batches batch ON batch.batch_id = item.batch_id
+            JOIN log.artifact_runs run ON run.run_id = item.run_id
+            WHERE item.batch_id = %s::uuid AND item.item_id = %s::uuid
+            """,
+            (batch_id, item_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Delivery item was not found")
+        terminal_status = row[6] or row[5]
+        if terminal_status != "failed":
+            raise ValueError(
+                "Only definitively failed deliveries can be retried; reconcile unknown or accepted sends first"
+            )
+        attempt_number = int(row[4]) + 1
+        meta.execute(
+            """
+            INSERT INTO log.artifact_runs
+                (run_id, artifact_id, artifact_key, client_key, triggered_by,
+                 status, delivery_mode, started_at, authenticated_subject,
+                 authorized_roles, execution_mode)
+            SELECT %s::uuid, artifact_id, artifact_key, client_key, 'delivery-retry',
+                   'queued', delivery_mode, %s, %s, %s::jsonb, %s
+            FROM log.artifact_runs
+            WHERE run_id = (
+                SELECT run_id FROM log.artifact_delivery_batch_items WHERE item_id = %s::uuid
+            )
+            """,
+            (
+                new_run_id, now, authenticated_subject,
+                json.dumps(sorted(set(authorized_roles))), row[1], item_id,
+            ),
+        )
+        meta.execute(
+            """
+            INSERT INTO log.artifact_delivery_batch_items
+                (item_id, batch_id, artifact_id, artifact_key, run_id, status,
+                 attempt_number, retry_reason, requested_by, created_at, updated_at)
+            VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s::uuid, 'queued',
+                    %s, %s, %s, %s, %s)
+            """,
+            (
+                new_item_id, batch_id, row[2], row[3], new_run_id, attempt_number,
+                reason, authenticated_subject, now, now,
+            ),
+        )
+        _update_delivery_batch_item(meta, new_run_id, "queued")
+        meta.commit()
+    result = get_delivery_batch(batch_id)
+    if result is None:
+        raise RuntimeError("Delivery batch disappeared after retry")
+    return result
+
+
+def reconcile_delivery_batch(batch_id: str) -> dict[str, Any]:
+    """Refresh delivery evidence without exposing recipients to Query Engine callers."""
+    with get_metadata_conn() as meta:
+        rows = meta.execute(
+            """
+            SELECT run.run_id
+            FROM log.artifact_delivery_batch_items item
+            JOIN log.artifact_runs run ON run.run_id = item.run_id
+            WHERE item.batch_id = %s::uuid
+              AND run.delivery_id IS NOT NULL
+              AND COALESCE(run.delivery_status, '') NOT IN ('delivered', 'failed', 'suppressed')
+            """,
+            (batch_id,),
+        ).fetchall()
+    # One dashboard poll performs one bounded Exchange trace attempt for each
+    # outstanding item. No request waits for the Email Service's retry loop.
+    for (run_id,) in rows:
+        reconcile_artifact_delivery(str(run_id))
+    result = get_delivery_batch(batch_id)
+    if result is None:
+        raise ValueError("Delivery batch not found")
+    return result
 
 
 def run_artifact(
@@ -1429,6 +2090,11 @@ def get_run(run_id: str) -> Optional[dict]:
                 r.started_at,
                 r.completed_at,
                 r.error_message
+                ,r.delivery_id
+                ,r.delivery_status
+                ,r.delivery_provider
+                ,r.provider_message_id
+                ,r.provider_status_code
             FROM log.artifact_runs r
             WHERE r.run_id = %s
             """,
@@ -1460,7 +2126,8 @@ def get_run(run_id: str) -> Optional[dict]:
         return None
 
     keys = ["run_id", "client_key", "artifact_key", "status",
-            "started_at", "completed_at", "error_message"]
+            "started_at", "completed_at", "error_message", "delivery_id",
+            "delivery_status", "provider", "provider_message_id", "provider_status_code"]
     output_keys = [
         "output_format",
         "output_role",
@@ -1479,3 +2146,105 @@ def get_run(run_id: str) -> Optional[dict]:
         result["run_id"] = str(result["run_id"])
     result["outputs"] = [dict(zip(output_keys, output)) for output in outputs]
     return result
+
+
+def reconcile_artifact_delivery(run_id: str) -> Optional[dict]:
+    """Refresh one run from bounded Exchange trace evidence without exposing correlation data."""
+    from . import mailer as _mailer
+
+    record = get_run(run_id)
+    if record is None:
+        return None
+    delivery_id = record.get("delivery_id")
+    delivery_status = str(record.get("delivery_status") or "")
+    if not delivery_id or delivery_status in {"delivered", "failed", "suppressed"}:
+        return record
+
+    try:
+        trace = _mailer.reconcile_delivery_trace(str(delivery_id))
+    except Exception:
+        return record
+
+    reconciliation_status = str(trace.get("reconciliation_status") or "")
+    trace_status = str(trace.get("trace_delivery_status") or "")
+    if reconciliation_status != "matched":
+        return record
+
+    if trace_status == "delivered":
+        normalized = "delivered"
+        run_status = record.get("status") or "completed"
+        error_message = None
+    elif trace_status in {"failed", "quarantined", "filteredAsSpam"}:
+        normalized = "failed"
+        run_status = "failed"
+        error_message = "Email delivery was not completed. Use the operator audit log for details."
+    else:
+        return record
+
+    with get_metadata_conn() as meta:
+        meta.execute(
+            """
+            UPDATE log.artifact_runs
+            SET delivery_status = %s,
+                status = %s,
+                completed_at = NOW(),
+                error_message = %s
+            WHERE run_id = %s::uuid
+            """,
+            (normalized, run_status, error_message, run_id),
+        )
+        _update_delivery_batch_item(meta, run_id, normalized, error_message)
+        meta.commit()
+    return get_run(run_id)
+
+
+def get_latest_artifact_deliveries(client_key: str, artifact_keys: list[str]) -> list[dict[str, Any]]:
+    """Return the latest accepted or Exchange-confirmed delivery metadata without recipients."""
+    with get_metadata_conn() as meta:
+        rows = meta.execute(
+            """
+            SELECT DISTINCT ON (run.artifact_key)
+                run.artifact_key,
+                run.run_id,
+                CASE
+                    WHEN run.delivery_status IN ('submitted', 'sent') THEN 'provider_accepted'
+                    ELSE COALESCE(run.delivery_status, run.status)
+                END AS delivery_status,
+                CASE WHEN run.delivery_status = 'delivered' THEN run.completed_at END AS sent_at,
+                batch.reporting_period,
+                batch.batch_id,
+                item.item_id
+            FROM log.artifact_runs run
+            LEFT JOIN log.artifact_delivery_batch_items item
+              ON item.run_id = run.run_id
+            LEFT JOIN log.artifact_delivery_batches batch
+              ON batch.batch_id = item.batch_id
+            WHERE run.client_key = %s
+              AND run.artifact_key = ANY(%s::text[])
+              AND (
+                  run.delivery_status IN ('sent', 'submitted', 'provider_accepted', 'delivered')
+                  OR (
+                      run.delivery_status IS NULL
+                      AND run.status = 'completed'
+                      AND run.delivery_mode IN ('email', 'both')
+                  )
+              )
+            ORDER BY
+                run.artifact_key,
+                COALESCE(run.completed_at, run.started_at) DESC,
+                run.started_at DESC
+            """,
+            (client_key, artifact_keys),
+        ).fetchall()
+    return [
+        {
+            "artifact_key": row[0],
+            "run_id": str(row[1]),
+            "delivery_status": row[2],
+            "sent_at": row[3],
+            "reporting_period": row[4],
+            "batch_id": str(row[5]) if row[5] else None,
+            "item_id": str(row[6]) if row[6] else None,
+        }
+        for row in rows
+    ]

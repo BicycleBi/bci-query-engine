@@ -7,21 +7,30 @@ import hmac
 import json
 import os
 import time
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .engine import (
     execute_artifact,
     execute_artifact_query,
     execute_queued_artifact,
+    cancel_queued_artifact_executions,
     get_artifact_asset,
     get_artifact_distribution_groups,
+    get_latest_artifact_deliveries,
     get_run,
+    reconcile_artifact_delivery,
+    create_delivery_batch,
+    get_delivery_batch,
+    retry_delivery_batch_item,
+    reconcile_delivery_batch,
+    run_delivery_worker,
     prewarm_artifact_query_cache,
     queue_artifact_execution,
     write_artifact_definition,
@@ -30,11 +39,17 @@ from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
     ArtifactDistributionGroupsResponse,
+    ArtifactDeliveryHistoryItem,
     ArtifactQueryCachePrewarmRequest,
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
     ArtifactWriteResponse,
     HealthResponse,
+    DeliveryBatchRequest,
+    DeliveryBatchResponse,
+    DeliveryQueueCancelRequest,
+    DeliveryQueueCancelResponse,
+    DeliveryRetryRequest,
     RunMode,
     RunResponse,
     UsageInteractionRequest,
@@ -50,16 +65,38 @@ from .monitoring import (
     stop_gateway_listener,
 )
 
+_delivery_worker_started = False
+
+
+def start_delivery_worker() -> None:
+    global _delivery_worker_started
+    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "true").lower() != "true":
+        return
+    try:
+        worker_count = max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
+    except ValueError:
+        worker_count = 2
+    for worker_index in range(worker_count):
+        thread = threading.Thread(
+            target=run_delivery_worker,
+            name=f"artifact-delivery-worker-{worker_index + 1}",
+            daemon=True,
+        )
+        thread.start()
+    _delivery_worker_started = True
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     start_gateway_listener()
+    start_delivery_worker()
     try:
         yield
     finally:
         stop_gateway_listener()
 
 
-app = FastAPI(title="BCI Query Engine", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="BCI Query Engine", version="0.3.0", lifespan=lifespan)
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))
@@ -235,6 +272,18 @@ async def monitor_request_lifecycle(request: Request, call_next):
             )
         if response is not None:
             response.headers["X-Request-ID"] = request_id
+
+
+def require_delivery_control(roles: list[str]) -> None:
+    configured = {
+        role.strip()
+        for role in os.getenv("ARTIFACT_DELIVERY_CONTROL_ROLES", "").split(",")
+        if role.strip()
+    }
+    if not configured:
+        raise HTTPException(status_code=503, detail="Delivery control authorization is not configured")
+    if configured.isdisjoint(roles):
+        raise HTTPException(status_code=403, detail="Delivery control access denied")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -459,24 +508,35 @@ def create_artifact_execution(
 
     if execution.behavior.value == "deliver":
         try:
-            result = queue_artifact_execution(execution.client_key, execution.artifact_key)
+            result = queue_artifact_execution(
+                execution.client_key,
+                execution.artifact_key,
+                authenticated_subject=subject,
+                authorized_roles=roles,
+                execution_mode=(
+                    "background"
+                    if execution.output_formats or execution.query or execution.distribution_group_keys
+                    else "live"
+                ),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         http_request.state.monitoring_run_id = result.get("run_id")
-        background_tasks.add_task(
-            execute_queued_artifact,
-            execution.client_key,
-            execution.artifact_key,
-            behavior=execution.behavior.value,
-            output_formats=[output_format.value for output_format in execution.output_formats],
-            execution_query=execution.query,
-            distribution_group_keys=execution.distribution_group_keys,
-            authenticated_subject=subject,
-            authorized_roles=roles,
-            run_id=result["run_id"],
-            started_at=result["started_at"],
-            precreated_run=True,
-        )
+        if execution.output_formats or execution.query or execution.distribution_group_keys:
+            background_tasks.add_task(
+                execute_queued_artifact,
+                execution.client_key,
+                execution.artifact_key,
+                behavior=execution.behavior.value,
+                output_formats=[output_format.value for output_format in execution.output_formats],
+                execution_query=execution.query,
+                distribution_group_keys=execution.distribution_group_keys,
+                authenticated_subject=subject,
+                authorized_roles=roles,
+                run_id=result["run_id"],
+                started_at=result["started_at"],
+                precreated_run=True,
+            )
         return ArtifactExecutionResponse(**result)
 
     result = execute_artifact(
@@ -505,6 +565,149 @@ def get_artifact_execution_status(run_id: str, identity: dict[str, Any] = Depend
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     require_client_access(identity, record["client_key"])
     return ArtifactExecutionResponse(**record)
+
+
+@app.post("/artifact-executions/{run_id}/reconcile", response_model=ArtifactExecutionResponse)
+def reconcile_artifact_execution_delivery(
+    run_id: str,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Refresh one email execution from bounded Exchange delivery evidence."""
+    record = get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Artifact execution not found")
+    require_client_access(identity, record["client_key"])
+    reconciled = reconcile_artifact_delivery(run_id)
+    if reconciled is None:
+        raise HTTPException(status_code=404, detail="Artifact execution not found")
+    return ArtifactExecutionResponse(**reconciled)
+
+
+@app.get("/artifact-deliveries/latest", response_model=list[ArtifactDeliveryHistoryItem])
+def get_latest_artifact_delivery_statuses(
+    client_key: str,
+    artifact_key: list[str] = Query(),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return latest accepted delivery times without exposing recipients or message content."""
+    require_client_access(identity, client_key)
+    artifact_keys = list(dict.fromkeys(value.strip() for value in artifact_key if value.strip()))
+    if not artifact_keys or len(artifact_keys) > 100:
+        raise HTTPException(status_code=400, detail="Provide between 1 and 100 artifact keys")
+    return [
+        ArtifactDeliveryHistoryItem(**item)
+        for item in get_latest_artifact_deliveries(client_key, artifact_keys)
+    ]
+
+
+@app.post("/artifact-delivery-queue/cancel", response_model=DeliveryQueueCancelResponse)
+def cancel_artifact_delivery_queue(
+    request: DeliveryQueueCancelRequest,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Cancel an exact set of queued non-batch executions without deleting audit history."""
+    require_client_access(identity, request.client_key)
+    roles = authorized_roles(identity, x_identity_roles)
+    require_delivery_control(roles)
+    try:
+        return DeliveryQueueCancelResponse(
+            **cancel_queued_artifact_executions(
+                request.client_key,
+                request.run_ids,
+                reason=request.reason,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/delivery-batches", response_model=DeliveryBatchResponse, status_code=202)
+def create_artifact_delivery_batch(
+    request: DeliveryBatchRequest,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, request.client_key)
+    roles = authorized_roles(identity, x_identity_roles)
+    require_delivery_control(roles)
+    try:
+        result = create_delivery_batch(
+            request.client_key,
+            request.artifact_keys,
+            reporting_period=request.reporting_period,
+            idempotency_key=request.idempotency_key,
+            mode=request.mode.value,
+            authenticated_subject=authenticated_subject(identity),
+            authorized_roles=roles,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DeliveryBatchResponse(**result)
+
+
+@app.get("/delivery-batches/{batch_id}", response_model=DeliveryBatchResponse)
+def get_artifact_delivery_batch(
+    batch_id: str,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    roles = authorized_roles(identity, x_identity_roles)
+    require_delivery_control(roles)
+    result = get_delivery_batch(batch_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Delivery batch not found")
+    require_client_access(identity, result["client_key"])
+    return DeliveryBatchResponse(**result)
+
+
+@app.post(
+    "/delivery-batches/{batch_id}/items/{item_id}/retry",
+    response_model=DeliveryBatchResponse,
+    status_code=202,
+)
+def retry_artifact_delivery_batch_item(
+    batch_id: str,
+    item_id: str,
+    request: DeliveryRetryRequest,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    roles = authorized_roles(identity, x_identity_roles)
+    require_delivery_control(roles)
+    batch = get_delivery_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Delivery batch not found")
+    require_client_access(identity, batch["client_key"])
+    try:
+        result = retry_delivery_batch_item(
+            batch_id,
+            item_id,
+            reason=request.reason,
+            authenticated_subject=authenticated_subject(identity),
+            authorized_roles=roles,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DeliveryBatchResponse(**result)
+
+
+@app.post(
+    "/delivery-batches/{batch_id}/reconcile",
+    response_model=DeliveryBatchResponse,
+)
+def reconcile_artifact_delivery_batch(
+    batch_id: str,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    roles = authorized_roles(identity, x_identity_roles)
+    require_delivery_control(roles)
+    batch = get_delivery_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Delivery batch not found")
+    require_client_access(identity, batch["client_key"])
+    return DeliveryBatchResponse(**reconcile_delivery_batch(batch_id))
 
 
 @app.post("/run/{client_key}/{artifact_key}", response_model=RunResponse, status_code=202, deprecated=True)
