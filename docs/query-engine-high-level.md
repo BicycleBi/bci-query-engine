@@ -70,7 +70,10 @@ flowchart TD
 4. Data queries run before content resolution.
 5. A display call returns HTML.
 6. A delivery call can reference another artifact, render it, and send the rendered result.
-7. Recipient addresses can come from metadata or from a burst query against the database.
+7. Recipient addresses can come from static metadata or from a configured
+   `app.artifact_recipient_sources` data-view contract. A configured source is
+   resolved at execution time by artifact key and fails closed when it returns
+   no eligible row; it does not fall back to static recipients.
 8. Once execution finishes, the engine writes the result to the log schema in the metadata database.
 
 ## Request Semantics

@@ -56,6 +56,9 @@ class FakeMeta:
             self.log_params = params
             return FakeResult(row=("run-1",))
 
+        if "FROM app.artifact_delivery_targets" in sql:
+            return FakeResult(row=(False,))
+
         raise AssertionError(f"Unexpected metadata query: {sql}")
 
     def commit(self):
@@ -155,6 +158,63 @@ def test_queue_artifact_execution_persists_immediate_status(monkeypatch):
     assert meta.log_params[5] == "queued"
     assert meta.log_params[6] == "web"
     assert meta.commits == 1
+
+
+def test_cancel_queue_is_exact_and_terminal(monkeypatch):
+    class CancelMeta:
+        def __init__(self):
+            self.commits = 0
+            self.update_params = None
+
+        def execute(self, sql, params=None):
+            if "SELECT count(*)" in sql:
+                return FakeResult(row=(2,))
+            if "UPDATE log.artifact_runs" in sql:
+                self.update_params = params
+                return FakeResult(rows=[("run-1",), ("run-2",)])
+            raise AssertionError(f"Unexpected metadata query: {sql}")
+
+        def commit(self):
+            self.commits += 1
+
+    meta = CancelMeta()
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(meta))
+
+    result = engine.cancel_queued_artifact_executions(
+        "srp",
+        [
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+        ],
+        reason="Verified synchronous recovery delivered these reports",
+    )
+
+    assert result == {"status": "cancelled", "cancelled_count": 2}
+    assert meta.commits == 1
+    assert meta.update_params[1] == "srp"
+
+
+def test_cancel_queue_fails_closed_on_partial_match(monkeypatch):
+    class PartialCancelMeta:
+        def execute(self, sql, params=None):
+            if "SELECT count(*)" in sql:
+                return FakeResult(row=(1,))
+            raise AssertionError("Update must not run after a partial match")
+
+        def commit(self):
+            raise AssertionError("Partial match must not commit")
+
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(PartialCancelMeta()))
+
+    with pytest.raises(ValueError, match="target mismatch"):
+        engine.cancel_queued_artifact_executions(
+            "srp",
+            [
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+            ],
+            reason="Verified synchronous recovery delivered these reports",
+        )
 
 
 def test_get_run_normalizes_database_uuid_for_api_contract(monkeypatch):

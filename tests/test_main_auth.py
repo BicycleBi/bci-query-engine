@@ -315,16 +315,17 @@ def test_distribution_group_route_returns_approved_group_labels(monkeypatch):
     }
 
 
-def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypatch):
+def test_delivery_execution_returns_durable_queued_run(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)
     captured = {}
+    background = {}
     started_at = datetime.now(tz=timezone.utc)
 
     monkeypatch.setattr(
         main,
         "queue_artifact_execution",
-        lambda client_key, artifact_key: {
+        lambda client_key, artifact_key, **kwargs: captured.update(kwargs) or {
             "run_id": "11111111-1111-1111-1111-111111111111",
             "client_key": client_key,
             "artifact_key": artifact_key,
@@ -334,24 +335,16 @@ def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypa
             "outputs": [],
         },
     )
-
-    def fake_execute_artifact(client_key, artifact_key, **kwargs):
-        captured.update(
+    monkeypatch.setattr(
+        main,
+        "execute_queued_artifact",
+        lambda client_key, artifact_key, **kwargs: background.update(
             client_key=client_key,
             artifact_key=artifact_key,
             **kwargs,
-        )
-        return {
-            "run_id": kwargs["run_id"],
-            "client_key": client_key,
-            "artifact_key": artifact_key,
-            "status": "success",
-            "started_at": kwargs["started_at"],
-            "completed_at": datetime.now(tz=timezone.utc),
-            "outputs": [],
-        }
+        ),
+    )
 
-    monkeypatch.setattr(main, "execute_queued_artifact", fake_execute_artifact)
     token = _encode_token(
         {
             "aud": "bci-client",
@@ -383,15 +376,196 @@ def test_delivery_execution_returns_queued_run_and_uses_background_task(monkeypa
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
     assert response.json()["run_id"] == "11111111-1111-1111-1111-111111111111"
-    assert captured["precreated_run"] is True
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_pnl_scope_a"]
-    assert captured["output_formats"] == ["csv"]
-    assert captured["execution_query"] == {
+    assert captured["execution_mode"] == "background"
+    assert background["output_formats"] == ["csv"]
+    assert background["execution_query"] == {
         "action": "hierarchy-export",
         "statuses": ["21_Area Live"],
     }
-    assert captured["distribution_group_keys"] == ["test-reviewers"]
+    assert background["distribution_group_keys"] == ["test-reviewers"]
+
+
+def test_simple_delivery_execution_is_left_for_durable_worker(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    captured = {}
+    started_at = datetime.now(tz=timezone.utc)
+    monkeypatch.setattr(
+        main,
+        "queue_artifact_execution",
+        lambda client_key, artifact_key, **kwargs: captured.update(kwargs) or {
+            "run_id": "11111111-1111-1111-1111-111111111111",
+            "client_key": client_key,
+            "artifact_key": artifact_key,
+            "status": "queued",
+            "started_at": started_at,
+            "completed_at": None,
+            "outputs": [],
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifact-executions",
+        headers={**_auth_headers(token), "X-Identity-Roles": "srp_pnl_scope_a"},
+        json={
+            "client_key": "srp",
+            "artifact_key": "visit-counts",
+            "behavior": "deliver",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["execution_mode"] == "live"
+
+
+def test_queue_cancel_requires_control_role_and_returns_count(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    monkeypatch.setenv("ARTIFACT_DELIVERY_CONTROL_ROLES", "srp_production_admin")
+    monkeypatch.setattr(
+        main,
+        "cancel_queued_artifact_executions",
+        lambda client_key, run_ids, reason: {
+            "status": "cancelled",
+            "cancelled_count": len(run_ids),
+        },
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+    payload = {
+        "client_key": "srp",
+        "run_ids": ["11111111-1111-1111-1111-111111111111"],
+        "reason": "Verified synchronous recovery delivered this report",
+    }
+
+    denied = client.post(
+        "/artifact-delivery-queue/cancel",
+        headers=_auth_headers(token),
+        json=payload,
+    )
+    accepted = client.post(
+        "/artifact-delivery-queue/cancel",
+        headers={**_auth_headers(token), "X-Identity-Roles": "srp_production_admin"},
+        json=payload,
+    )
+
+    assert denied.status_code == 403
+    assert accepted.status_code == 200
+    assert accepted.json() == {"status": "cancelled", "cancelled_count": 1}
+
+
+def test_delivery_batch_requires_configured_control_role(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    monkeypatch.setenv("ARTIFACT_DELIVERY_CONTROL_ROLES", "srpdev_pnl_delivery_operator")
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/delivery-batches",
+        headers={**_auth_headers(token), "X-Identity-Roles": "srp_pnl_scope_a"},
+        json={
+            "client_key": "srp",
+            "artifact_keys": ["pnl-owner-email-owner-1"],
+            "reporting_period": "July 2026",
+            "idempotency_key": "july-2026-owner-batch",
+            "mode": "live",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_delivery_batch_passes_server_resolved_identity_context(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    captured = {}
+    created_at = datetime.now(tz=timezone.utc)
+    monkeypatch.setenv("ARTIFACT_DELIVERY_CONTROL_ROLES", "srpdev_pnl_delivery_operator")
+
+    def fake_create_delivery_batch(client_key, artifact_keys, **kwargs):
+        captured.update(client_key=client_key, artifact_keys=artifact_keys, **kwargs)
+        return {
+            "batch_id": "11111111-1111-1111-1111-111111111111",
+            "client_key": client_key,
+            "reporting_period": kwargs["reporting_period"],
+            "mode": kwargs["mode"],
+            "status": "in_progress",
+            "created_at": created_at,
+            "items": [
+                {
+                    "item_id": "22222222-2222-2222-2222-222222222222",
+                    "artifact_key": artifact_keys[0],
+                    "run_id": "33333333-3333-3333-3333-333333333333",
+                    "status": "queued",
+                    "attempt_number": 1,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main, "create_delivery_batch", fake_create_delivery_batch)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/delivery-batches",
+        headers={
+            **_auth_headers(token),
+            "X-Identity-Roles": "srpdev_pnl_delivery_operator,srp_pnl_scope_a",
+        },
+        json={
+            "client_key": "srp",
+            "artifact_keys": ["pnl-owner-email-owner-1"],
+            "reporting_period": "July 2026",
+            "idempotency_key": "july-2026-owner-batch",
+            "mode": "internal_test",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["authenticated_subject"] == "user-1"
+    assert captured["authorized_roles"] == ["srp_pnl_scope_a", "srpdev_pnl_delivery_operator"]
+    assert captured["mode"] == "internal_test"
 
 
 def test_execution_status_rejects_other_client_run(monkeypatch):
@@ -467,6 +641,109 @@ def test_execution_status_serializes_database_uuid(monkeypatch):
     assert response.status_code == 200
     assert response.json()["run_id"] == str(run_id)
     assert response.json()["status"] == "completed"
+
+
+def test_execution_delivery_reconcile_returns_exchange_status(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    run_id = "33333333-3333-3333-3333-333333333333"
+    started_at = datetime.now(tz=timezone.utc)
+    record = {
+        "run_id": run_id,
+        "client_key": "srp",
+        "artifact_key": "pnl-owner-single-training-email",
+        "status": "completed",
+        "started_at": started_at,
+        "completed_at": started_at,
+        "delivery_status": "provider_accepted",
+        "outputs": [],
+    }
+    monkeypatch.setattr(main, "get_run", lambda requested_run_id: record)
+    monkeypatch.setattr(
+        main,
+        "reconcile_artifact_delivery",
+        lambda requested_run_id: {**record, "delivery_status": "delivered"},
+    )
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        f"/artifact-executions/{run_id}/reconcile",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "delivered"
+
+
+def test_latest_artifact_deliveries_returns_nonrecipient_history(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    sent_at = datetime(2026, 8, 28, 10, 6, 53, tzinfo=timezone.utc)
+    captured = {}
+
+    def fake_latest(client_key, artifact_keys):
+        captured["client_key"] = client_key
+        captured["artifact_keys"] = artifact_keys
+        return [
+            {
+                "artifact_key": "pnl-owner-single-training-email",
+                "run_id": UUID("44444444-4444-4444-4444-444444444444"),
+                "delivery_status": "provider_accepted",
+                "sent_at": sent_at,
+                "reporting_period": None,
+                "batch_id": UUID("55555555-5555-5555-5555-555555555555"),
+                "item_id": UUID("66666666-6666-6666-6666-666666666666"),
+            }
+        ]
+
+    monkeypatch.setattr(main, "get_latest_artifact_deliveries", fake_latest)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["developer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.get(
+        "/artifact-deliveries/latest",
+        params=[
+            ("client_key", "srp"),
+            ("artifact_key", "pnl-owner-single-training-email"),
+        ],
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "client_key": "srp",
+        "artifact_keys": ["pnl-owner-single-training-email"],
+    }
+    assert response.json() == [
+        {
+            "artifact_key": "pnl-owner-single-training-email",
+            "run_id": "44444444-4444-4444-4444-444444444444",
+            "delivery_status": "provider_accepted",
+            "sent_at": "2026-08-28T10:06:53Z",
+            "reporting_period": None,
+            "batch_id": "55555555-5555-5555-5555-555555555555",
+            "item_id": "66666666-6666-6666-6666-666666666666",
+        }
+    ]
 
 
 def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
