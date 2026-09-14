@@ -394,6 +394,7 @@ class UsageLoginSummary(BaseModel):
 
 
 class UsageSummaryResponse(BaseModel):
+    monitoring_available: bool = True
     client_key: str
     days: int
     period_start: datetime

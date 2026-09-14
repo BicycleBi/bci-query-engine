@@ -1,3 +1,4 @@
+from .usage_access import get_access_summary, require_usage_reporting_access
 """
 main.py — FastAPI routes for the Query Engine.
 """
@@ -380,6 +381,7 @@ def record_usage_interaction(
     response_model=UsageSummaryResponse,
 )
 def usage_summary(
+    response: Response,
     client_key: str,
     artifact_key: str,
     days: int = 30,
@@ -391,7 +393,33 @@ def usage_summary(
         raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
+    if client_key == "srp":
+        require_usage_reporting_access(identity, client_key)
+    response.headers["Cache-Control"] = "no-store"
     return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/access-summary")
+def access_summary(
+    response: Response,
+    client_key: str,
+    artifact_key: str,
+    days: int = 30,
+    search: str = "",
+    offset: int = 0,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if artifact_key != "usage-monitoring-dashboard":
+        raise HTTPException(404, "Access summary is unavailable for this artifact")
+    if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
+        raise HTTPException(400, "Invalid reporting period, search, or offset")
+    require_usage_reporting_access(identity, client_key)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return get_access_summary(client_key=client_key, days=days, search=search, offset=offset)
+    except Exception:
+        raise HTTPException(503, "Access reporting is unavailable") from None
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")

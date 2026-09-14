@@ -50,6 +50,8 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
     parameters = (client_key, period_start, period_end)
 
     with get_metadata_conn() as meta:
+        meta.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        meta.execute("SET LOCAL statement_timeout = '10s'")
         relation = meta.execute(
             "SELECT to_regclass('monitoring.request_spans'), to_regclass('monitoring.events')"
         ).fetchone()
@@ -59,6 +61,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 "days": days,
                 "period_start": period_start,
                 "period_end": period_end,
+                "monitoring_available": False,
                 "totals": {},
                 "daily": [],
                 "artifacts": [],
@@ -79,7 +82,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 FROM monitoring.request_spans
                 WHERE client_key = %s
                   AND artifact_key IS NOT NULL
-                  AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+                  AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
                   AND started_at >= %s
                   AND started_at < %s
             ),
@@ -117,7 +120,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             FROM monitoring.request_spans
             WHERE client_key = %s
               AND artifact_key IS NOT NULL
-              AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND started_at >= %s
               AND started_at < %s
             GROUP BY started_at::date
@@ -144,7 +147,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
              AND a.artifact_key = s.artifact_key
             WHERE s.client_key = %s
               AND s.artifact_key IS NOT NULL
-              AND s.route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND s.route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND s.started_at >= %s
               AND s.started_at < %s
             GROUP BY s.artifact_key, a.display_name
@@ -167,7 +170,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             FROM monitoring.request_spans
             WHERE client_key = %s
               AND artifact_key IS NOT NULL
-              AND route_template <> '/artifacts/{client_key}/{artifact_key}/usage-summary'
+              AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND started_at >= %s
               AND started_at < %s
             GROUP BY COALESCE(NULLIF(user_id, ''), NULLIF(username, ''), 'unknown'),
