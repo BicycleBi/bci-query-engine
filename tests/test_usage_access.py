@@ -194,7 +194,7 @@ def test_matrix_route_forwards_perspective_and_literal_search(monkeypatch,perspe
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[]})
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',params={'perspective':perspective,'search':"synthetic_%'",'offset':50},headers=_auth_headers(_token('srp')))
     assert response.status_code==200 and response.headers['cache-control']=='no-store'
-    assert captured==[{'client_key':'srp','perspective':perspective,'search':"synthetic_%'",'offset':50}]
+    assert captured==[{'client_key':'srp','perspective':perspective,'search':"synthetic_%'",'offset':50,'audience':'all'}]
 
 
 def test_matrix_query_parses_for_both_perspectives(monkeypatch):
@@ -204,6 +204,27 @@ def test_matrix_query_parses_for_both_perspectives(monkeypatch):
         db=install_metadata(monkeypatch,[[(0,)],[],[]])
         usage_access.get_access_matrix(client_key='srp',perspective=perspective)
         for sql,params in db.calls:
-            replacements={'client':"'srp'",'now':"now()",'search':"''",'offset':'0','ids':"ARRAY[]::text[]"}
+            replacements={'client':"'srp'",'now':"now()",'search':"''",'offset':'0','ids':"ARRAY[]::text[]",'audience':"'all'",'admin_role':"'srpdev_bicycle_dev'"}
             parsed=re.sub(r'%\((\w+)\)s',lambda m:replacements[m[1]],sql)
             parse_sql(parsed)
+
+
+@pytest.mark.parametrize('audience',['srp','bicycle'])
+@pytest.mark.parametrize('perspective',['users','artifacts'])
+def test_audience_filter_is_applied_to_scoped_assignments_before_pagination(monkeypatch,audience,perspective):
+    db=install_metadata(monkeypatch,[[(0,)],[],[]])
+    result=usage_access.get_access_matrix(client_key='srp',perspective=perspective,audience=audience)
+    assert result['audience']==audience
+    sql,params=db.calls[-1]
+    assert "aa.role_key=%(admin_role)s" in sql
+    assert params['admin_role']=='srpdev_bicycle_dev' and params['audience']==audience
+    if perspective=='users':
+        assert "aa.role_key=%(admin_role)s" in db.calls[2][0]
+        assert "aa.role_key=%(admin_role)s" in db.calls[3][0]
+
+
+@pytest.mark.parametrize('query',['perspective=users&audience=unknown','audience=srp'])
+def test_invalid_audience_is_rejected(monkeypatch,query):
+    main=_load_main(monkeypatch)
+    response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary?'+query,headers=_auth_headers(_token('srp')))
+    assert response.status_code==400

@@ -127,22 +127,25 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
     }
 
 
-def get_access_matrix(*, client_key: str, perspective: str, search: str = '', offset: int = 0) -> dict:
+def get_access_matrix(*, client_key: str, perspective: str, search: str = '', offset: int = 0, audience: str = 'all') -> dict:
     """Artifact-centric metadata projection matching Security resource wildcards."""
-    if perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
+    if audience not in {'all', 'srp', 'bicycle'} or perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
         raise ValueError('Invalid access matrix bounds')
     now = datetime.now(timezone.utc)
-    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset}
+    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': 'srpdev_bicycle_dev'}
     users_scope = """FROM security_users u WHERE (u.client_key=%(client)s
       OR EXISTS (SELECT 1 FROM security_user_roles r WHERE r.user_id=u.user_id AND r.client_key=%(client)s)
-      OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))"""
+      OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))
+      AND (%(audience)s='all'
+        OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
+        OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))"""
     with get_metadata_conn() as conn:
         conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         conn.execute("SET LOCAL statement_timeout = '10s'")
         if perspective == 'users':
             scope = users_scope + " AND (%(search)s='' OR strpos(lower(u.display_name),%(search)s)>0 OR strpos(lower(u.email),%(search)s)>0)"
-            total = conn.execute('SELECT count(*) '+scope, params).fetchone()[0]
-            subjects = conn.execute('SELECT u.user_id,u.display_name,u.email,u.active '+scope+
+            total = conn.execute(_ASSIGNMENTS+'SELECT count(*) '+scope, params).fetchone()[0]
+            subjects = conn.execute(_ASSIGNMENTS+'SELECT u.user_id,u.display_name,u.email,u.active '+scope+
                                     ' ORDER BY lower(u.display_name),u.user_id LIMIT 50 OFFSET %(offset)s',params).fetchall()
             params['ids'] = [r[0] for r in subjects]
             selection = 'u.user_id=ANY(%(ids)s)'
@@ -205,5 +208,5 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
         row.update(matches=matches[:200],matches_truncated=len(matches)>200,
                    total_matches=matches[0]['total_matches'] if matches else 0)
         rows.append(row)
-    return {'client_key':client_key,'as_of':now,'perspective':perspective,'rows':rows,
+    return {'client_key':client_key,'as_of':now,'perspective':perspective,'audience':audience,'rows':rows,
             'total':total,'offset':offset,'limit':50,'has_more':offset+len(subjects)<total}

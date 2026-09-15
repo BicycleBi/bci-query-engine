@@ -408,6 +408,7 @@ def access_summary(
     search: str = "",
     offset: int = 0,
     perspective: str = "",
+    audience: str = "all",
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     require_client_access(identity, client_key)
@@ -415,13 +416,15 @@ def access_summary(
         raise HTTPException(404, "Access summary is unavailable for this artifact")
     if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
         raise HTTPException(400, "Invalid reporting period, search, or offset")
+    if audience not in {"all", "srp", "bicycle"} or (audience != "all" and not perspective):
+        raise HTTPException(400, "Invalid access audience")
     if perspective not in {"", "users", "artifacts"}:
         raise HTTPException(400, "Invalid access perspective")
     require_usage_reporting_access(identity, client_key)
     response.headers["Cache-Control"] = "no-store"
     try:
         if perspective:
-            return get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset)
+            return get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=audience)
         return get_access_summary(client_key=client_key, days=days, search=search, offset=offset)
     except Exception:
         raise HTTPException(503, "Access reporting is unavailable") from None
