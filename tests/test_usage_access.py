@@ -144,3 +144,66 @@ def test_usage_unavailable_is_not_reported_as_observed_zero(monkeypatch):
     result=monitoring.get_usage_summary(client_key='srp',days=30)
     assert result['monitoring_available'] is False
     assert result['totals'] == {}
+
+@pytest.mark.parametrize('perspective,subjects,expected_name', [
+    ('users',[('u1','Synthetic User','user@example.test',True)],'Synthetic User'),
+    ('artifacts',[('home','SRP Home',True)],'SRP Home'),
+])
+def test_access_matrix_resolves_artifact_names_and_both_perspectives(monkeypatch,perspective,subjects,expected_name):
+    edge=('home','SRP Home',True,'u1','Synthetic User','user@example.test',True,True,False,1,
+          [{'role':'reader','source':'group','group':'synthetic','permission':'artifact:read','resource':'artifact:srp:*'}],False)
+    db=install_metadata(monkeypatch,[[(1,)],subjects,[edge]])
+    result=usage_access.get_access_matrix(client_key='srp',perspective=perspective)
+    assert result['rows'][0]['display_name']==expected_name
+    assert result['rows'][0]['matches'][0]['artifact_name']=='SRP Home'
+    assert result['rows'][0]['matches'][0]['can_view'] is True
+    assert result['rows'][0]['matches'][0]['can_run'] is False
+    sql=db.calls[-1][0]
+    assert "'artifact:*:*','*'" in sql
+    assert "a.client_key=%(client)s" in sql
+    assert 'edge_number<=201' in sql
+
+@pytest.mark.parametrize('user_active,artifact_active',[(False,True),(True,False)])
+def test_access_matrix_disabled_subjects_preserve_assignments_without_effective_access(monkeypatch,user_active,artifact_active):
+    edge=('home','SRP Home',artifact_active,'u1','Synthetic User','user@example.test',user_active,True,True,1,[],False)
+    install_metadata(monkeypatch,[[(1,)],[('u1','Synthetic User','user@example.test',user_active)],[edge]])
+    match=usage_access.get_access_matrix(client_key='srp',perspective='users')['rows'][0]['matches'][0]
+    assert match['assigned_view'] and match['assigned_run']
+    assert not match['can_view'] and not match['can_run']
+
+
+def test_access_matrix_no_assignments_remain_visible_and_paginate(monkeypatch):
+    install_metadata(monkeypatch,[[(51,)],[('u1','Synthetic User','user@example.test',True)],[]])
+    result=usage_access.get_access_matrix(client_key='srp',perspective='users')
+    assert result['has_more']
+    assert result['rows'][0]['matches']==[]
+
+
+def test_matrix_route_keeps_exact_reporting_authorization(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *a: (_ for _ in ()).throw(HTTPException(403,'Denied')))
+    monkeypatch.setattr(main,'get_access_matrix',lambda **kw: pytest.fail('unauthorized matrix query'))
+    assert TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary?perspective=artifacts',headers=_auth_headers(_token("srp"))).status_code==403
+
+
+@pytest.mark.parametrize('perspective',['users','artifacts'])
+def test_matrix_route_forwards_perspective_and_literal_search(monkeypatch,perspective):
+    main=_load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: None)
+    captured=[]
+    monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[]})
+    response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',params={'perspective':perspective,'search':"synthetic_%'",'offset':50},headers=_auth_headers(_token('srp')))
+    assert response.status_code==200 and response.headers['cache-control']=='no-store'
+    assert captured==[{'client_key':'srp','perspective':perspective,'search':"synthetic_%'",'offset':50}]
+
+
+def test_matrix_query_parses_for_both_perspectives(monkeypatch):
+    import re
+    from pglast import parse_sql
+    for perspective in ['users','artifacts']:
+        db=install_metadata(monkeypatch,[[(0,)],[],[]])
+        usage_access.get_access_matrix(client_key='srp',perspective=perspective)
+        for sql,params in db.calls:
+            replacements={'client':"'srp'",'now':"now()",'search':"''",'offset':'0','ids':"ARRAY[]::text[]"}
+            parsed=re.sub(r'%\((\w+)\)s',lambda m:replacements[m[1]],sql)
+            parse_sql(parsed)

@@ -125,3 +125,85 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
                    'last_activity_at': usage.get(uid, (0, None))[1]}
                   for uid, name, email, active in users],
     }
+
+
+def get_access_matrix(*, client_key: str, perspective: str, search: str = '', offset: int = 0) -> dict:
+    """Artifact-centric metadata projection matching Security resource wildcards."""
+    if perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
+        raise ValueError('Invalid access matrix bounds')
+    now = datetime.now(timezone.utc)
+    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset}
+    users_scope = """FROM security_users u WHERE (u.client_key=%(client)s
+      OR EXISTS (SELECT 1 FROM security_user_roles r WHERE r.user_id=u.user_id AND r.client_key=%(client)s)
+      OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))"""
+    with get_metadata_conn() as conn:
+        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        conn.execute("SET LOCAL statement_timeout = '10s'")
+        if perspective == 'users':
+            scope = users_scope + " AND (%(search)s='' OR strpos(lower(u.display_name),%(search)s)>0 OR strpos(lower(u.email),%(search)s)>0)"
+            total = conn.execute('SELECT count(*) '+scope, params).fetchone()[0]
+            subjects = conn.execute('SELECT u.user_id,u.display_name,u.email,u.active '+scope+
+                                    ' ORDER BY lower(u.display_name),u.user_id LIMIT 50 OFFSET %(offset)s',params).fetchall()
+            params['ids'] = [r[0] for r in subjects]
+            selection = 'u.user_id=ANY(%(ids)s)'
+        else:
+            scope = "FROM app.artifacts a WHERE a.client_key=%(client)s AND (%(search)s='' OR strpos(lower(a.display_name),%(search)s)>0 OR strpos(lower(a.artifact_key),%(search)s)>0)"
+            total = conn.execute('SELECT count(*) '+scope,params).fetchone()[0]
+            subjects = conn.execute('SELECT a.artifact_key,a.display_name,a.active '+scope+
+                                    ' ORDER BY lower(a.display_name),a.artifact_key LIMIT 50 OFFSET %(offset)s',params).fetchall()
+            params['ids'] = [r[0] for r in subjects]
+            selection = 'a.artifact_key=ANY(%(ids)s)'
+        # Resolve complete permissions before bounding displayed drilldown details.
+        edges = conn.execute(_ASSIGNMENTS + ", scoped_users AS (SELECT u.user_id "+users_scope+"""),
+          matched AS (
+            SELECT a.artifact_key,a.display_name AS artifact_name,a.active AS artifact_active,
+              u.user_id,u.display_name,u.email,u.active,
+              p.permission_key,p.resource_key,ass.role_key,ass.source,ass.group_key
+            FROM app.artifacts a
+            JOIN security_role_permissions p ON p.resource_key IN
+              ('artifact:' || %(client)s || ':' || a.artifact_key,
+               'artifact:' || %(client)s || ':*','artifact:*:*','*')
+              AND p.permission_key IN ('artifact:read','artifact:execute','*')
+            JOIN assignments ass ON ass.role_key=p.role_key
+            JOIN security_users u ON u.user_id=ass.user_id
+            JOIN scoped_users su ON su.user_id=u.user_id
+            WHERE a.client_key=%(client)s AND """+selection+"""
+          ), grouped AS (
+            SELECT artifact_key,artifact_name,artifact_active,user_id,display_name,email,active,
+              bool_or(permission_key IN ('artifact:read','*')) AS can_view,
+              bool_or(permission_key IN ('artifact:execute','*')) AS can_run,
+              count(*) AS grant_count
+            FROM matched GROUP BY artifact_key,artifact_name,artifact_active,user_id,display_name,email,active
+          ), ranked AS (
+            SELECT *,row_number() OVER (PARTITION BY """+('user_id' if perspective=='users' else 'artifact_key')+"""
+              ORDER BY lower("""+('artifact_name' if perspective=='users' else 'display_name')+"""),artifact_key,user_id) AS edge_number,
+              count(*) OVER (PARTITION BY """+('user_id' if perspective=='users' else 'artifact_key')+""" ) AS edge_count
+            FROM grouped
+          )
+          SELECT artifact_key,artifact_name,artifact_active,user_id,display_name,email,active,
+            can_view,can_run,edge_count,
+            (SELECT jsonb_agg(detail) FROM
+              (SELECT DISTINCT jsonb_build_object('role',m.role_key,'source',m.source,
+                'group',m.group_key,'permission',m.permission_key,'resource',m.resource_key) AS detail
+               FROM matched m WHERE m.artifact_key=r.artifact_key AND m.user_id=r.user_id
+               LIMIT 200) d),grant_count>200
+          FROM ranked r WHERE edge_number<=201 ORDER BY edge_number
+        """,params).fetchall()
+    by_subject = {}
+    for key,title,artifact_active,uid,name,email,active,view,run,count,details,details_truncated in edges:
+        subject = uid if perspective == 'users' else key
+        by_subject.setdefault(subject,[]).append({'artifact_key':key,'artifact_name':title,
+          'artifact_active':artifact_active,'display_name':name,'username':email,'active':active,
+          'can_view':bool(view and active and artifact_active),'can_run':bool(run and active and artifact_active),
+          'assigned_view':view,'assigned_run':run,'details':details or [],'details_truncated':details_truncated,
+          'total_matches':count})
+    rows = []
+    for item in subjects:
+        matches = by_subject.get(item[0],[])
+        row = ({'display_name':item[1],'username':item[2],'active':item[3]} if perspective=='users'
+               else {'artifact_key':item[0],'display_name':item[1],'active':item[2]})
+        row.update(matches=matches[:200],matches_truncated=len(matches)>200,
+                   total_matches=matches[0]['total_matches'] if matches else 0)
+        rows.append(row)
+    return {'client_key':client_key,'as_of':now,'perspective':perspective,'rows':rows,
+            'total':total,'offset':offset,'limit':50,'has_more':offset+len(subjects)<total}
