@@ -1,3 +1,4 @@
+from .usage_access import get_access_summary, get_access_matrix, require_usage_reporting_access
 """
 main.py — FastAPI routes for the Query Engine.
 """
@@ -54,6 +55,7 @@ from .models import (
     RunResponse,
     UsageInteractionRequest,
     UsageInteractionResponse,
+    UsageSummaryResponse,
     UsageEventIngestRequest,
     UsageEventIngestResponse,
 )
@@ -61,6 +63,7 @@ from .monitoring import (
     record_ingested_event_async,
     record_interaction_event_async,
     record_request_span_async,
+    get_usage_summary,
     start_gateway_listener,
     stop_gateway_listener,
 )
@@ -371,6 +374,60 @@ def record_usage_interaction(
         reason_code=interaction.reason_code,
     )
     return UsageInteractionResponse()
+
+
+@app.get(
+    "/artifacts/{client_key}/{artifact_key}/usage-summary",
+    response_model=UsageSummaryResponse,
+)
+def usage_summary(
+    response: Response,
+    client_key: str,
+    artifact_key: str,
+    days: int = 30,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return bounded monitoring aggregates for one authorized client."""
+    require_client_access(identity, client_key)
+    if artifact_key != "usage-monitoring-dashboard":
+        raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
+    if days not in {7, 30, 90}:
+        raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
+    if client_key == "srp":
+        require_usage_reporting_access(identity, client_key)
+    response.headers["Cache-Control"] = "no-store"
+    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/access-summary")
+def access_summary(
+    response: Response,
+    client_key: str,
+    artifact_key: str,
+    days: int = 30,
+    search: str = "",
+    offset: int = 0,
+    perspective: str = "",
+    audience: str = "all",
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if artifact_key != "usage-monitoring-dashboard":
+        raise HTTPException(404, "Access summary is unavailable for this artifact")
+    if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
+        raise HTTPException(400, "Invalid reporting period, search, or offset")
+    if audience not in {"all", "srp", "bicycle"} or (audience != "all" and not perspective):
+        raise HTTPException(400, "Invalid access audience")
+    if perspective not in {"", "users", "artifacts"}:
+        raise HTTPException(400, "Invalid access perspective")
+    require_usage_reporting_access(identity, client_key)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        if perspective:
+            return get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=audience)
+        return get_access_summary(client_key=client_key, days=days, search=search, offset=offset)
+    except Exception:
+        raise HTTPException(503, "Access reporting is unavailable") from None
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
