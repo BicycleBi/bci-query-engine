@@ -28,10 +28,13 @@ WITH assignments AS (
 
 def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> None:
     """Require a live, exact reporting grant; broad artifact grants don't qualify."""
+    # Security also resolves existing canonical users through verified token email
+    # when a provider subject differs from their metadata user ID.
     if identity.get('client_key') != client_key or not identity.get('sub'):
         raise HTTPException(403, 'Usage reporting access denied')
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
-              'subject': identity['sub'], 'resource': f'artifact:{client_key}:usage-monitoring-dashboard'}
+              'subject': identity['sub'], 'email': str(identity.get('email') or ''),
+              'resource': f'artifact:{client_key}:usage-monitoring-dashboard'}
     try:
         with get_metadata_conn() as conn:
             conn.execute('SET TRANSACTION READ ONLY')
@@ -40,7 +43,8 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
                   SELECT 1 FROM assignments a
                   JOIN security_users u ON u.user_id = a.user_id AND u.active
                   JOIN security_role_permissions p ON p.role_key = a.role_key
-                  WHERE u.user_id = %(subject)s
+                  WHERE (u.user_id = %(subject)s
+                         OR (%(email)s <> '' AND lower(u.email) = lower(%(email)s)))
                     AND p.resource_key = %(resource)s AND p.permission_key = 'usage:read'
                 )
             """, params).fetchone()
