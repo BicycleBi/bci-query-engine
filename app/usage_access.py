@@ -1,6 +1,7 @@
 """Bounded security-metadata reporting. Never reads report or recipient data."""
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import os
 
 from fastapi import HTTPException
 from .db import get_metadata_conn
@@ -132,7 +133,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
     if audience not in {'all', 'srp', 'bicycle'} or perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
         raise ValueError('Invalid access matrix bounds')
     now = datetime.now(timezone.utc)
-    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': 'srpdev_bicycle_dev'}
+    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
     users_scope = """FROM security_users u WHERE (u.client_key=%(client)s
       OR EXISTS (SELECT 1 FROM security_user_roles r WHERE r.user_id=u.user_id AND r.client_key=%(client)s)
       OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))

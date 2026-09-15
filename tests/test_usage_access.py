@@ -228,3 +228,10 @@ def test_invalid_audience_is_rejected(monkeypatch,query):
     main=_load_main(monkeypatch)
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary?'+query,headers=_auth_headers(_token('srp')))
     assert response.status_code==400
+
+def test_qa_admin_cohort_uses_configured_role(monkeypatch):
+    monkeypatch.setenv('SRP_BICYCLE_ADMIN_ROLE', 'srpqa_admin')
+    db=install_metadata(monkeypatch,[[(0,)],[],[]])
+    result=usage_access.get_access_matrix(client_key='srp',perspective='users',audience='bicycle')
+    assert result['audience']=='bicycle'
+    assert db.calls[-1][1]['admin_role']=='srpqa_admin'
