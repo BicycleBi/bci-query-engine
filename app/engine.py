@@ -794,6 +794,11 @@ def _set_authorization_context(
         (json.dumps(sorted(set(authorized_roles or [])), separators=(",", ":")),),
     )
 
+    data.execute(
+        "SELECT set_config('bci.platform_admin_role', %s, true)",
+        (os.getenv("SRP_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev"),),
+    )
+
 
 def _safe_view_name(view_name: str) -> str:
     """Allow only schema-qualified identifiers from trusted metadata."""
