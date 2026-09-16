@@ -1036,3 +1036,47 @@ def test_protected_routes_reject_token_without_client_scope(monkeypatch):
         },
     )
     assert response.status_code == 403
+
+
+def test_srp_corporate_role_can_open_analytics_but_not_internal_libraries(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
+    monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "uat")
+    calls = []
+    monkeypatch.setattr(main, "execute_artifact", lambda *args, **kwargs: calls.append((args, kwargs)) or {
+        "run_id": "11111111-1111-1111-1111-111111111111",
+        "status": "success",
+        "preview_html": "<p>ok</p>",
+        "cache": {},
+    })
+    client = TestClient(main.app)
+    token = _encode_token({
+        "aud": "bci-client", "client_key": "srp", "exp": int(time.time()) + 3600,
+        "iat": int(time.time()), "iss": "bci-security", "roles": ["uat"], "sub": "corporate-user",
+    })
+
+    assert client.get("/artifacts/srp/usage-monitoring-dashboard", headers=_auth_headers(token)).status_code == 200
+    for artifact_key in ("weekly-qc-report", "quickbooks-profit-loss-training-report", "practice-owner-profit-loss-guided-tour"):
+        assert client.get(f"/artifacts/srp/{artifact_key}", headers=_auth_headers(token)).status_code == 403
+    assert len(calls) == 1
+
+
+def test_srp_facility_role_cannot_open_analytics_and_admin_can_open_internal_library(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
+    monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "uat")
+    monkeypatch.setattr(main, "execute_artifact", lambda *args, **kwargs: {
+        "run_id": "11111111-1111-1111-1111-111111111111",
+        "status": "success",
+        "preview_html": "<p>ok</p>",
+        "cache": {},
+    })
+    client = TestClient(main.app)
+    def token(roles, subject):
+        return _encode_token({
+            "aud": "bci-client", "client_key": "srp", "exp": int(time.time()) + 3600,
+            "iat": int(time.time()), "iss": "bci-security", "roles": roles, "sub": subject,
+        })
+
+    assert client.get("/artifacts/srp/usage-monitoring-dashboard", headers=_auth_headers(token(["facility_owner"], "owner"))).status_code == 403
+    assert client.get("/artifacts/srp/weekly-qc-report", headers=_auth_headers(token(["srpqa_admin"], "admin"))).status_code == 200

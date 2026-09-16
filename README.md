@@ -41,6 +41,7 @@ normal Postgres-backed execution path.
 | `GET`  | `/artifacts/{client_key}/{artifact_key}` | Render and return artifact HTML |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/assets/{asset_path}` | Return a versioned package-owned static asset |
 | `GET`  | `/artifacts/{client_key}/{artifact_key}/distribution-groups` | List approved active distribution groups without recipient details |
+| `GET`  | `/artifacts/{client_key}/{artifact_key}/usage-summary?days=30` | Return a bounded client-scoped usage and response-time summary |
 | `POST` | `/artifact-executions` | Create an artifact execution |
 | `GET`  | `/artifact-executions/{run_id}` | Get artifact execution status |
 | `POST` | `/artifact-executions/{run_id}/reconcile` | Run one bounded Exchange trace attempt |
@@ -59,6 +60,16 @@ only after the Email Service returns a matched Exchange trace. Batch items
 include `confirmed_at`, and latest-delivery history includes `batch_id` and
 `item_id`, allowing dashboards to resume 15-second background tracking after a
 page refresh without exposing recipients or message content.
+
+
+The usage summary route is nested below the `usage-monitoring-dashboard`
+artifact so the gateway applies the dashboard's artifact-read authorization.
+It accepts only `7`, `30`, or `90` day windows and applies the same authenticated
+client boundary as artifact routes. It returns aggregate
+request, artifact, login, interaction, and response-time measures plus the
+recorded display name/username for active users. It does not return email
+addresses, request IDs, session IDs, raw events, request or response bodies,
+filters, payloads, or rendered output.
 
 ### `POST /artifacts`
 
@@ -394,3 +405,44 @@ and optional duration/reason code. Monitoring writes are best-effort and run
 outside the response path so an observability outage cannot break a dashboard.
 `log.artifact_runs` remains the authoritative dashboard execution lifecycle and
 is correlated to request spans by `run_id`.
+
+### SRP usage and current-access reporting
+
+The SRP usage summary requires an explicit live `usage:read` permission on
+`artifact:srp:usage-monitoring-dashboard`. Wildcard artifact permissions and
+role labels in an old token do not satisfy this additional reporting check.
+The same check protects the new client-scoped endpoint:
+
+`GET /artifacts/{client_key}/usage-monitoring-dashboard/access-summary?days=30&search=&offset=0`
+
+This endpoint reports current security accounts, active/disabled state, current
+direct/group role assignments, exact permission/resource scope, and per-account
+request count and last activity in the selected 7/30/90-day period. It includes
+accounts with no activity, no current grants, and expired historical assignments.
+It does not return the expired assignments themselves. Central identities with
+assignments to the requested client are included; other clients' assignments are
+excluded. Search is a literal case-insensitive name/login substring (100-character
+maximum). Pages contain 50 accounts; per-account grants are capped at 200 with an
+explicit truncation flag. Both reporting responses use `Cache-Control: no-store`.
+
+Access is current at the response timestamp, not historical for the selected
+period. Counts are `null` when request monitoring is absent and zero only when
+the monitoring relation exists but no matching requests were recorded. A missing
+monitoring schema also produces `monitoring_available: false` on usage-summary.
+Both summary routes are excluded from request aggregates. Usage is never used to
+infer access. Permission scope does not expand report row-level restrictions or
+prove successful SSO sign-in.
+
+The assignment query mirrors the existing BCI Security metadata evaluator's
+client and expiry checks. In that runtime, `security_groups.active` does not
+invalidate an otherwise unexpired membership/role assignment; this report must
+not silently hide those grants. Verify evaluator parity against the target
+Security release before rollout. The new reporting check uses the active user's
+stable subject, not a user-supplied identity or an email-domain/admin-name heuristic.
+
+Source baseline: `origin/main` at `d0101e4` plus RF's usage summary commit
+`5d0917402c80689dd8fe710e790edda0996f3efa`; existing SRP delivery/queue models are
+preserved. The SRP artifact package and Dev preparation live in the SRP repository
+under `deployment/artifacts/usage-monitoring-dashboard`. Source tests use only
+synthetic identities and mocked metadata connections. They do not constitute
+live PostgreSQL or secured-host acceptance.
