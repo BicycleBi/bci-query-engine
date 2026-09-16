@@ -1,4 +1,4 @@
-from .usage_access import get_access_summary, get_access_matrix, require_usage_reporting_access
+from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 """
 main.py — FastAPI routes for the Query Engine.
 """
@@ -277,7 +277,7 @@ async def monitor_request_lifecycle(request: Request, call_next):
             response.headers["X-Request-ID"] = request_id
 
 
-def require_srp_artifact_scope(client_key: str, artifact_key: str, roles: list[str]) -> None:
+def require_srp_artifact_scope(client_key: str, artifact_key: str, roles: list[str], report: str = "") -> None:
     """Keep SRP analytics corporate-scoped and internal libraries admin-only."""
     if client_key != "srp":
         return
@@ -290,6 +290,12 @@ def require_srp_artifact_scope(client_key: str, artifact_key: str, roles: list[s
         allowed_roles = {role for role in (admin_role, corporate_role) if role}
         if not allowed_roles or role_set.isdisjoint(allowed_roles):
             raise HTTPException(status_code=403, detail="Artifact access denied")
+        if report and report not in {"usage", "access"}:
+            raise HTTPException(status_code=400, detail="Unknown analytics report")
+        if report == "usage" and (not admin_role or admin_role not in role_set):
+            raise HTTPException(status_code=403, detail="Usage reporting access denied")
+        if not report and corporate_role in role_set and admin_role not in role_set:
+            raise HTTPException(status_code=403, detail="Choose the Access report")
 
     internal_library_artifact = (
         "qc" in normalized_key
@@ -343,13 +349,14 @@ def get_artifact_html(
     artifact_key: str,
     request: Request,
     refresh: bool = False,
+    report: str = "",
     x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Render and return the artifact HTML for display retrieval."""
     require_client_access(identity, client_key)
     roles = authorized_roles(identity, x_identity_roles)
-    require_srp_artifact_scope(client_key, artifact_key, roles)
+    require_srp_artifact_scope(client_key, artifact_key, roles, report)
     result = execute_artifact(
         client_key,
         artifact_key,
@@ -419,7 +426,7 @@ def usage_summary(
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
     if client_key == "srp":
-        require_usage_reporting_access(identity, client_key)
+        require_analytics_reporting_access(identity, client_key, "usage")
     response.headers["Cache-Control"] = "no-store"
     return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
 
@@ -445,7 +452,7 @@ def access_summary(
         raise HTTPException(400, "Invalid access audience")
     if perspective not in {"", "users", "artifacts"}:
         raise HTTPException(400, "Invalid access perspective")
-    is_bicycle_admin = require_usage_reporting_access(identity, client_key)
+    is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "access")
     effective_audience = audience if is_bicycle_admin else "srp"
     response.headers["Cache-Control"] = "no-store"
     try:

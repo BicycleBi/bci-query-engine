@@ -26,16 +26,25 @@ WITH assignments AS (
 """
 
 
-def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> bool:
-    """Require a live exact grant and return whether the viewer is a Bicycle admin."""
+def require_analytics_reporting_access(identity: dict[str, Any], client_key: str, report: str) -> bool:
+    """Require a live report-specific grant and return whether the viewer is a Bicycle admin."""
     # Security also resolves existing canonical users through verified token email
     # when a provider subject differs from their metadata user ID.
     if identity.get('client_key') != client_key or not identity.get('sub'):
-        raise HTTPException(403, 'Usage reporting access denied')
+        raise HTTPException(403, 'Analytics reporting access denied')
+    if report not in {'usage', 'access'}:
+        raise HTTPException(400, 'Unknown analytics report')
+    admin_role = os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev').strip()
+    corporate_role = os.getenv('SRP_CORPORATE_ANALYTICS_ROLE', '').strip()
+    allowed_roles = [admin_role] if report == 'usage' else [role for role in (admin_role, corporate_role) if role]
+    if not allowed_roles:
+        raise HTTPException(503, 'Analytics reporting authorization is unavailable')
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
               'subject': identity['sub'], 'email': str(identity.get('email') or ''),
               'resource': f'artifact:{client_key}:usage-monitoring-dashboard',
-              'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
+              'admin_role': admin_role,
+              'corporate_role': corporate_role if report == 'access' else admin_role,
+              'permission': 'usage:read' if report == 'usage' else 'artifact:read'}
     try:
         with get_metadata_conn() as conn:
             conn.execute('SET TRANSACTION READ ONLY')
@@ -46,7 +55,8 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
                   JOIN security_role_permissions p ON p.role_key = a.role_key
                   WHERE (u.user_id = %(subject)s
                          OR (%(email)s <> '' AND lower(u.email) = lower(%(email)s)))
-                    AND p.resource_key = %(resource)s AND p.permission_key = 'usage:read'
+                    AND a.role_key IN (%(admin_role)s, %(corporate_role)s)
+                    AND p.resource_key = %(resource)s AND p.permission_key = %(permission)s
                 ), EXISTS (
                   SELECT 1 FROM assignments a
                   JOIN security_users u ON u.user_id = a.user_id AND u.active
@@ -56,10 +66,15 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
                 )
             """, params).fetchone()
     except Exception:
-        raise HTTPException(503, 'Usage reporting authorization is unavailable') from None
+        raise HTTPException(503, 'Analytics reporting authorization is unavailable') from None
     if not row or not row[0]:
-        raise HTTPException(403, 'Usage reporting access denied')
+        raise HTTPException(403, 'Analytics reporting access denied')
     return bool(row[1])
+
+
+def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> bool:
+    """Backward-compatible wrapper for callers that specifically request Usage."""
+    return require_analytics_reporting_access(identity, client_key, 'usage')
 
 
 def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,

@@ -14,7 +14,7 @@ def test_srp_reporting_requires_explicit_live_permission(monkeypatch, route):
     monkeypatch.setattr(main, 'get_access_summary', lambda **kw: pytest.fail('unauthorized query'))
     def denied(*args):
         raise HTTPException(403, 'Usage reporting access denied')
-    monkeypatch.setattr(main, 'require_usage_reporting_access', denied)
+    monkeypatch.setattr(main, 'require_analytics_reporting_access', denied)
     client = TestClient(main.app)
     path = f'/artifacts/srp/usage-monitoring-dashboard/{route}'
     assert client.get(path).status_code == 401
@@ -38,7 +38,7 @@ def test_access_summary_requires_monitoring_artifact(monkeypatch):
 
 def test_authorized_report_forwards_literal_search_and_disables_cache(monkeypatch):
     main = _load_main(monkeypatch)
-    monkeypatch.setattr(main, 'require_usage_reporting_access', lambda *args: True)
+    monkeypatch.setattr(main, 'require_analytics_reporting_access', lambda *args: True)
     captured = []
     monkeypatch.setattr(main, 'get_access_summary', lambda **kw: captured.append(kw) or {'users': []})
     response = TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
@@ -50,7 +50,7 @@ def test_authorized_report_forwards_literal_search_and_disables_cache(monkeypatc
 
 def test_unavailable_report_never_returns_underlying_error(monkeypatch):
     main = _load_main(monkeypatch)
-    monkeypatch.setattr(main, 'require_usage_reporting_access', lambda *args: None)
+    monkeypatch.setattr(main, 'require_analytics_reporting_access', lambda *args: None)
     def fail(**kwargs):
         raise RuntimeError('synthetic database error with private details')
     monkeypatch.setattr(main, 'get_access_summary', fail)
@@ -113,7 +113,10 @@ def test_live_authorization_result_is_enforced(monkeypatch, allowed):
         assert exc.value.status_code == 403
     sql,params=db.calls[-1]
     assert params['subject']=='synthetic-user'
-    assert "p.permission_key = 'usage:read'" in sql
+    assert "p.permission_key = %(permission)s" in sql
+    assert params['permission'] == 'usage:read'
+    assert params['admin_role'] == 'srpdev_bicycle_dev'
+    assert params['corporate_role'] == 'srpdev_bicycle_dev'
     assert 'identity' not in params
 
 
@@ -181,7 +184,7 @@ def test_access_matrix_no_assignments_remain_visible_and_paginate(monkeypatch):
 
 def test_matrix_route_keeps_exact_reporting_authorization(monkeypatch):
     main = _load_main(monkeypatch)
-    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *a: (_ for _ in ()).throw(HTTPException(403,'Denied')))
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *a: (_ for _ in ()).throw(HTTPException(403,'Denied')))
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: pytest.fail('unauthorized matrix query'))
     assert TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary?perspective=artifacts',headers=_auth_headers(_token("srp"))).status_code==403
 
@@ -189,7 +192,7 @@ def test_matrix_route_keeps_exact_reporting_authorization(monkeypatch):
 @pytest.mark.parametrize('perspective',['users','artifacts'])
 def test_matrix_route_forwards_perspective_and_literal_search(monkeypatch,perspective):
     main=_load_main(monkeypatch)
-    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: True)
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *args: True)
     captured=[]
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[]})
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',params={'perspective':perspective,'search':"synthetic_%'",'offset':50},headers=_auth_headers(_token('srp')))
@@ -240,7 +243,7 @@ def test_qa_admin_cohort_uses_configured_role(monkeypatch):
 @pytest.mark.parametrize('requested', ['all', 'srp', 'bicycle'])
 def test_corporate_viewer_is_forced_to_srp_audience(monkeypatch, requested):
     main=_load_main(monkeypatch)
-    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: False)
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *args: False)
     captured=[]
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[], 'audience':kw['audience']})
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
@@ -252,7 +255,7 @@ def test_corporate_viewer_is_forced_to_srp_audience(monkeypatch, requested):
 
 def test_bicycle_admin_keeps_all_access_audiences(monkeypatch):
     main=_load_main(monkeypatch)
-    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: True)
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *args: True)
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: {'rows':[], 'audience':kw['audience']})
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
         params={'perspective':'artifacts','audience':'bicycle'},headers=_auth_headers(_token('srp')))
