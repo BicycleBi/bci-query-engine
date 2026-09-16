@@ -38,14 +38,14 @@ def test_access_summary_requires_monitoring_artifact(monkeypatch):
 
 def test_authorized_report_forwards_literal_search_and_disables_cache(monkeypatch):
     main = _load_main(monkeypatch)
-    monkeypatch.setattr(main, 'require_usage_reporting_access', lambda *args: None)
+    monkeypatch.setattr(main, 'require_usage_reporting_access', lambda *args: True)
     captured = []
     monkeypatch.setattr(main, 'get_access_summary', lambda **kw: captured.append(kw) or {'users': []})
     response = TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
             params={'search': "Beyer's_%", 'offset': 50, 'days': 7}, headers=_auth_headers(_token('srp')))
     assert response.status_code == 200
     assert response.headers['cache-control'] == 'no-store'
-    assert captured == [{'client_key': 'srp', 'days': 7, 'offset': 50, 'search': "Beyer's_%"}]
+    assert captured == [{'client_key': 'srp', 'days': 7, 'offset': 50, 'search': "Beyer's_%", 'audience': 'all'}]
 
 
 def test_unavailable_report_never_returns_underlying_error(monkeypatch):
@@ -105,9 +105,9 @@ def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
 
 @pytest.mark.parametrize('allowed', [True, False])
 def test_live_authorization_result_is_enforced(monkeypatch, allowed):
-    db=install_metadata(monkeypatch, [[(allowed,)]])
+    db=install_metadata(monkeypatch, [[(allowed, True)]])
     identity={'client_key':'srp','sub':'synthetic-user','roles':['untrusted-admin-label']}
-    if allowed: usage_access.require_usage_reporting_access(identity,'srp')
+    if allowed: assert usage_access.require_usage_reporting_access(identity,'srp') is True
     else:
         with pytest.raises(HTTPException) as exc: usage_access.require_usage_reporting_access(identity,'srp')
         assert exc.value.status_code == 403
@@ -189,7 +189,7 @@ def test_matrix_route_keeps_exact_reporting_authorization(monkeypatch):
 @pytest.mark.parametrize('perspective',['users','artifacts'])
 def test_matrix_route_forwards_perspective_and_literal_search(monkeypatch,perspective):
     main=_load_main(monkeypatch)
-    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: None)
+    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: True)
     captured=[]
     monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[]})
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',params={'perspective':perspective,'search':"synthetic_%'",'offset':50},headers=_auth_headers(_token('srp')))
@@ -235,3 +235,27 @@ def test_qa_admin_cohort_uses_configured_role(monkeypatch):
     result=usage_access.get_access_matrix(client_key='srp',perspective='users',audience='bicycle')
     assert result['audience']=='bicycle'
     assert db.calls[-1][1]['admin_role']=='srpqa_admin'
+
+
+@pytest.mark.parametrize('requested', ['all', 'srp', 'bicycle'])
+def test_corporate_viewer_is_forced_to_srp_audience(monkeypatch, requested):
+    main=_load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: False)
+    captured=[]
+    monkeypatch.setattr(main,'get_access_matrix',lambda **kw: captured.append(kw) or {'rows':[], 'audience':kw['audience']})
+    response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
+        params={'perspective':'users','audience':requested},headers=_auth_headers(_token('srp')))
+    assert response.status_code==200
+    assert captured[0]['audience']=='srp'
+    assert response.json()['allowed_audiences']==['srp']
+
+
+def test_bicycle_admin_keeps_all_access_audiences(monkeypatch):
+    main=_load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_usage_reporting_access',lambda *args: True)
+    monkeypatch.setattr(main,'get_access_matrix',lambda **kw: {'rows':[], 'audience':kw['audience']})
+    response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary',
+        params={'perspective':'artifacts','audience':'bicycle'},headers=_auth_headers(_token('srp')))
+    assert response.status_code==200
+    assert response.json()['audience']=='bicycle'
+    assert response.json()['allowed_audiences']==['all','srp','bicycle']

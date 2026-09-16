@@ -26,54 +26,67 @@ WITH assignments AS (
 """
 
 
-def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> None:
-    """Require a live, exact reporting grant; broad artifact grants don't qualify."""
+def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> bool:
+    """Require a live exact grant and return whether the viewer is a Bicycle admin."""
     # Security also resolves existing canonical users through verified token email
     # when a provider subject differs from their metadata user ID.
     if identity.get('client_key') != client_key or not identity.get('sub'):
         raise HTTPException(403, 'Usage reporting access denied')
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
               'subject': identity['sub'], 'email': str(identity.get('email') or ''),
-              'resource': f'artifact:{client_key}:usage-monitoring-dashboard'}
+              'resource': f'artifact:{client_key}:usage-monitoring-dashboard',
+              'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
     try:
         with get_metadata_conn() as conn:
             conn.execute('SET TRANSACTION READ ONLY')
             row = conn.execute(_ASSIGNMENTS + """
-                SELECT EXISTS (
+              SELECT EXISTS (
                   SELECT 1 FROM assignments a
                   JOIN security_users u ON u.user_id = a.user_id AND u.active
                   JOIN security_role_permissions p ON p.role_key = a.role_key
                   WHERE (u.user_id = %(subject)s
                          OR (%(email)s <> '' AND lower(u.email) = lower(%(email)s)))
                     AND p.resource_key = %(resource)s AND p.permission_key = 'usage:read'
+                ), EXISTS (
+                  SELECT 1 FROM assignments a
+                  JOIN security_users u ON u.user_id = a.user_id AND u.active
+                  WHERE (u.user_id = %(subject)s
+                         OR (%(email)s <> '' AND lower(u.email) = lower(%(email)s)))
+                    AND a.role_key = %(admin_role)s
                 )
             """, params).fetchone()
     except Exception:
         raise HTTPException(503, 'Usage reporting authorization is unavailable') from None
     if not row or not row[0]:
         raise HTTPException(403, 'Usage reporting access denied')
+    return bool(row[1])
 
 
-def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0) -> dict:
+def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,
+                       audience: str = 'all') -> dict:
     """Include inactive/unassigned users; usage absence never proves access absence."""
-    if days not in {7, 30, 90} or not 0 <= offset <= 100000 or len(search) > 100:
+    if days not in {7, 30, 90} or audience not in {'all', 'srp', 'bicycle'} or not 0 <= offset <= 100000 or len(search) > 100:
         raise ValueError('Invalid access reporting bounds')
     now = datetime.now(timezone.utc)
     params = {'client': client_key, 'now': now, 'start': now - timedelta(days=days),
-              'search': search.strip().lower(), 'offset': offset}
+              'search': search.strip().lower(), 'offset': offset, 'audience': audience,
+              'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
     scope = """
       FROM security_users u
       WHERE (u.client_key = %(client)s
         OR EXISTS (SELECT 1 FROM security_user_roles ur WHERE ur.user_id=u.user_id AND ur.client_key=%(client)s)
         OR EXISTS (SELECT 1 FROM security_group_members gm WHERE gm.user_id=u.user_id AND gm.client_key=%(client)s))
+      AND (%(audience)s='all'
+        OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
+        OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))
       AND (%(search)s = '' OR strpos(lower(u.display_name), %(search)s)>0
            OR strpos(lower(u.email), %(search)s)>0)
     """
     with get_metadata_conn() as conn:
         conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         conn.execute("SET LOCAL statement_timeout = '10s'")
-        total = conn.execute('SELECT count(*) ' + scope, params).fetchone()[0]
-        users = conn.execute('SELECT u.user_id, u.display_name, u.email, u.active ' + scope +
+        total = conn.execute(_ASSIGNMENTS + 'SELECT count(*) ' + scope, params).fetchone()[0]
+        users = conn.execute(_ASSIGNMENTS + 'SELECT u.user_id, u.display_name, u.email, u.active ' + scope +
                              ' ORDER BY lower(u.display_name), u.user_id LIMIT 50 OFFSET %(offset)s', params).fetchall()
         params['ids'] = [u[0] for u in users]
         grants = conn.execute(_ASSIGNMENTS + """
@@ -118,7 +131,7 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
                                                 'resource': resource, 'permission': permission})
     usage = {row[0]: row[1:] for row in activity}
     return {
-        'client_key': client_key, 'as_of': now, 'days': days, 'total_users': total,
+        'client_key': client_key, 'as_of': now, 'days': days, 'audience': audience, 'total_users': total,
         'offset': offset, 'limit': 50, 'has_more': offset + len(users) < total,
         'monitoring_available': available,
         'users': [{'display_name': name, 'username': email, 'active': active,
