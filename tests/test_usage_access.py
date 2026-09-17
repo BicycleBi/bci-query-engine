@@ -262,3 +262,25 @@ def test_bicycle_admin_keeps_all_access_audiences(monkeypatch):
     assert response.status_code==200
     assert response.json()['audience']=='bicycle'
     assert response.json()['allowed_audiences']==['all','srp','bicycle']
+
+
+@pytest.mark.parametrize('client,expected', [('srp', ['web']), ('rf', ['email', 'web'])])
+@pytest.mark.parametrize('perspective', ['users', 'artifacts'])
+@pytest.mark.parametrize('audience', ['srp', 'bicycle'])
+def test_web_catalog_scope_precedes_pagination_and_grant_resolution(monkeypatch, client, expected, perspective, audience):
+    """Execute the actual catalog predicate on synthetic metadata for both paths."""
+    import re
+    import sqlite3
+    db = install_metadata(monkeypatch, [[(0,)], [], []])
+    usage_access.get_access_matrix(client_key=client, perspective=perspective, audience=audience)
+    connection = sqlite3.connect(':memory:')
+    connection.execute('CREATE TABLE artifacts (client_key TEXT, delivery_mode TEXT)')
+    connection.executemany('INSERT INTO artifacts VALUES (?, ?)', [('srp', 'web'), ('srp', 'email'), ('rf', 'web'), ('rf', 'email')])
+    catalog_queries = [sql for sql, _ in db.calls if 'FROM app.artifacts a' in sql]
+    assert len(catalog_queries) == (3 if perspective == 'artifacts' else 1)
+    for sql in catalog_queries:
+        predicate = re.search(r"a.client_key=%\(client\)s AND (.+?) AND ", sql).group(0).removesuffix(' AND ')
+        predicate = predicate.replace('%(client)s', ':client')
+        modes = connection.execute('SELECT delivery_mode FROM artifacts a WHERE ' + predicate + ' ORDER BY delivery_mode', {'client': client}).fetchall()
+        assert [mode[0] for mode in modes] == expected
+    connection.close()
