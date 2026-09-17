@@ -166,6 +166,9 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
         raise ValueError('Invalid access matrix bounds')
     now = datetime.now(timezone.utc)
     params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
+    # Filter the catalog before counting, paging, or resolving wildcard grants.
+    # Other clients retain their existing catalog until they request this scope.
+    artifact_scope = "a.client_key=%(client)s AND (%(client)s <> 'srp' OR a.delivery_mode='web')"
     users_scope = """FROM security_users u WHERE (u.client_key=%(client)s
       OR EXISTS (SELECT 1 FROM security_user_roles r WHERE r.user_id=u.user_id AND r.client_key=%(client)s)
       OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))
@@ -183,7 +186,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
             params['ids'] = [r[0] for r in subjects]
             selection = 'u.user_id=ANY(%(ids)s)'
         else:
-            scope = "FROM app.artifacts a WHERE a.client_key=%(client)s AND (%(search)s='' OR strpos(lower(a.display_name),%(search)s)>0 OR strpos(lower(a.artifact_key),%(search)s)>0)"
+            scope = "FROM app.artifacts a WHERE " + artifact_scope + " AND (%(search)s='' OR strpos(lower(a.display_name),%(search)s)>0 OR strpos(lower(a.artifact_key),%(search)s)>0)"
             total = conn.execute('SELECT count(*) '+scope,params).fetchone()[0]
             subjects = conn.execute('SELECT a.artifact_key,a.display_name,a.active '+scope+
                                     ' ORDER BY lower(a.display_name),a.artifact_key LIMIT 50 OFFSET %(offset)s',params).fetchall()
@@ -203,7 +206,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
             JOIN assignments ass ON ass.role_key=p.role_key
             JOIN security_users u ON u.user_id=ass.user_id
             JOIN scoped_users su ON su.user_id=u.user_id
-            WHERE a.client_key=%(client)s AND """+selection+"""
+            WHERE """+artifact_scope+" AND "+selection+"""
           ), grouped AS (
             SELECT artifact_key,artifact_name,artifact_active,user_id,display_name,email,active,
               bool_or(permission_key IN ('artifact:read','*')) AS can_view,
