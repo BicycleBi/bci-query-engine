@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -160,3 +161,53 @@ def test_reconcile_delivery_batch_runs_one_bounded_trace_per_outstanding_item(mo
 
     assert result == expected
     assert reconciled == run_ids
+
+
+def test_claimed_batch_delivery_includes_reporting_period(monkeypatch) -> None:
+    started_at = datetime.now(tz=timezone.utc)
+    claimed_row = (
+        "11111111-1111-1111-1111-111111111111",
+        "srp",
+        "pnl-owner-email-owner-1",
+        started_at,
+        "finance-user",
+        ["srpdev_pnl_delivery_operator"],
+        "internal_test",
+        "July 2026",
+    )
+
+    class FakeResult:
+        def fetchone(self):
+            return claimed_row
+
+    class FakeConnection:
+        def __init__(self):
+            self.query = ""
+            self.commits = 0
+
+        def execute(self, query, params):
+            self.query = query
+            return FakeResult()
+
+        def commit(self):
+            self.commits += 1
+
+    class FakeContext:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    connection = FakeConnection()
+    monkeypatch.setattr(engine, "get_metadata_conn", lambda: FakeContext(connection))
+
+    claimed = engine.claim_queued_artifact_execution()
+
+    assert claimed["reporting_period"] == "July 2026"
+    assert "artifact_delivery_batch_items" in connection.query
+    assert "artifact_delivery_batches" in connection.query
+    assert connection.commits == 1

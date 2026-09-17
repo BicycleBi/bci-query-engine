@@ -74,6 +74,7 @@ class FakeData:
         self.authorized_roles = []
         self.platform_admin_roles = []
         self.platform_corporate_roles = []
+        self.reporting_periods = []
 
     def execute(self, sql, params=None):
         if "set_config('bci.authenticated_subject'" in sql:
@@ -84,6 +85,9 @@ class FakeData:
             return FakeResult(row=("",))
         if "set_config('bci.platform_admin_role'" in sql:
             self.platform_admin_roles.append(params[0])
+            return FakeResult(row=("",))
+        if "set_config('bci.reporting_period'" in sql:
+            self.reporting_periods.append(params[0])
             return FakeResult(row=("",))
         if "set_config('bci.platform_corporate_role'" in sql:
             self.platform_corporate_roles.append(params[0])
@@ -442,6 +446,9 @@ class FakeQueryData(FakeData):
         if "set_config('bci.platform_admin_role'" in sql:
             self.platform_admin_roles.append(params[0])
             return FakeResult(row=("",))
+        if "set_config('bci.reporting_period'" in sql:
+            self.reporting_periods.append(params[0])
+            return FakeResult(row=("",))
         if "set_config('bci.platform_corporate_role'" in sql:
             self.platform_corporate_roles.append(params[0])
             return FakeResult(row=("",))
@@ -623,7 +630,13 @@ def test_server_config_binds_platform_admin_role_to_transaction(monkeypatch):
     monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
     monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "uat")
     data = FakeData()
-    engine._set_authorization_context(data, "fixture-subject", ["srpqa_admin"])
+    engine._set_authorization_context(
+        data,
+        "fixture-subject",
+        ["srpqa_admin"],
+        "July 2026",
+    )
     assert data.platform_admin_roles == ["srpqa_admin"]
     assert data.platform_corporate_roles == ["uat"]
     assert data.authorized_roles == ['["srpqa_admin"]']
+    assert data.reporting_periods == ["July 2026"]
