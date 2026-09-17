@@ -79,7 +79,7 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
 
 def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,
                        audience: str = 'all') -> dict:
-    """Include inactive/unassigned users; usage absence never proves access absence."""
+    """Report active users, including active users without assignments or observed usage."""
     if days not in {7, 30, 90} or audience not in {'all', 'srp', 'bicycle'} or not 0 <= offset <= 100000 or len(search) > 100:
         raise ValueError('Invalid access reporting bounds')
     now = datetime.now(timezone.utc)
@@ -91,6 +91,7 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
       WHERE (u.client_key = %(client)s
         OR EXISTS (SELECT 1 FROM security_user_roles ur WHERE ur.user_id=u.user_id AND ur.client_key=%(client)s)
         OR EXISTS (SELECT 1 FROM security_group_members gm WHERE gm.user_id=u.user_id AND gm.client_key=%(client)s))
+      AND u.active
       AND (%(audience)s='all'
         OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
         OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))
@@ -172,6 +173,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
     users_scope = """FROM security_users u WHERE (u.client_key=%(client)s
       OR EXISTS (SELECT 1 FROM security_user_roles r WHERE r.user_id=u.user_id AND r.client_key=%(client)s)
       OR EXISTS (SELECT 1 FROM security_group_members g WHERE g.user_id=u.user_id AND g.client_key=%(client)s))
+      AND u.active
       AND (%(audience)s='all'
         OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
         OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))"""

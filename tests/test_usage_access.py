@@ -82,18 +82,18 @@ def install_metadata(monkeypatch, answers):
     return db
 
 
-@pytest.mark.parametrize('active,permission,expected', [
-    (True,'artifact:read','Granted'), (False,'artifact:read','Disabled'),
-    (True,None,'No current grants')])
-def test_unobserved_accounts_and_disabled_accounts_are_preserved(monkeypatch,active,permission,expected):
+@pytest.mark.parametrize('permission,expected', [
+    ('artifact:read','Granted'), (None,'No current grants')])
+def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expected):
     grants=[('test-1','reader','direct',None,'artifact:srp:home',permission)] if permission else []
-    db=install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',active)], grants, [(None,)]])
+    db=install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None,)]])
     result=usage_access.get_access_summary(client_key='srp',days=30)
     assert result['monitoring_available'] is False
     assert result['users'][0]['access_status'] == expected
     assert result['users'][0]['requests'] is None
     assert result['users'][0]['last_activity_at'] is None
     assert db.calls[0][0].endswith('READ ONLY')
+    assert 'AND u.active' in db.calls[2][0]
 
 
 def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
@@ -166,13 +166,21 @@ def test_access_matrix_resolves_artifact_names_and_both_perspectives(monkeypatch
     assert "a.client_key=%(client)s" in sql
     assert 'edge_number<=201' in sql
 
-@pytest.mark.parametrize('user_active,artifact_active',[(False,True),(True,False)])
-def test_access_matrix_disabled_subjects_preserve_assignments_without_effective_access(monkeypatch,user_active,artifact_active):
-    edge=('home','SRP Home',artifact_active,'u1','Synthetic User','user@example.test',user_active,True,True,1,[],False)
-    install_metadata(monkeypatch,[[(1,)],[('u1','Synthetic User','user@example.test',user_active)],[edge]])
+def test_access_matrix_inactive_artifacts_preserve_assignments_without_effective_access(monkeypatch):
+    edge=('home','SRP Home',False,'u1','Synthetic User','user@example.test',True,True,True,1,[],False)
+    install_metadata(monkeypatch,[[(1,)],[('u1','Synthetic User','user@example.test',True)],[edge]])
     match=usage_access.get_access_matrix(client_key='srp',perspective='users')['rows'][0]['matches'][0]
     assert match['assigned_view'] and match['assigned_run']
     assert not match['can_view'] and not match['can_run']
+
+
+@pytest.mark.parametrize('perspective',['users','artifacts'])
+def test_access_matrix_filters_inactive_users_before_paging_and_matches(monkeypatch,perspective):
+    db=install_metadata(monkeypatch,[[(0,)],[],[]])
+    usage_access.get_access_matrix(client_key='srp',perspective=perspective)
+    user_queries=[sql for sql, _ in db.calls if 'security_users u WHERE' in sql]
+    assert user_queries
+    assert all('AND u.active' in sql for sql in user_queries)
 
 
 def test_access_matrix_no_assignments_remain_visible_and_paginate(monkeypatch):
