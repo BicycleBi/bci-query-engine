@@ -783,8 +783,9 @@ def _set_authorization_context(
     data,
     authenticated_subject: Optional[str],
     authorized_roles: Optional[list[str]],
+    reporting_period: Optional[str] = None,
 ) -> None:
-    """Bind the trusted Security subject and freshly resolved roles to the transaction."""
+    """Bind trusted identity and delivery context to the data transaction."""
     data.execute(
         "SELECT set_config('bci.authenticated_subject', %s, true)",
         (authenticated_subject or "",),
@@ -797,6 +798,10 @@ def _set_authorization_context(
     data.execute(
         "SELECT set_config('bci.platform_admin_role', %s, true)",
         (os.getenv("SRP_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev"),),
+    )
+    data.execute(
+        "SELECT set_config('bci.reporting_period', %s, true)",
+        (reporting_period or "",),
     )
     data.execute(
         "SELECT set_config('bci.platform_corporate_role', %s, true)",
@@ -1121,6 +1126,7 @@ def execute_artifact(
     started_at: Optional[datetime] = None,
     precreated_run: bool = False,
     delivery_mode_override: str = "live",
+    reporting_period: Optional[str] = None,
 ) -> dict:
     """
         Execute a single artifact behavior.
@@ -1194,7 +1200,12 @@ def execute_artifact(
             data_freshness_timestamp: Optional[str] = None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
-                    _set_authorization_context(data, authenticated_subject, authorized_roles)
+                    _set_authorization_context(
+                        data,
+                        authenticated_subject,
+                        authorized_roles,
+                        reporting_period,
+                    )
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
@@ -1230,7 +1241,12 @@ def execute_artifact(
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
-                    _set_authorization_context(data, authenticated_subject, authorized_roles)
+                    _set_authorization_context(
+                        data,
+                        authenticated_subject,
+                        authorized_roles,
+                        reporting_period,
+                    )
                     if execution_query is not None:
                         serialized_query = _serialized_artifact_query(execution_query)
                         query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
@@ -1698,13 +1714,17 @@ def claim_queued_artifact_execution() -> Optional[dict[str, Any]]:
         row = meta.execute(
             """
             WITH candidate AS (
-                SELECT run_id
-                FROM log.artifact_runs
-                WHERE status = 'queued'
-                  AND delivery_mode IN ('email', 'both')
-                  AND COALESCE(execution_mode, 'live') <> 'background'
-                ORDER BY started_at, run_id
-                FOR UPDATE SKIP LOCKED
+                SELECT run.run_id, batch.reporting_period
+                FROM log.artifact_runs run
+                LEFT JOIN log.artifact_delivery_batch_items item
+                  ON item.run_id = run.run_id
+                LEFT JOIN log.artifact_delivery_batches batch
+                  ON batch.batch_id = item.batch_id
+                WHERE run.status = 'queued'
+                  AND run.delivery_mode IN ('email', 'both')
+                  AND COALESCE(run.execution_mode, 'live') <> 'background'
+                ORDER BY run.started_at, run.run_id
+                FOR UPDATE OF run SKIP LOCKED
                 LIMIT 1
             )
             UPDATE log.artifact_runs run
@@ -1715,7 +1735,8 @@ def claim_queued_artifact_execution() -> Optional[dict[str, Any]]:
             FROM candidate
             WHERE run.run_id = candidate.run_id
             RETURNING run.run_id, run.client_key, run.artifact_key, run.started_at,
-                      run.authenticated_subject, run.authorized_roles, run.execution_mode
+                      run.authenticated_subject, run.authorized_roles, run.execution_mode,
+                      candidate.reporting_period
             """,
             (f"query-engine:{os.getpid()}", _delivery_lease_seconds()),
         ).fetchone()
@@ -1730,6 +1751,7 @@ def claim_queued_artifact_execution() -> Optional[dict[str, Any]]:
         "authenticated_subject": row[4],
         "authorized_roles": list(row[5] or []),
         "execution_mode": row[6] or "live",
+        "reporting_period": row[7],
     }
 
 
@@ -1753,6 +1775,7 @@ def run_delivery_worker() -> None:
                 started_at=claimed["started_at"],
                 precreated_run=True,
                 delivery_mode_override=claimed["execution_mode"],
+                reporting_period=claimed["reporting_period"],
             )
         except Exception:
             time.sleep(poll_seconds)
