@@ -55,7 +55,7 @@ Run from this repository with development dependencies available:
 python3 -m pytest -q
 ```
 
-Latest result: `159 passed`. Two dependency deprecation warnings are present;
+Latest result: `162 passed`. Two dependency deprecation warnings are present;
 there are no test failures.
 
 ## What still needs attention

@@ -1,5 +1,3 @@
-from .analytics import get_analytics_reporting_config
-from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 """
 main.py — FastAPI routes for the Query Engine.
 """
@@ -18,6 +16,7 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
+from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
     execute_artifact_query,
@@ -68,6 +67,7 @@ from .monitoring import (
     start_gateway_listener,
     stop_gateway_listener,
 )
+from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 
 _delivery_worker_started = False
 
