@@ -1,9 +1,9 @@
 """Bounded security-metadata reporting. Never reads report or recipient data."""
 from datetime import datetime, timedelta, timezone
 from typing import Any
-import os
 
 from fastapi import HTTPException
+from .analytics import get_analytics_reporting_config
 from .db import get_metadata_conn
 
 # Match Security's current metadata permission evaluator: scope assignments and
@@ -34,16 +34,17 @@ def require_analytics_reporting_access(identity: dict[str, Any], client_key: str
         raise HTTPException(403, 'Analytics reporting access denied')
     if report not in {'usage', 'access'}:
         raise HTTPException(400, 'Unknown analytics report')
-    admin_role = os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev').strip()
-    corporate_role = os.getenv('SRP_CORPORATE_ANALYTICS_ROLE', '').strip()
-    allowed_roles = [admin_role] if report == 'usage' else [role for role in (admin_role, corporate_role) if role]
+    config = get_analytics_reporting_config(client_key)
+    admin_role = config.admin_role
+    client_role = config.client_reporting_role
+    allowed_roles = [admin_role] if report == 'usage' else [role for role in (admin_role, client_role) if role]
     if not allowed_roles:
         raise HTTPException(503, 'Analytics reporting authorization is unavailable')
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
               'subject': identity['sub'], 'email': str(identity.get('email') or ''),
               'resource': f'artifact:{client_key}:usage-monitoring-dashboard',
               'admin_role': admin_role,
-              'corporate_role': corporate_role if report == 'access' else admin_role,
+              'corporate_role': client_role if report == 'access' else admin_role,
               'permission': 'usage:read' if report == 'usage' else 'artifact:read'}
     try:
         with get_metadata_conn() as conn:
@@ -80,12 +81,13 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
 def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,
                        audience: str = 'all') -> dict:
     """Report active users, including active users without assignments or observed usage."""
-    if days not in {7, 30, 90} or audience not in {'all', 'srp', 'bicycle'} or not 0 <= offset <= 100000 or len(search) > 100:
+    config = get_analytics_reporting_config(client_key)
+    if days not in {7, 30, 90} or audience not in config.audiences or not 0 <= offset <= 100000 or len(search) > 100:
         raise ValueError('Invalid access reporting bounds')
     now = datetime.now(timezone.utc)
     params = {'client': client_key, 'now': now, 'start': now - timedelta(days=days),
               'search': search.strip().lower(), 'offset': offset, 'audience': audience,
-              'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
+              'admin_role': config.admin_role}
     scope = """
       FROM security_users u
       WHERE (u.client_key = %(client)s
@@ -94,7 +96,7 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
       AND u.active
       AND (%(audience)s='all'
         OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
-        OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))
+        OR (%(audience)s=%(client)s AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))
       AND (%(search)s = '' OR strpos(lower(u.display_name), %(search)s)>0
            OR strpos(lower(u.email), %(search)s)>0)
     """
@@ -163,10 +165,11 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
 
 def get_access_matrix(*, client_key: str, perspective: str, search: str = '', offset: int = 0, audience: str = 'all') -> dict:
     """Artifact-centric metadata projection matching Security resource wildcards."""
-    if audience not in {'all', 'srp', 'bicycle'} or perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
+    config = get_analytics_reporting_config(client_key)
+    if audience not in config.audiences or perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
         raise ValueError('Invalid access matrix bounds')
     now = datetime.now(timezone.utc)
-    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': os.getenv('SRP_BICYCLE_ADMIN_ROLE', 'srpdev_bicycle_dev')}
+    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': config.admin_role}
     # Filter the catalog before counting, paging, or resolving wildcard grants.
     # Other clients retain their existing catalog until they request this scope.
     artifact_scope = "a.client_key=%(client)s AND (%(client)s <> 'srp' OR a.delivery_mode='web')"
@@ -176,7 +179,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
       AND u.active
       AND (%(audience)s='all'
         OR (%(audience)s='bicycle' AND EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s))
-        OR (%(audience)s='srp' AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))"""
+        OR (%(audience)s=%(client)s AND NOT EXISTS (SELECT 1 FROM assignments aa WHERE aa.user_id=u.user_id AND aa.role_key=%(admin_role)s)))"""
     with get_metadata_conn() as conn:
         conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         conn.execute("SET LOCAL statement_timeout = '10s'")

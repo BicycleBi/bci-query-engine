@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app import usage_access
-from test_usage_summary import _load_main, _auth_headers, _token, _summary
+from test_usage_summary import _load_main, _auth_headers, _token, _summary, _encode_token
 
 
 @pytest.mark.parametrize('route', ['usage-summary', 'access-summary'])
@@ -128,6 +128,57 @@ def test_authorization_database_failure_is_closed(monkeypatch):
         usage_access.require_usage_reporting_access({'client_key':'srp','sub':'synthetic'},'srp')
     assert exc.value.status_code==503
     assert 'private' not in exc.value.detail
+
+
+def test_non_srp_reporting_requires_complete_matching_configuration(monkeypatch):
+    identity = {'client_key': 'rf', 'sub': 'synthetic-user'}
+    with pytest.raises(HTTPException) as missing:
+        usage_access.require_usage_reporting_access(identity, 'rf')
+    assert missing.value.status_code == 503
+
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rag')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'ragdev_admin')
+    with pytest.raises(HTTPException) as mismatch:
+        usage_access.require_usage_reporting_access(identity, 'rf')
+    assert mismatch.value.status_code == 503
+
+
+def test_generic_reporting_configuration_drives_live_authorization(monkeypatch):
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
+    monkeypatch.setenv('ANALYTICS_CLIENT_REPORTING_ROLE', 'rfdev_analytics')
+    db = install_metadata(monkeypatch, [[(True, False)]])
+    identity = {'client_key': 'rf', 'sub': 'synthetic-user'}
+    assert usage_access.require_analytics_reporting_access(identity, 'rf', 'access') is False
+    params = db.calls[-1][1]
+    assert params['client'] == 'rf'
+    assert params['admin_role'] == 'rfdev_admin'
+    assert params['corporate_role'] == 'rfdev_analytics'
+    assert params['resource'] == 'artifact:rf:usage-monitoring-dashboard'
+
+
+def test_generic_analytics_artifact_gate_uses_configured_client_roles(monkeypatch):
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, 'execute_artifact', lambda *args, **kwargs: {
+        'run_id': '11111111-1111-1111-1111-111111111111',
+        'status': 'success',
+        'preview_html': '<p>ok</p>',
+        'cache': {},
+    })
+    client = TestClient(main.app)
+
+    def token(client_key, roles):
+        return _encode_token({
+            'aud': 'bci-client', 'client_key': client_key, 'exp': 4102444800,
+            'iat': 1, 'iss': 'bci-security', 'roles': roles, 'sub': 'synthetic-user',
+        })
+
+    path = '/artifacts/rf/usage-monitoring-dashboard?report=usage'
+    assert client.get(path, headers=_auth_headers(token('rf', ['rfdev_admin']))).status_code == 200
+    assert client.get(path, headers=_auth_headers(token('rf', ['same-role-other-scope']))).status_code == 403
+    assert client.get(path, headers=_auth_headers(token('rag', ['rfdev_admin']))).status_code == 403
 
 
 def test_grants_are_bounded_and_truncation_is_explicit(monkeypatch):
@@ -279,8 +330,12 @@ def test_web_catalog_scope_precedes_pagination_and_grant_resolution(monkeypatch,
     """Execute the actual catalog predicate on synthetic metadata for both paths."""
     import re
     import sqlite3
+    if client == 'rf':
+        monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
+        monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
     db = install_metadata(monkeypatch, [[(0,)], [], []])
-    usage_access.get_access_matrix(client_key=client, perspective=perspective, audience=audience)
+    requested_audience = client if audience == 'srp' else audience
+    usage_access.get_access_matrix(client_key=client, perspective=perspective, audience=requested_audience)
     connection = sqlite3.connect(':memory:')
     connection.execute('CREATE TABLE artifacts (client_key TEXT, delivery_mode TEXT)')
     connection.executemany('INSERT INTO artifacts VALUES (?, ?)', [('srp', 'web'), ('srp', 'email'), ('rf', 'web'), ('rf', 'email')])

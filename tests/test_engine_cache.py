@@ -623,7 +623,18 @@ def test_server_config_binds_platform_admin_role_to_transaction(monkeypatch):
     monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
     monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "uat")
     data = FakeData()
-    engine._set_authorization_context(data, "fixture-subject", ["srpqa_admin"])
+    engine._set_authorization_context(data, "srp", "fixture-subject", ["srpqa_admin"])
     assert data.platform_admin_roles == ["srpqa_admin"]
     assert data.platform_corporate_roles == ["uat"]
     assert data.authorized_roles == ['["srpqa_admin"]']
+
+
+def test_generic_analytics_roles_bind_to_transaction_without_srp_names(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_REPORTING_CLIENT_KEY", "rf")
+    monkeypatch.setenv("ANALYTICS_BICYCLE_ADMIN_ROLE", "rfdev_admin")
+    monkeypatch.setenv("ANALYTICS_CLIENT_REPORTING_ROLE", "rfdev_analytics")
+    data = FakeData()
+    engine._set_authorization_context(data, "rf", "fixture-subject", ["rfdev_admin"])
+    assert data.platform_admin_roles == ["rfdev_admin"]
+    assert data.platform_corporate_roles == ["rfdev_analytics"]
+    assert data.authorized_roles == ['["rfdev_admin"]']

@@ -63,7 +63,10 @@ def _summary(client_key, days):
 
 
 def test_usage_summary_is_authenticated_and_client_scoped(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_REPORTING_CLIENT_KEY", "rf")
+    monkeypatch.setenv("ANALYTICS_BICYCLE_ADMIN_ROLE", "rfdev_admin")
     main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_analytics_reporting_access", lambda *args: True)
     captured = []
     monkeypatch.setattr(
         main,

@@ -25,6 +25,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
+from .analytics import get_analytics_reporting_config
 from .db import get_data_conn, get_metadata_conn
 
 
@@ -781,6 +782,7 @@ def _authorization_context_hash(authorized_roles: Optional[list[str]]) -> Option
 
 def _set_authorization_context(
     data,
+    client_key: str,
     authenticated_subject: Optional[str],
     authorized_roles: Optional[list[str]],
 ) -> None:
@@ -794,13 +796,14 @@ def _set_authorization_context(
         (json.dumps(sorted(set(authorized_roles or [])), separators=(",", ":")),),
     )
 
+    analytics = get_analytics_reporting_config(client_key, required=False)
     data.execute(
         "SELECT set_config('bci.platform_admin_role', %s, true)",
-        (os.getenv("SRP_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev"),),
+        (analytics.admin_role if analytics else "",),
     )
     data.execute(
         "SELECT set_config('bci.platform_corporate_role', %s, true)",
-        (os.getenv("SRP_CORPORATE_ANALYTICS_ROLE", ""),),
+        (analytics.client_reporting_role if analytics else "",),
     )
 
 
@@ -1013,7 +1016,7 @@ def execute_artifact_query(
 
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
-        _set_authorization_context(data, authenticated_subject, authorized_roles)
+        _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
@@ -1080,7 +1083,7 @@ def prewarm_artifact_query_cache(
 
     entries: list[tuple[str, Any]] = []
     with get_data_conn() as data:
-        _set_authorization_context(data, None, None)
+        _set_authorization_context(data, client_key, None, None)
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
@@ -1194,7 +1197,7 @@ def execute_artifact(
             data_freshness_timestamp: Optional[str] = None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
-                    _set_authorization_context(data, authenticated_subject, authorized_roles)
+                    _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
@@ -1230,7 +1233,7 @@ def execute_artifact(
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
-                    _set_authorization_context(data, authenticated_subject, authorized_roles)
+                    _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
                     if execution_query is not None:
                         serialized_query = _serialized_artifact_query(execution_query)
                         query_result = _execute_artifact_query_contract(data, view_name, serialized_query)

@@ -1,3 +1,4 @@
+from .analytics import get_analytics_reporting_config
 from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 """
 main.py — FastAPI routes for the Query Engine.
@@ -277,26 +278,28 @@ async def monitor_request_lifecycle(request: Request, call_next):
             response.headers["X-Request-ID"] = request_id
 
 
-def require_srp_artifact_scope(client_key: str, artifact_key: str, roles: list[str], report: str = "") -> None:
-    """Keep SRP analytics corporate-scoped and internal libraries admin-only."""
-    if client_key != "srp":
-        return
-    admin_role = os.getenv("SRP_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev").strip()
-    corporate_role = os.getenv("SRP_CORPORATE_ANALYTICS_ROLE", "").strip()
+def require_artifact_scope(client_key: str, artifact_key: str, roles: list[str], report: str = "") -> None:
+    """Protect Analytics for every configured client and SRP internal libraries."""
     role_set = set(roles)
     normalized_key = artifact_key.strip().lower()
 
     if normalized_key == "usage-monitoring-dashboard":
-        allowed_roles = {role for role in (admin_role, corporate_role) if role}
+        config = get_analytics_reporting_config(client_key)
+        admin_role = config.admin_role
+        client_role = config.client_reporting_role
+        allowed_roles = {role for role in (admin_role, client_role) if role}
         if not allowed_roles or role_set.isdisjoint(allowed_roles):
             raise HTTPException(status_code=403, detail="Artifact access denied")
         if report and report not in {"usage", "access"}:
             raise HTTPException(status_code=400, detail="Unknown analytics report")
         if report == "usage" and (not admin_role or admin_role not in role_set):
             raise HTTPException(status_code=403, detail="Usage reporting access denied")
-        if not report and corporate_role in role_set and admin_role not in role_set:
+        if not report and client_role in role_set and admin_role not in role_set:
             raise HTTPException(status_code=403, detail="Choose the Access report")
 
+    if client_key != "srp":
+        return
+    admin_role = get_analytics_reporting_config(client_key).admin_role
     internal_library_artifact = (
         "qc" in normalized_key
         or "training" in normalized_key
@@ -356,7 +359,7 @@ def get_artifact_html(
     """Render and return the artifact HTML for display retrieval."""
     require_client_access(identity, client_key)
     roles = authorized_roles(identity, x_identity_roles)
-    require_srp_artifact_scope(client_key, artifact_key, roles, report)
+    require_artifact_scope(client_key, artifact_key, roles, report)
     result = execute_artifact(
         client_key,
         artifact_key,
@@ -425,8 +428,7 @@ def usage_summary(
         raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
-    if client_key == "srp":
-        require_analytics_reporting_access(identity, client_key, "usage")
+    require_analytics_reporting_access(identity, client_key, "usage")
     response.headers["Cache-Control"] = "no-store"
     return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
 
@@ -448,19 +450,20 @@ def access_summary(
         raise HTTPException(404, "Access summary is unavailable for this artifact")
     if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
         raise HTTPException(400, "Invalid reporting period, search, or offset")
-    if audience not in {"all", "srp", "bicycle"} or (audience != "all" and not perspective):
+    config = get_analytics_reporting_config(client_key)
+    if audience not in config.audiences or (audience != "all" and not perspective):
         raise HTTPException(400, "Invalid access audience")
     if perspective not in {"", "users", "artifacts"}:
         raise HTTPException(400, "Invalid access perspective")
     is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "access")
-    effective_audience = audience if is_bicycle_admin else "srp"
+    effective_audience = audience if is_bicycle_admin else client_key
     response.headers["Cache-Control"] = "no-store"
     try:
         if perspective:
             result = get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=effective_audience)
         else:
             result = get_access_summary(client_key=client_key, days=days, search=search, offset=offset, audience=effective_audience)
-        result["allowed_audiences"] = ["all", "srp", "bicycle"] if is_bicycle_admin else ["srp"]
+        result["allowed_audiences"] = ["all", client_key, "bicycle"] if is_bicycle_admin else [client_key]
         return result
     except Exception:
         raise HTTPException(503, "Access reporting is unavailable") from None
@@ -477,7 +480,7 @@ def get_artifact_data(
     """Pass an opaque artifact request to its database-owned query contract."""
     require_client_access(identity, client_key)
     roles = authorized_roles(identity, x_identity_roles)
-    require_srp_artifact_scope(client_key, artifact_key, roles)
+    require_artifact_scope(client_key, artifact_key, roles)
     try:
         return execute_artifact_query(
             client_key,
@@ -502,7 +505,7 @@ def list_artifact_distribution_groups(
 ):
     """List active groups approved for an artifact without recipient details."""
     require_client_access(identity, client_key)
-    require_srp_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
+    require_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
     try:
         groups = get_artifact_distribution_groups(client_key, artifact_key)
     except ValueError as exc:
@@ -546,7 +549,7 @@ def get_artifact_static_asset(
 ):
     """Return an authenticated, immutable package-owned artifact asset."""
     require_client_access(identity, client_key)
-    require_srp_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
+    require_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
     try:
         asset = get_artifact_asset(client_key, artifact_key, asset_path)
     except ValueError as exc:
@@ -604,7 +607,7 @@ def create_artifact_execution(
     http_request.state.monitoring_artifact_key = execution.artifact_key
     subject = authenticated_subject(identity)
     roles = authorized_roles(identity, x_identity_roles)
-    require_srp_artifact_scope(execution.client_key, execution.artifact_key, roles)
+    require_artifact_scope(execution.client_key, execution.artifact_key, roles)
 
     if execution.behavior.value == "deliver":
         try:
@@ -732,7 +735,7 @@ def create_artifact_delivery_batch(
     roles = authorized_roles(identity, x_identity_roles)
     require_delivery_control(roles)
     for artifact_key in request.artifact_keys:
-        require_srp_artifact_scope(request.client_key, artifact_key, roles)
+        require_artifact_scope(request.client_key, artifact_key, roles)
     try:
         result = create_delivery_batch(
             request.client_key,
@@ -834,7 +837,7 @@ def trigger_run(
     }
     require_client_access(identity, client_key)
     roles = authorized_roles(identity, x_identity_roles)
-    require_srp_artifact_scope(client_key, artifact_key, roles)
+    require_artifact_scope(client_key, artifact_key, roles)
     result = execute_artifact(
         client_key,
         artifact_key,
