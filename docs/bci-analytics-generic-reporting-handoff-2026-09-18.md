@@ -5,6 +5,8 @@
 - Last reviewed: `2026-09-18`
 - Active branch: `codex/bci-analytics-generic-reporting-36413928`
 - Base: `origin/main` at `4f95598`
+- Implementation commit: `ef3dc94`
+- Review: [BicycleBi/bci-query-engine#25](https://github.com/BicycleBi/bci-query-engine/pull/25)
 - Scope: shared Query Engine source and synthetic tests only
 - Environments changed: none
 
@@ -58,7 +60,9 @@ there are no test failures.
 
 ## What still needs attention
 
-- Jeanre or the designated Query Engine maintainer must review the source PR.
+- Jeanre or the designated Query Engine maintainer must review PR 25. Andrew
+  then confirms that the accepted behavior still matches the approved business
+  scope before any Dev rollout package is prepared.
 - Confirm the new RF Access, RAG Usage/Access and RBP Usage/Access audiences
   before adding grants or client-reporting role configuration.
 - Prepare RF Dev first, then RAG Dev and RBP Dev. Preserve every existing RBP
