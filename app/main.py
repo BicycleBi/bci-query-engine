@@ -100,7 +100,7 @@ async def lifespan(_app: FastAPI):
         stop_gateway_listener()
 
 
-app = FastAPI(title="BCI Query Engine", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="BCI Query Engine", version="0.4.0", lifespan=lifespan)
 SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))

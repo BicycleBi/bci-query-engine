@@ -157,10 +157,13 @@ def test_generic_reporting_configuration_drives_live_authorization(monkeypatch):
     assert params['resource'] == 'artifact:rf:usage-monitoring-dashboard'
 
 
-def test_generic_analytics_artifact_gate_uses_configured_client_roles(monkeypatch):
-    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
-    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
-    monkeypatch.setenv('ANALYTICS_CLIENT_REPORTING_ROLE', 'rfdev_analytics')
+@pytest.mark.parametrize('client_key', ['rf', 'rag', 'rbp'])
+def test_generic_analytics_artifact_gate_uses_configured_client_roles(monkeypatch, client_key):
+    admin_role = f'{client_key}dev_admin'
+    reporting_role = f'{client_key}dev_analytics'
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', client_key)
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', admin_role)
+    monkeypatch.setenv('ANALYTICS_CLIENT_REPORTING_ROLE', reporting_role)
     main = _load_main(monkeypatch)
     monkeypatch.setattr(main, 'execute_artifact', lambda *args, **kwargs: {
         'run_id': '11111111-1111-1111-1111-111111111111',
@@ -176,33 +179,55 @@ def test_generic_analytics_artifact_gate_uses_configured_client_roles(monkeypatc
             'iat': 1, 'iss': 'bci-security', 'roles': roles, 'sub': 'synthetic-user',
         })
 
-    path = '/artifacts/rf/usage-monitoring-dashboard?report=usage'
-    assert client.get(path, headers=_auth_headers(token('rf', ['rfdev_admin']))).status_code == 200
-    assert client.get(path, headers=_auth_headers(token('rf', ['rfdev_analytics']))).status_code == 403
-    assert client.get('/artifacts/rf/usage-monitoring-dashboard?report=access',
-                      headers=_auth_headers(token('rf', ['rfdev_analytics']))).status_code == 200
-    assert client.get('/artifacts/rf/usage-monitoring-dashboard',
-                      headers=_auth_headers(token('rf', ['rfdev_analytics']))).status_code == 403
-    assert client.get(path, headers=_auth_headers(token('rf', ['same-role-other-scope']))).status_code == 403
-    assert client.get(path, headers=_auth_headers(token('rag', ['rfdev_admin']))).status_code == 403
+    path = f'/artifacts/{client_key}/usage-monitoring-dashboard?report=usage'
+    assert client.get(path, headers=_auth_headers(token(client_key, [admin_role]))).status_code == 200
+    assert client.get(path, headers=_auth_headers(token(client_key, [reporting_role]))).status_code == 403
+    assert client.get(f'/artifacts/{client_key}/usage-monitoring-dashboard?report=access',
+                      headers=_auth_headers(token(client_key, [reporting_role]))).status_code == 200
+    assert client.get(f'/artifacts/{client_key}/usage-monitoring-dashboard',
+                      headers=_auth_headers(token(client_key, [reporting_role]))).status_code == 403
+    assert client.get(path, headers=_auth_headers(token(client_key, ['same-role-other-scope']))).status_code == 403
+    other_client = 'rag' if client_key != 'rag' else 'rf'
+    assert client.get(path, headers=_auth_headers(token(other_client, [admin_role]))).status_code == 403
 
 
-@pytest.mark.parametrize('requested', ['all', 'rf', 'bicycle'])
-def test_generic_client_reporter_is_forced_to_its_client_audience(monkeypatch, requested):
-    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
-    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
-    monkeypatch.setenv('ANALYTICS_CLIENT_REPORTING_ROLE', 'rfdev_analytics')
+@pytest.mark.parametrize('client_key', ['rf', 'rag', 'rbp'])
+def test_generic_client_reporter_is_forced_to_its_client_audience(monkeypatch, client_key):
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', client_key)
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', f'{client_key}dev_admin')
+    monkeypatch.setenv('ANALYTICS_CLIENT_REPORTING_ROLE', f'{client_key}dev_analytics')
     main = _load_main(monkeypatch)
     monkeypatch.setattr(main, 'require_analytics_reporting_access', lambda *args: False)
-    captured = []
-    monkeypatch.setattr(main, 'get_access_matrix',
-                        lambda **kw: captured.append(kw) or {'rows': [], 'audience': kw['audience']})
-    response = TestClient(main.app).get('/artifacts/rf/usage-monitoring-dashboard/access-summary',
-        params={'perspective': 'users', 'audience': requested},
-        headers=_auth_headers(_token('rf')))
+    client = TestClient(main.app)
+    for requested in ('all', client_key, 'bicycle'):
+        captured = []
+        monkeypatch.setattr(main, 'get_access_matrix',
+                            lambda **kw: captured.append(kw) or {'rows': [], 'audience': kw['audience']})
+        response = client.get(f'/artifacts/{client_key}/usage-monitoring-dashboard/access-summary',
+            params={'perspective': 'users', 'audience': requested},
+            headers=_auth_headers(_token(client_key)))
+        assert response.status_code == 200
+        assert captured[0]['audience'] == client_key
+        assert response.json()['allowed_audiences'] == [client_key]
+
+
+@pytest.mark.parametrize('client_key', ['rf', 'rag', 'rbp'])
+def test_non_analytics_artifacts_do_not_require_analytics_configuration(monkeypatch, client_key):
+    for name in ('ANALYTICS_REPORTING_CLIENT_KEY', 'ANALYTICS_BICYCLE_ADMIN_ROLE',
+                 'ANALYTICS_CLIENT_REPORTING_ROLE'):
+        monkeypatch.delenv(name, raising=False)
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, 'execute_artifact', lambda *args, **kwargs: {
+        'run_id': '11111111-1111-1111-1111-111111111111',
+        'status': 'success',
+        'preview_html': '<p>ok</p>',
+        'cache': {},
+    })
+    response = TestClient(main.app).get(
+        f'/artifacts/{client_key}/existing-dashboard',
+        headers=_auth_headers(_token(client_key)),
+    )
     assert response.status_code == 200
-    assert captured[0]['audience'] == 'rf'
-    assert response.json()['allowed_audiences'] == ['rf']
 
 
 def test_grants_are_bounded_and_truncation_is_explicit(monkeypatch):
