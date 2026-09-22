@@ -97,10 +97,24 @@ def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expecte
 
 
 def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
-    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('monitoring.request_spans',)], [('test-1',0,None)]])
+    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('monitoring.request_spans',)], [('test-1',0,None)], []])
     result=usage_access.get_access_summary(client_key='srp',days=7)
     assert result['users'][0]['requests'] == 0
     assert result['has_more'] is True
+
+
+def test_authenticated_denials_are_bounded_and_exclude_request_identifiers(monkeypatch):
+    install_metadata(monkeypatch, [
+        [(1,)], [('test-1', 'Synthetic User', 'synthetic@example.test', True)], [],
+        [('monitoring.request_spans',)], [('test-1', 0, None)],
+        [('Synthetic User', 'synthetic@example.test', 'sales-leadership-reporting', 2, None)],
+    ])
+    result = usage_access.get_access_summary(client_key='srp', days=30)
+    assert result['authenticated_denials_available'] is True
+    assert result['authenticated_denials'] == [{
+        'display_name': 'Synthetic User', 'username': 'synthetic@example.test',
+        'artifact_key': 'sales-leadership-reporting', 'denied_requests': 2, 'last_denied_at': None,
+    }]
 
 
 @pytest.mark.parametrize('allowed', [True, False])

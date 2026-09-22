@@ -127,6 +127,7 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
         relation = conn.execute("SELECT to_regclass('monitoring.request_spans')").fetchone()
         available = bool(relation and relation[0])
         activity = []
+        authenticated_denials = []
         if available and users:
             activity = conn.execute("""
               SELECT u.user_id, count(s.request_id), max(s.started_at)
@@ -143,6 +144,27 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
                 AND s.started_at >= %(start)s AND s.started_at < %(now)s
               WHERE u.user_id=ANY(%(ids)s) GROUP BY u.user_id
             """, params).fetchall()
+        if available:
+            authenticated_denials = conn.execute("""
+              SELECT
+                COALESCE(NULLIF(s.display_name, ''), NULLIF(u.display_name, ''), 'Authenticated user'),
+                COALESCE(NULLIF(s.username, ''), NULLIF(u.email, '')),
+                COALESCE(NULLIF(s.artifact_key, ''), 'Unscoped route'),
+                count(*)::integer,
+                max(s.started_at)
+              FROM monitoring.request_spans s
+              LEFT JOIN security_users u ON u.user_id = s.user_id
+              WHERE s.client_key = %(client)s
+                AND s.user_id IS NOT NULL
+                AND s.response_status = 403
+                AND s.route_template NOT IN (
+                  '/artifacts/{client_key}/{artifact_key}/usage-summary',
+                  '/artifacts/{client_key}/{artifact_key}/access-summary')
+                AND s.started_at >= %(start)s AND s.started_at < %(now)s
+              GROUP BY 1, 2, 3
+              ORDER BY max(s.started_at) DESC, count(*) DESC, 1
+              LIMIT 50
+            """, params).fetchall()
     by_user = {}
     for user_id, role, source, group, resource, permission in grants:
         by_user.setdefault(user_id, []).append({'role': role, 'source': source, 'group': group,
@@ -152,6 +174,12 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
         'client_key': client_key, 'as_of': now, 'days': days, 'audience': audience, 'total_users': total,
         'offset': offset, 'limit': 50, 'has_more': offset + len(users) < total,
         'monitoring_available': available,
+        'authenticated_denials_available': available,
+        'authenticated_denials': [
+            {'display_name': display_name, 'username': username, 'artifact_key': artifact_key,
+             'denied_requests': denied_requests, 'last_denied_at': last_denied_at}
+            for display_name, username, artifact_key, denied_requests, last_denied_at in authenticated_denials
+        ],
         'users': [{'display_name': name, 'username': email, 'active': active,
                    'access_status': 'Disabled' if not active else
                      'Granted' if any(g['permission'] for g in by_user.get(uid, [])) else 'No current grants',
