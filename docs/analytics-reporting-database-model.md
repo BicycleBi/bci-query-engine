@@ -2,6 +2,15 @@
 
 Status: source-development contract. Dev and QA only; Production is excluded.
 
+The local successor described in
+[the denial-contract handoff](analytics-denial-contract-handoff-2026-09-22.md)
+adds `analytics-denial-summary.sql` after the v0.5.0 base schema. Its database
+function owns denial identity/audience semantics and bounded aggregation,
+independently of account paging. A missing function reports unavailable.
+Client presentation metadata (sections, labels, selected metrics and periods)
+belongs in the client's canonical render-payload contract; it grants no access
+and must not introduce client-specific branches in Query Engine.
+
 ## Purpose
 
 BCI Analytics combines Usage reporting with an effective-Access view. The

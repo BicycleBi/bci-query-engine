@@ -86,7 +86,7 @@ def install_metadata(monkeypatch, answers):
     ('artifact:read','Granted'), (None,'No current grants')])
 def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expected):
     grants=[('test-1','reader','direct',None,'artifact:srp:home',permission)] if permission else []
-    db=install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None,)]])
+    db=install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None, None)]])
     result=usage_access.get_access_summary(client_key='srp',days=30)
     assert result['monitoring_available'] is False
     assert result['users'][0]['access_status'] == expected
@@ -97,7 +97,7 @@ def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expecte
 
 
 def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
-    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('analytics_reporting.request_activity',)], [('test-1',0,None)], []])
+    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('analytics_reporting.request_activity', 'denial_summary')], [('test-1',0,None)], []])
     result=usage_access.get_access_summary(client_key='srp',days=7)
     assert result['users'][0]['requests'] == 0
     assert result['has_more'] is True
@@ -234,7 +234,7 @@ def test_non_analytics_artifacts_do_not_require_analytics_configuration(monkeypa
 
 def test_grants_are_bounded_and_truncation_is_explicit(monkeypatch):
     grants=[('test-1','reader','direct',None,f'artifact:srp:synthetic-{i}','artifact:read') for i in range(201)]
-    install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None,)]])
+    install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None, None)]])
     result=usage_access.get_access_summary(client_key='srp',days=30)
     assert len(result['users'][0]['grants']) == 200
     assert result['users'][0]['grants_truncated'] is True
