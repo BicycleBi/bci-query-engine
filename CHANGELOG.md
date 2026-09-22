@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Move BCI Analytics assignment, audience, artifact, wildcard-grant, activity,
+  and authenticated-denial semantics into an explicit metadata-database layer.
+- Allow bounded audience filtering on the compact Access summary while
+  preserving the existing user/artifact matrix API.
+
 ## 0.4.0 - 2026-09-18
 
 ### Added

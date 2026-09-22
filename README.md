@@ -10,7 +10,12 @@ Engine validates both contracts before writing `monitoring.events` or
 `monitoring.request_spans`; bodies, filters, credentials, cookies, tokens,
 rendered content, and client-data values are not accepted.
 
-The canonical schema is [docs/usage-monitoring-schema.sql](docs/usage-monitoring-schema.sql).
+The canonical monitoring schema is
+[docs/usage-monitoring-schema.sql](docs/usage-monitoring-schema.sql). The BCI
+Analytics semantic and physical database contract is
+[docs/analytics-reporting-schema.sql](docs/analytics-reporting-schema.sql),
+with its ownership model documented in
+[docs/analytics-reporting-database-model.md](docs/analytics-reporting-database-model.md).
 
 ## What it does
 

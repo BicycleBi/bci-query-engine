@@ -451,7 +451,7 @@ def access_summary(
     if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
         raise HTTPException(400, "Invalid reporting period, search, or offset")
     config = get_analytics_reporting_config(client_key)
-    if audience not in config.audiences or (audience != "all" and not perspective):
+    if audience not in config.audiences:
         raise HTTPException(400, "Invalid access audience")
     if perspective not in {"", "users", "artifacts"}:
         raise HTTPException(400, "Invalid access perspective")
