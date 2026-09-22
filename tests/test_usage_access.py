@@ -93,11 +93,11 @@ def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expecte
     assert result['users'][0]['requests'] is None
     assert result['users'][0]['last_activity_at'] is None
     assert db.calls[0][0].endswith('READ ONLY')
-    assert 'AND u.active' in db.calls[2][0]
+    assert 'analytics_reporting.active_user_audiences' in db.calls[2][0]
 
 
 def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
-    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('monitoring.request_spans',)], [('test-1',0,None)]])
+    install_metadata(monkeypatch, [[(51,)], [('test-1','Synthetic User','synthetic@example.test',True)], [], [('analytics_reporting.request_activity',)], [('test-1',0,None)], []])
     result=usage_access.get_access_summary(client_key='srp',days=7)
     assert result['users'][0]['requests'] == 0
     assert result['has_more'] is True
@@ -113,7 +113,9 @@ def test_live_authorization_result_is_enforced(monkeypatch, allowed):
         assert exc.value.status_code == 403
     sql,params=db.calls[-1]
     assert params['subject']=='synthetic-user'
-    assert "p.permission_key = %(permission)s" in sql
+    assert "g.permission_key = %(permission)s" in sql
+    assert 'analytics_reporting.effective_grants' in sql
+    assert 'security_role_permissions' not in sql
     assert params['permission'] == 'usage:read'
     assert params['admin_role'] == 'srpdev_bicycle_dev'
     assert params['corporate_role'] == 'srpdev_bicycle_dev'
@@ -262,8 +264,8 @@ def test_access_matrix_resolves_artifact_names_and_both_perspectives(monkeypatch
     assert result['rows'][0]['matches'][0]['can_view'] is True
     assert result['rows'][0]['matches'][0]['can_run'] is False
     sql=db.calls[-1][0]
-    assert "'artifact:*:*','*'" in sql
-    assert "a.client_key=%(client)s" in sql
+    assert 'analytics_reporting.artifact_access_edges' in sql
+    assert 'analytics_reporting.active_user_audiences' in sql
     assert 'edge_number<=201' in sql
 
 def test_access_matrix_inactive_artifacts_preserve_assignments_without_effective_access(monkeypatch):
@@ -278,9 +280,9 @@ def test_access_matrix_inactive_artifacts_preserve_assignments_without_effective
 def test_access_matrix_filters_inactive_users_before_paging_and_matches(monkeypatch,perspective):
     db=install_metadata(monkeypatch,[[(0,)],[],[]])
     usage_access.get_access_matrix(client_key='srp',perspective=perspective)
-    user_queries=[sql for sql, _ in db.calls if 'security_users u WHERE' in sql]
+    user_queries=[sql for sql, _ in db.calls if 'analytics_reporting.active_user_audiences' in sql]
     assert user_queries
-    assert all('AND u.active' in sql for sql in user_queries)
+    assert all('security_users' not in sql for sql in user_queries)
 
 
 def test_access_matrix_no_assignments_remain_visible_and_paginate(monkeypatch):
@@ -327,18 +329,36 @@ def test_audience_filter_is_applied_to_scoped_assignments_before_pagination(monk
     result=usage_access.get_access_matrix(client_key='srp',perspective=perspective,audience=audience)
     assert result['audience']==audience
     sql,params=db.calls[-1]
-    assert "aa.role_key=%(admin_role)s" in sql
+    assert 'u.audience_key=%(audience)s' in sql
     assert params['admin_role']=='srpdev_bicycle_dev' and params['audience']==audience
     if perspective=='users':
-        assert "aa.role_key=%(admin_role)s" in db.calls[2][0]
-        assert "aa.role_key=%(admin_role)s" in db.calls[3][0]
+        assert 'u.audience_key=%(audience)s' in db.calls[2][0]
+        assert 'u.audience_key=%(audience)s' in db.calls[3][0]
 
 
-@pytest.mark.parametrize('query',['perspective=users&audience=unknown','audience=srp'])
+@pytest.mark.parametrize('query',['perspective=users&audience=unknown','audience=unknown'])
 def test_invalid_audience_is_rejected(monkeypatch,query):
     main=_load_main(monkeypatch)
     response=TestClient(main.app).get('/artifacts/srp/usage-monitoring-dashboard/access-summary?'+query,headers=_auth_headers(_token('srp')))
     assert response.status_code==400
+
+
+def test_bounded_summary_accepts_database_owned_bicycle_audience(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, 'require_analytics_reporting_access', lambda *args: True)
+    captured = []
+    monkeypatch.setattr(main, 'get_access_summary',
+                        lambda **kw: captured.append(kw) or {'users': [], 'audience': kw['audience']})
+    response = TestClient(main.app).get(
+        '/artifacts/srp/usage-monitoring-dashboard/access-summary',
+        params={'audience': 'bicycle', 'days': 30},
+        headers=_auth_headers(_token('srp')),
+    )
+    assert response.status_code == 200
+    assert captured == [{
+        'client_key': 'srp', 'days': 30, 'offset': 0,
+        'search': '', 'audience': 'bicycle',
+    }]
 
 def test_qa_admin_cohort_uses_configured_role(monkeypatch):
     monkeypatch.setenv('SRP_BICYCLE_ADMIN_ROLE', 'srpqa_admin')
@@ -372,27 +392,17 @@ def test_bicycle_admin_keeps_all_access_audiences(monkeypatch):
     assert response.json()['allowed_audiences']==['all','srp','bicycle']
 
 
-@pytest.mark.parametrize('client,expected', [('srp', ['web']), ('rf', ['email', 'web'])])
+@pytest.mark.parametrize('client', ['srp', 'rf'])
 @pytest.mark.parametrize('perspective', ['users', 'artifacts'])
-@pytest.mark.parametrize('audience', ['srp', 'bicycle'])
-def test_web_catalog_scope_precedes_pagination_and_grant_resolution(monkeypatch, client, expected, perspective, audience):
-    """Execute the actual catalog predicate on synthetic metadata for both paths."""
-    import re
-    import sqlite3
+def test_catalog_scope_is_resolved_by_database_contract(monkeypatch, client, perspective):
     if client == 'rf':
         monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY', 'rf')
         monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE', 'rfdev_admin')
     db = install_metadata(monkeypatch, [[(0,)], [], []])
-    requested_audience = client if audience == 'srp' else audience
-    usage_access.get_access_matrix(client_key=client, perspective=perspective, audience=requested_audience)
-    connection = sqlite3.connect(':memory:')
-    connection.execute('CREATE TABLE artifacts (client_key TEXT, delivery_mode TEXT)')
-    connection.executemany('INSERT INTO artifacts VALUES (?, ?)', [('srp', 'web'), ('srp', 'email'), ('rf', 'web'), ('rf', 'email')])
-    catalog_queries = [sql for sql, _ in db.calls if 'FROM app.artifacts a' in sql]
-    assert len(catalog_queries) == (3 if perspective == 'artifacts' else 1)
-    for sql in catalog_queries:
-        predicate = re.search(r"a.client_key=%\(client\)s AND (.+?) AND ", sql).group(0).removesuffix(' AND ')
-        predicate = predicate.replace('%(client)s', ':client')
-        modes = connection.execute('SELECT delivery_mode FROM artifacts a WHERE ' + predicate + ' ORDER BY delivery_mode', {'client': client}).fetchall()
-        assert [mode[0] for mode in modes] == expected
-    connection.close()
+    usage_access.get_access_matrix(client_key=client, perspective=perspective)
+    queries = '\n'.join(sql for sql, _ in db.calls)
+    assert 'analytics_reporting.artifact_access_edges' in queries
+    if perspective == 'artifacts':
+        assert 'analytics_reporting.reportable_artifacts' in queries
+    assert 'delivery_mode' not in queries
+    assert "client)s <> 'srp'" not in queries
