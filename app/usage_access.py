@@ -101,8 +101,12 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
           FROM ranked_grants WHERE grant_number <= 201
           ORDER BY user_id, grant_number
         """, params).fetchall()
-        relation = conn.execute("SELECT to_regclass('analytics_reporting.request_activity')").fetchone()
+        relation = conn.execute("""
+          SELECT to_regclass('analytics_reporting.request_activity'),
+                 to_regprocedure('analytics_reporting.authenticated_denial_summary(text,text,text,timestamp with time zone,timestamp with time zone,integer)')
+        """).fetchone()
         available = bool(relation and relation[0])
+        denials_available = bool(relation and relation[1])
         activity = []
         denials = []
         if available and users:
@@ -113,20 +117,12 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
                 AND a.started_at >= %(start)s AND a.started_at < %(now)s
               GROUP BY a.user_id
             """, params).fetchall()
+        if denials_available:
             denials = conn.execute("""
-              SELECT max(d.display_name), max(d.username), d.artifact_key,
-                     count(d.request_id), max(d.started_at)
-              FROM analytics_reporting.authenticated_denial_events d
-              JOIN analytics_reporting.active_user_audiences u
-                ON u.client_key = d.client_key
-               AND (u.user_id = d.subject_key OR lower(u.email) = lower(d.subject_key))
-              WHERE d.client_key = %(client)s
-                AND u.admin_role_key = %(admin_role)s
-                AND u.audience_key = %(audience)s
-                AND d.started_at >= %(start)s AND d.started_at < %(now)s
-              GROUP BY d.subject_key, d.artifact_key
-              ORDER BY max(d.started_at) DESC, d.artifact_key
-              LIMIT 200
+              SELECT display_name, username, artifact_key, denied_requests, last_denied_at
+              FROM analytics_reporting.authenticated_denial_summary(
+                  %(client)s, %(admin_role)s, %(audience)s, %(start)s, %(now)s, 201
+              )
             """, params).fetchall()
     by_user = {}
     for user_id, role, source, group, resource, permission in grants:
@@ -137,11 +133,13 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
         'client_key': client_key, 'as_of': now, 'days': days, 'audience': audience, 'total_users': total,
         'offset': offset, 'limit': 50, 'has_more': offset + len(users) < total,
         'monitoring_available': available,
-        'authenticated_denials_available': available,
+        'authenticated_denials_available': denials_available,
+        'authenticated_denials_truncated': len(denials) > 200,
+        'authenticated_denials_limit': 200,
         'authenticated_denials': [
             {'display_name': name, 'username': username, 'artifact_key': artifact,
              'denied_requests': count, 'last_denied_at': last_denied}
-            for name, username, artifact, count, last_denied in denials
+            for name, username, artifact, count, last_denied in denials[:200]
         ],
         'users': [{'display_name': name, 'username': email, 'active': active,
                    'access_status': 'Disabled' if not active else
