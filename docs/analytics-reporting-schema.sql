@@ -122,6 +122,20 @@ JOIN analytics_reporting.effective_grants g
      '*'
  );
 
+CREATE OR REPLACE VIEW analytics_reporting.authorized_user_audiences AS
+SELECT DISTINCT u.*
+FROM analytics_reporting.active_user_audiences u
+WHERE EXISTS (
+    SELECT 1
+    FROM analytics_reporting.artifact_access_edges e
+    WHERE e.client_key = u.client_key
+      AND e.user_id = u.user_id
+      AND e.admin_role_key = u.admin_role_key
+      AND e.active
+      AND e.artifact_active
+      AND e.permission_key IN ('artifact:read', 'artifact:execute', '*')
+);
+
 CREATE OR REPLACE VIEW analytics_reporting.request_activity AS
 SELECT DISTINCT u.client_key, u.user_id, s.request_id, s.started_at
 FROM analytics_reporting.active_user_audiences u
@@ -153,6 +167,8 @@ COMMENT ON VIEW analytics_reporting.active_user_audiences IS
     'Semantic audience membership for active scoped users: all plus Bicycle or client.';
 COMMENT ON VIEW analytics_reporting.artifact_access_edges IS
     'Effective artifact access relationships after exact and wildcard grant resolution.';
+COMMENT ON VIEW analytics_reporting.authorized_user_audiences IS
+    'Active audience members with current effective access to at least one reportable artifact.';
 COMMENT ON VIEW analytics_reporting.request_activity IS
     'Metadata-only request identities and timestamps for bounded period aggregation.';
 COMMENT ON VIEW analytics_reporting.authenticated_denial_events IS

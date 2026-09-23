@@ -64,7 +64,7 @@ def require_usage_reporting_access(identity: dict[str, Any], client_key: str) ->
 
 def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,
                        audience: str = 'all') -> dict:
-    """Report active users, including active users without assignments or observed usage."""
+    """Report currently authorized users and bounded unauthorized authentication activity."""
     config = get_analytics_reporting_config(client_key)
     if days not in {7, 30, 90} or audience not in config.audiences or not 0 <= offset <= 100000 or len(search) > 100:
         raise ValueError('Invalid access reporting bounds')
@@ -73,7 +73,7 @@ def get_access_summary(*, client_key: str, days: int, search: str = '', offset: 
               'search': search.strip().lower(), 'offset': offset, 'audience': audience,
               'admin_role': config.admin_role}
     scope = """
-      FROM analytics_reporting.active_user_audiences u
+      FROM analytics_reporting.authorized_user_audiences u
       WHERE u.client_key = %(client)s
         AND u.admin_role_key = %(admin_role)s
         AND u.audience_key = %(audience)s
@@ -159,7 +159,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
         raise ValueError('Invalid access matrix bounds')
     now = datetime.now(timezone.utc)
     params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': config.admin_role}
-    users_scope = """FROM analytics_reporting.active_user_audiences u
+    users_scope = """FROM analytics_reporting.authorized_user_audiences u
       WHERE u.client_key=%(client)s AND u.admin_role_key=%(admin_role)s
         AND u.audience_key=%(audience)s"""
     artifact_scope = """FROM analytics_reporting.reportable_artifacts a
@@ -185,7 +185,7 @@ def get_access_matrix(*, client_key: str, perspective: str, search: str = '', of
         edges = conn.execute("""WITH matched AS (
             SELECT e.*
             FROM analytics_reporting.artifact_access_edges e
-            JOIN analytics_reporting.active_user_audiences u
+            JOIN analytics_reporting.authorized_user_audiences u
               ON u.client_key=e.client_key AND u.user_id=e.user_id
              AND u.audience_key=%(audience)s
             WHERE e.client_key=%(client)s AND e.admin_role_key=%(admin_role)s
