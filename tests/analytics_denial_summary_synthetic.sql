@@ -14,27 +14,48 @@ BEGIN
     END IF;
 END
 $guard$;
-CREATE TABLE public.security_users (user_id TEXT PRIMARY KEY, client_key TEXT, email TEXT);
+CREATE TABLE public.security_users (
+    user_id TEXT PRIMARY KEY, client_key TEXT, email TEXT,
+    display_name TEXT, active BOOLEAN
+);
+CREATE TABLE public.security_audit_log (
+    audit_id BIGINT PRIMARY KEY, user_id TEXT, client_key TEXT,
+    event_type TEXT, event_status TEXT, created_at TIMESTAMPTZ
+);
 CREATE SCHEMA analytics_reporting;
 CREATE TABLE analytics_reporting.client_contracts (client_key TEXT PRIMARY KEY, admin_role_key TEXT, enabled BOOLEAN);
 CREATE TABLE analytics_reporting.effective_assignments (client_key TEXT, user_id TEXT);
 CREATE TABLE analytics_reporting.active_user_audiences (client_key TEXT, user_id TEXT, admin_role_key TEXT, audience_key TEXT);
+CREATE TABLE analytics_reporting.artifact_access_edges (
+    client_key TEXT, user_id TEXT, admin_role_key TEXT, active BOOLEAN,
+    artifact_active BOOLEAN, permission_key TEXT
+);
 CREATE TABLE analytics_reporting.authenticated_denial_events (
     client_key TEXT, subject_key TEXT, display_name TEXT, username TEXT,
     artifact_key TEXT, request_id TEXT, started_at TIMESTAMPTZ
 );
 \ir ../docs/analytics-denial-summary.sql
 INSERT INTO public.security_users VALUES
-    ('admin', 'alpha', 'admin@example.test'),
-    ('reader', 'alpha', 'reader@example.test'),
-    ('disabled', 'alpha', 'disabled@example.test'),
-    ('other', 'beta', 'reader@example.test'),
-    ('duplicate-a', 'alpha', 'duplicate@example.test'),
-    ('duplicate-b', 'alpha', 'duplicate@example.test');
+    ('admin', 'alpha', 'admin@example.test', 'Synthetic admin', TRUE),
+    ('reader', 'alpha', 'reader@example.test', 'Synthetic reader', TRUE),
+    ('no-grants', 'alpha', 'nogrants@example.test', 'Synthetic no grants', TRUE),
+    ('disabled', 'alpha', 'disabled@example.test', 'Synthetic disabled', FALSE),
+    ('other', 'beta', 'reader@example.test', 'Synthetic other', TRUE),
+    ('duplicate-a', 'alpha', 'duplicate@example.test', 'Synthetic duplicate A', TRUE),
+    ('duplicate-b', 'alpha', 'duplicate@example.test', 'Synthetic duplicate B', TRUE);
 INSERT INTO analytics_reporting.client_contracts VALUES ('alpha', 'alpha_admin', TRUE), ('beta', 'beta_admin', TRUE);
 INSERT INTO analytics_reporting.active_user_audiences VALUES
     ('alpha', 'admin', 'alpha_admin', 'bicycle'),
-    ('alpha', 'reader', 'alpha_admin', 'alpha');
+    ('alpha', 'reader', 'alpha_admin', 'alpha'),
+    ('alpha', 'no-grants', 'alpha_admin', 'alpha');
+INSERT INTO analytics_reporting.artifact_access_edges VALUES
+    ('alpha', 'admin', 'alpha_admin', TRUE, TRUE, 'artifact:read'),
+    ('alpha', 'reader', 'alpha_admin', TRUE, TRUE, 'artifact:read');
+INSERT INTO public.security_audit_log VALUES
+    (1, 'no-grants', 'alpha', 'identity_upsert', 'ok', '2026-09-20T10:00:00Z'),
+    (2, 'no-grants', 'alpha', 'identity_upsert', 'ok', '2026-09-21T10:00:00Z'),
+    (3, 'reader', 'alpha', 'identity_upsert', 'ok', '2026-09-21T11:00:00Z'),
+    (4, 'disabled', 'alpha', 'identity_upsert', 'ok', '2026-09-21T12:00:00Z');
 INSERT INTO analytics_reporting.authenticated_denial_events VALUES
     ('alpha','admin','Synthetic admin','admin@example.test','home','r1','2026-09-22T10:00:00Z'),
     ('alpha','provider-admin','Synthetic admin','ADMIN@example.test','home','r2','2026-09-22T10:00:00Z'),
@@ -50,13 +71,13 @@ DECLARE n BIGINT; events BIGINT;
 BEGIN
     SELECT count(*), sum(denied_requests) INTO n, events
     FROM analytics_reporting.authenticated_denial_summary('alpha','alpha_admin','all','2026-09-01','2026-09-23',201);
-    IF n <> 6 OR events <> 7 THEN RAISE EXCEPTION 'all_subjects_contract_failed'; END IF;
+    IF n <> 7 OR events <> 9 THEN RAISE EXCEPTION 'all_subjects_contract_failed'; END IF;
     SELECT count(*), sum(denied_requests) INTO n, events
     FROM analytics_reporting.authenticated_denial_summary('alpha','alpha_admin','bicycle','2026-09-01','2026-09-23',201);
     IF n <> 1 OR events <> 2 THEN RAISE EXCEPTION 'provider_identity_resolution_failed'; END IF;
     SELECT count(*), sum(denied_requests) INTO n, events
     FROM analytics_reporting.authenticated_denial_summary('alpha','alpha_admin','alpha','2026-09-01','2026-09-23',201);
-    IF n <> 1 OR events <> 1 THEN RAISE EXCEPTION 'client_audience_isolation_failed'; END IF;
+    IF n <> 2 OR events <> 3 THEN RAISE EXCEPTION 'client_audience_isolation_failed'; END IF;
     SELECT count(*) INTO n
     FROM analytics_reporting.authenticated_denial_summary('alpha','beta_admin','all','2026-09-01','2026-09-23',201);
     IF n <> 0 THEN RAISE EXCEPTION 'runtime_binding_mismatch_failed'; END IF;

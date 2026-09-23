@@ -47,20 +47,70 @@ AS $summary$
               AND a.admin_role_key = p_admin_role
               AND a.audience_key = p_audience
         )
+    ), request_denials AS (
+        SELECT max(d.display_name) AS display_name,
+               max(d.username) AS username,
+               d.artifact_key,
+               count(DISTINCT d.request_id) AS denied_requests,
+               max(d.started_at) AS last_denied_at
+        FROM included d
+        -- Keep known and unmapped subject namespaces distinct; do not merge an
+        -- ambiguous email or another client's identity into a registered user.
+        GROUP BY (d.resolved_user_id IS NOT NULL),
+                 COALESCE(d.resolved_user_id, d.subject_key), d.artifact_key
+    ), authenticated_without_grants AS (
+        SELECT max(u.display_name) AS display_name,
+               max(u.email) AS username,
+               'No current artifact grants'::TEXT AS artifact_key,
+               count(DISTINCT audit.audit_id) AS denied_requests,
+               max(audit.created_at) AS last_denied_at
+        FROM public.security_audit_log audit
+        JOIN public.security_users u
+          ON u.user_id = audit.user_id
+         AND u.client_key = audit.client_key
+         AND u.active
+        JOIN analytics_reporting.client_contracts c
+          ON c.client_key = audit.client_key
+         AND c.enabled
+         AND c.admin_role_key = p_admin_role
+        WHERE audit.client_key = p_client
+          AND audit.event_type = 'identity_upsert'
+          AND audit.event_status = 'ok'
+          AND p_audience IN ('all', 'bicycle', p_client)
+          AND p_start < p_end AND p_end - p_start <= INTERVAL '90 days'
+          AND p_limit BETWEEN 1 AND 201
+          AND audit.created_at >= p_start AND audit.created_at < p_end
+          AND NOT EXISTS (
+              SELECT 1
+              FROM analytics_reporting.artifact_access_edges edge
+              WHERE edge.client_key = audit.client_key
+                AND edge.user_id = audit.user_id
+                AND edge.admin_role_key = p_admin_role
+                AND edge.active
+                AND edge.artifact_active
+                AND edge.permission_key IN ('artifact:read', 'artifact:execute', '*')
+          )
+          AND (p_audience = 'all' OR EXISTS (
+              SELECT 1
+              FROM analytics_reporting.active_user_audiences audience
+              WHERE audience.client_key = audit.client_key
+                AND audience.user_id = audit.user_id
+                AND audience.admin_role_key = p_admin_role
+                AND audience.audience_key = p_audience
+          ))
+        GROUP BY audit.user_id
+    ), combined AS (
+        SELECT * FROM request_denials
+        UNION ALL
+        SELECT * FROM authenticated_without_grants
     )
-    SELECT max(d.display_name), max(d.username), d.artifact_key,
-           count(DISTINCT d.request_id), max(d.started_at)
-    FROM included d
-    -- Keep known and unmapped subject namespaces distinct; do not merge an
-    -- ambiguous email or another client's identity into a registered user.
-    GROUP BY (d.resolved_user_id IS NOT NULL),
-             COALESCE(d.resolved_user_id, d.subject_key), d.artifact_key
-    ORDER BY max(d.started_at) DESC, d.artifact_key,
-             (d.resolved_user_id IS NOT NULL),
-             COALESCE(d.resolved_user_id, d.subject_key)
+    SELECT display_name, username, artifact_key,
+           denied_requests, last_denied_at
+    FROM combined
+    ORDER BY last_denied_at DESC, artifact_key, username
     LIMIT LEAST(GREATEST(p_limit, 1), 201);
 $summary$;
 
 COMMENT ON FUNCTION analytics_reporting.authenticated_denial_summary(
     TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER
-) IS 'Bounded authenticated HTTP 403 aggregates, independent of account paging. All includes unmapped and inactive subjects; narrower audiences require current database membership.';
+) IS 'Bounded authenticated HTTP 403 aggregates plus successful authentications with no current artifact grants, independent of account paging.';

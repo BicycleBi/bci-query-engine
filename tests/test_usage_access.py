@@ -84,7 +84,7 @@ def install_metadata(monkeypatch, answers):
 
 @pytest.mark.parametrize('permission,expected', [
     ('artifact:read','Granted'), (None,'No current grants')])
-def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expected):
+def test_authorized_account_status_is_derived_from_current_grants(monkeypatch,permission,expected):
     grants=[('test-1','reader','direct',None,'artifact:srp:home',permission)] if permission else []
     db=install_metadata(monkeypatch, [[(1,)], [('test-1','Synthetic User','synthetic@example.test',True)], grants, [(None, None)]])
     result=usage_access.get_access_summary(client_key='srp',days=30)
@@ -93,7 +93,7 @@ def test_active_unobserved_accounts_are_preserved(monkeypatch,permission,expecte
     assert result['users'][0]['requests'] is None
     assert result['users'][0]['last_activity_at'] is None
     assert db.calls[0][0].endswith('READ ONLY')
-    assert 'analytics_reporting.active_user_audiences' in db.calls[2][0]
+    assert 'analytics_reporting.authorized_user_audiences' in db.calls[2][0]
 
 
 def test_known_zero_usage_is_different_from_unavailable(monkeypatch):
@@ -265,7 +265,7 @@ def test_access_matrix_resolves_artifact_names_and_both_perspectives(monkeypatch
     assert result['rows'][0]['matches'][0]['can_run'] is False
     sql=db.calls[-1][0]
     assert 'analytics_reporting.artifact_access_edges' in sql
-    assert 'analytics_reporting.active_user_audiences' in sql
+    assert 'analytics_reporting.authorized_user_audiences' in sql
     assert 'edge_number<=201' in sql
 
 def test_access_matrix_inactive_artifacts_preserve_assignments_without_effective_access(monkeypatch):
@@ -280,7 +280,7 @@ def test_access_matrix_inactive_artifacts_preserve_assignments_without_effective
 def test_access_matrix_filters_inactive_users_before_paging_and_matches(monkeypatch,perspective):
     db=install_metadata(monkeypatch,[[(0,)],[],[]])
     usage_access.get_access_matrix(client_key='srp',perspective=perspective)
-    user_queries=[sql for sql, _ in db.calls if 'analytics_reporting.active_user_audiences' in sql]
+    user_queries=[sql for sql, _ in db.calls if 'analytics_reporting.authorized_user_audiences' in sql]
     assert user_queries
     assert all('security_users' not in sql for sql in user_queries)
 

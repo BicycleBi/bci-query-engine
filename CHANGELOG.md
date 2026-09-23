@@ -6,6 +6,9 @@
   and authenticated-denial semantics into an explicit metadata-database layer.
 - Allow bounded audience filtering on the compact Access summary while
   preserving the existing user/artifact matrix API.
+- Keep the authorized-user tables limited to identities with effective
+  artifact permissions, while reporting successful authentications with no
+  current artifact grants alongside observed HTTP 403 activity.
 
 ## 0.4.0 - 2026-09-18
 
