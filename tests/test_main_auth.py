@@ -16,6 +16,8 @@ def _load_main(monkeypatch):
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", "bci-security")
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", "bci-client")
     monkeypatch.setenv("SERVICE_TOKEN", "test-service-token")
+    monkeypatch.setenv("DATA_LOAD_ACTION_WORKER_ENABLED", "false")
+    monkeypatch.setenv("QUICKBOOKS_LOAD_CONTROL_ROLES", "srpdev_bicycle_dev")
 
     for name in list(sys.modules):
         if name == "app.main" or name.startswith("app.main."):
@@ -198,6 +200,107 @@ def test_protected_routes_require_internal_token(monkeypatch):
         },
     )
     assert response.status_code == 401
+
+
+def test_quickbooks_full_load_action_requires_dedicated_role(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_artifact_scope", lambda *args, **kwargs: None)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srpdev_report_viewer"],
+            "sub": "user-1",
+        }
+    )
+
+    response = client.post(
+        "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 403
+
+
+def test_quickbooks_full_load_action_queues_safe_authenticated_request(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_artifact_scope", lambda *args, **kwargs: None)
+    captured = {}
+
+    def fake_queue(client_key, artifact_key, action_key, **kwargs):
+        captured.update(
+            client_key=client_key,
+            artifact_key=artifact_key,
+            action_key=action_key,
+            **kwargs,
+        )
+        return {
+            "action_id": "11111111-1111-1111-1111-111111111111",
+            "client_key": client_key,
+            "artifact_key": artifact_key,
+            "action_key": action_key,
+            "status": "queued",
+            "requested_at": datetime.now(tz=timezone.utc),
+        }
+
+    monkeypatch.setattr(main, "queue_data_load_action", fake_queue)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srpdev_bicycle_dev"],
+            "sub": "jeanre",
+        }
+    )
+
+    response = client.post(
+        "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert captured == {
+        "client_key": "srp",
+        "artifact_key": "quickbooks-profit-loss-report",
+        "action_key": "quickbooks-full-load",
+        "requested_by": "jeanre",
+        "authorized_roles": ["srpdev_bicycle_dev"],
+    }
+
+
+def test_quickbooks_latest_action_is_capability_checked_and_returns_idle(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_artifact_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "get_latest_data_load_action", lambda *args: None)
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srpdev_bicycle_dev"],
+            "sub": "jeanre",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/latest",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "idle"
 
 
 def test_protected_routes_accept_valid_internal_token(monkeypatch):

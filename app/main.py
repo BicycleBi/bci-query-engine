@@ -36,6 +36,13 @@ from .engine import (
     queue_artifact_execution,
     write_artifact_definition,
 )
+from .load_actions import (
+    DataLoadAlreadyRunning,
+    get_data_load_action,
+    get_latest_data_load_action,
+    queue_data_load_action,
+    run_data_load_action_worker,
+)
 from .models import (
     ArtifactExecutionRequest,
     ArtifactExecutionResponse,
@@ -50,6 +57,7 @@ from .models import (
     DeliveryBatchResponse,
     DeliveryQueueCancelRequest,
     DeliveryQueueCancelResponse,
+    DataLoadActionResponse,
     DeliveryRetryRequest,
     RunMode,
     RunResponse,
@@ -70,6 +78,7 @@ from .monitoring import (
 from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 
 _delivery_worker_started = False
+_data_load_action_worker_started = False
 
 
 def start_delivery_worker() -> None:
@@ -90,10 +99,27 @@ def start_delivery_worker() -> None:
     _delivery_worker_started = True
 
 
+def start_data_load_action_worker() -> None:
+    global _data_load_action_worker_started
+    if (
+        _data_load_action_worker_started
+        or os.getenv("DATA_LOAD_ACTION_WORKER_ENABLED", "false").lower() != "true"
+    ):
+        return
+    thread = threading.Thread(
+        target=run_data_load_action_worker,
+        name="data-load-action-worker",
+        daemon=True,
+    )
+    thread.start()
+    _data_load_action_worker_started = True
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     start_gateway_listener()
     start_delivery_worker()
+    start_data_load_action_worker()
     try:
         yield
     finally:
@@ -321,6 +347,21 @@ def require_delivery_control(roles: list[str]) -> None:
         raise HTTPException(status_code=403, detail="Delivery control access denied")
 
 
+def require_quickbooks_load_control(roles: list[str]) -> None:
+    configured = {
+        role.strip()
+        for role in os.getenv("QUICKBOOKS_LOAD_CONTROL_ROLES", "").split(",")
+        if role.strip()
+    }
+    if not configured:
+        raise HTTPException(
+            status_code=503,
+            detail="QuickBooks load control authorization is not configured",
+        )
+    if configured.isdisjoint(roles):
+        raise HTTPException(status_code=403, detail="QuickBooks load control access denied")
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -379,6 +420,88 @@ def get_artifact_html(
 
     headers = _cache_headers(result.get("cache") or {})
     return HTMLResponse(content=html, headers=headers)
+
+
+def _authorize_quickbooks_full_load(
+    identity: dict[str, Any],
+    forwarded_roles: Optional[str],
+) -> tuple[str, list[str]]:
+    require_client_access(identity, "srp")
+    roles = authorized_roles(identity, forwarded_roles)
+    require_artifact_scope("srp", "quickbooks-profit-loss-report", roles)
+    require_quickbooks_load_control(roles)
+    return authenticated_subject(identity), roles
+
+
+@app.post(
+    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load",
+    response_model=DataLoadActionResponse,
+    status_code=202,
+)
+def create_quickbooks_full_load_action(
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Queue a full QuickBooks-only load without exposing service credentials."""
+    subject, roles = _authorize_quickbooks_full_load(identity, x_identity_roles)
+    try:
+        return queue_data_load_action(
+            "srp",
+            "quickbooks-profit-loss-report",
+            "quickbooks-full-load",
+            requested_by=subject,
+            authorized_roles=roles,
+        )
+    except DataLoadAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "already_running", "action_id": exc.action_id},
+        ) from exc
+
+
+@app.get(
+    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/latest",
+    response_model=DataLoadActionResponse,
+)
+def latest_quickbooks_full_load_action(
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return the latest safe status and act as the UI capability check."""
+    _authorize_quickbooks_full_load(identity, x_identity_roles)
+    result = get_latest_data_load_action(
+        "srp",
+        "quickbooks-profit-loss-report",
+        "quickbooks-full-load",
+    )
+    return result or DataLoadActionResponse(
+        client_key="srp",
+        artifact_key="quickbooks-profit-loss-report",
+        action_key="quickbooks-full-load",
+        status="idle",
+    )
+
+
+@app.get(
+    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/{action_id}",
+    response_model=DataLoadActionResponse,
+)
+def quickbooks_full_load_action_status(
+    action_id: uuid.UUID,
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Return only bounded status for one authorized QuickBooks load action."""
+    _authorize_quickbooks_full_load(identity, x_identity_roles)
+    result = get_data_load_action(
+        str(action_id),
+        "srp",
+        "quickbooks-profit-loss-report",
+        "quickbooks-full-load",
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="QuickBooks load action was not found")
+    return result
 
 
 @app.post(
