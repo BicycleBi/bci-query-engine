@@ -35,6 +35,7 @@ def test_worker_calls_only_quickbooks_full_loader_with_internal_token(monkeypatc
     assert captured["headers"]["Authorization"] == "Bearer internal-secret"
     assert captured["headers"]["X-BCI-Trigger-Source"] == "manual"
     assert captured["headers"]["X-BCI-Load-Scope"] == "full"
+    assert captured["headers"]["X-BCI-Correlation-ID"] == "11111111-1111-1111-1111-111111111111"
     assert completed == [("11111111-1111-1111-1111-111111111111", "completed", None)]
 
 
