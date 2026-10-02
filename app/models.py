@@ -223,6 +223,23 @@ class HealthResponse(BaseModel):
     service: str = "bci-query-engine"
 
 
+class DataLoadActionResponse(BaseModel):
+    action_id: Optional[str] = None
+    client_key: str
+    artifact_key: str
+    action_key: str
+    status: str
+    requested_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+    @field_validator("action_id", mode="before")
+    @classmethod
+    def normalize_action_id(cls, value: Any) -> Optional[str]:
+        return None if value is None else str(value)
+
+
 class UsageInteractionRequest(BaseModel):
     client_key: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     artifact_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
