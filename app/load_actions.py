@@ -7,6 +7,7 @@ callers receive only a small non-sensitive status contract.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -26,6 +27,9 @@ except (ImportError, AttributeError):  # pragma: no cover - lightweight test stu
         pass
 
 from .db import get_metadata_conn
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataLoadAlreadyRunning(RuntimeError):
@@ -314,6 +318,7 @@ def execute_data_load_action(action: dict[str, Any]) -> None:
         return
 
     try:
+        logger.info("QuickBooks load action dispatching correlation_id=%s", action_id)
         response = requests.post(
             url,
             json={},
@@ -322,21 +327,40 @@ def execute_data_load_action(action: dict[str, Any]) -> None:
                 "Content-Type": "application/json",
                 "X-BCI-Trigger-Source": "manual",
                 "X-BCI-Load-Scope": "full",
+                "X-BCI-Correlation-ID": action_id,
             },
             timeout=_timeout_seconds(),
         )
         if response.status_code == 409:
             _finish_action(action_id, "failed", "already_running")
+            logger.warning(
+                "QuickBooks load action rejected correlation_id=%s http_status=%s",
+                action_id,
+                response.status_code,
+            )
         elif response.status_code >= 400:
             _finish_action(action_id, "failed", "load_failed")
+            logger.warning(
+                "QuickBooks load action failed correlation_id=%s http_status=%s",
+                action_id,
+                response.status_code,
+            )
         else:
             _finish_action(action_id, "completed")
+            logger.info(
+                "QuickBooks load action completed correlation_id=%s http_status=%s",
+                action_id,
+                response.status_code,
+            )
     except RequestsTimeout:
         _finish_action(action_id, "attention_required", "timeout_unknown")
+        logger.warning("QuickBooks load action timed out correlation_id=%s", action_id)
     except RequestsRequestException:
         _finish_action(action_id, "failed", "service_unavailable")
+        logger.warning("QuickBooks load service unavailable correlation_id=%s", action_id)
     except Exception:
         _finish_action(action_id, "failed", "unexpected_error")
+        logger.exception("QuickBooks load action failed unexpectedly correlation_id=%s", action_id)
 
 
 def run_data_load_action_worker() -> None:

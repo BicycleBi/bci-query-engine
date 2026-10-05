@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "type": "bci-release-content-acceptance",
+  "client": "srp",
+  "lane": "dev",
+  "release_id": "dev-20261002T104601Z-3d6fa13e",
+  "source_commit": "8444b471cd6dd838328b2872011947f284174884",
+  "accepted_by": "Jeanre Van Wyk",
+  "accepted_at": "2026-10-02",
+  "content_units": [
+    {
+      "path": "app/load_actions.py",
+      "sha256": "71bd45339bf96e0ef4f4a464fe6141d72a2ec1942f9816214c9450666da4ddf7"
+    },
+    {
+      "path": "tests/test_load_actions.py",
+      "sha256": "c43c95e4ed6535f04ef1583185d854a53c90ca3bf94f0b1084932f72407609cd"
+    }
+  ]
+}
