@@ -1,0 +1,126 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/load_actions.py",
+        "role": "load-actions",
+        "sha256": "71bd45339bf96e0ef4f4a464fe6141d72a2ec1942f9816214c9450666da4ddf7"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_load_actions.py",
+        "role": "test-load-actions",
+        "sha256": "c43c95e4ed6535f04ef1583185d854a53c90ca3bf94f0b1084932f72407609cd"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "dbb7b6832052c61249466e439333978ac51c10da",
+    "branch_provenance": {
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 1,
+      "source_commit": "113790a8d8ea9f9b9e778b6c6d9abe794e532608",
+      "source_ref": "refs/heads/codex/srp-qbo-manual-load-qa-20261005",
+      "target_commit": "dbb7b6832052c61249466e439333978ac51c10da",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "release-content",
+    "change_id": "srpqa-qbo-manual-load-actions-20261005",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "deployment/promotions/qa-srp-quickbooks-load-actions-20261005-base.yml",
+        "reason": "declared protected package dependency",
+        "role": "qa-srp-quickbooks-load-actions-20261005-base",
+        "sha256": "c39077f8ed92337e387963bef8e426f895981e3414008bc56ef3c57007ffd7b6"
+      },
+      {
+        "operation": "validate-only",
+        "path": "deployment/acceptances/srp-qbo-manual-load-actions-dev-20261002.json",
+        "reason": "declared protected package dependency",
+        "role": "srp-qbo-manual-load-actions-dev-20261002",
+        "sha256": "dfb90575a309a5a65d031f42c8873bd332d81fc5b120e345ac99266c49943e01"
+      }
+    ],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-10-05T11:22:56Z",
+    "intent": "Promote the Dev-accepted durable QuickBooks-only load action and correlation-ID propagation to the SRP QA Query Engine",
+    "operator": "codex",
+    "package_path": "deployment/packages/srpqa-qbo-manual-load-actions-20261005",
+    "regression_checks": [],
+    "release_content": {
+      "acceptance_path": "deployment/acceptances/srp-qbo-manual-load-actions-dev-20261002.json",
+      "acceptance_sha256": "dfb90575a309a5a65d031f42c8873bd332d81fc5b120e345ac99266c49943e01",
+      "upstream_lane": "dev"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "113790a8d8ea9f9b9e778b6c6d9abe794e532608",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-manual-load-20261005"
+  },
+  "runtime_config": {
+    "services": {
+      "query-engine": {
+        "container_env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+        },
+        "env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+        },
+        "reconcile": "recreate-if-env-changed"
+      }
+    }
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "SRP QA authenticated durable QuickBooks-only full-load actions with end-to-end correlation IDs",
+      "release_id": "service-runtime-srpqa-qbo-manual-load-20261005-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "113790a8d8ea9f9b9e778b6c6d9abe794e532608",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-manual-load-20261005",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    },
+    {
+      "env": {
+        "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+        "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+        "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+        "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+        "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+        "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+      },
+      "service": "query-engine",
+      "type": "service-env"
+    }
+  ]
+}
+
