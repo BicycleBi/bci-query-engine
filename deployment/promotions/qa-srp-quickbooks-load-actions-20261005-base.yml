@@ -1,0 +1,50 @@
+schema_version: 1
+client: srp
+environment: qa
+source_repo: /home/shared/repos/bci-query-engine-promote-srp-qbo-manual-load-20261005
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srpqa
+  compose_project: srpqa
+
+runtime_config:
+  services:
+    query-engine:
+      env:
+        DATA_LOAD_ACTION_WORKER_ENABLED: "true"
+        DATA_LOAD_ACTION_POLL_SECONDS: "1"
+        DATA_LOAD_ACTION_LEASE_SECONDS: "7200"
+        QUICKBOOKS_LOAD_CONTROL_ROLES: "srpqa_quickbooks_connection_admin,srpqa_admin"
+        QUICKBOOKS_FULL_LOAD_URL: "http://data-integration:8080/loads/srp-quickbooks-loader/run"
+        QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS: "5400"
+      container_env:
+        DATA_LOAD_ACTION_WORKER_ENABLED: "true"
+        DATA_LOAD_ACTION_POLL_SECONDS: "1"
+        DATA_LOAD_ACTION_LEASE_SECONDS: "7200"
+        QUICKBOOKS_LOAD_CONTROL_ROLES: "srpqa_quickbooks_connection_admin,srpqa_admin"
+        QUICKBOOKS_FULL_LOAD_URL: "http://data-integration:8080/loads/srp-quickbooks-loader/run"
+        QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS: "5400"
+      reconcile: recreate-if-env-changed
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    release_id: service-runtime-srpqa-qbo-manual-load-20261005-v1
+    purpose: SRP QA authenticated durable QuickBooks-only full-load actions with end-to-end correlation IDs
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
+  - type: service-env
+    service: query-engine
+    env:
+      DATA_LOAD_ACTION_WORKER_ENABLED: "true"
+      DATA_LOAD_ACTION_POLL_SECONDS: "1"
+      DATA_LOAD_ACTION_LEASE_SECONDS: "7200"
+      QUICKBOOKS_LOAD_CONTROL_ROLES: "srpqa_quickbooks_connection_admin,srpqa_admin"
+      QUICKBOOKS_FULL_LOAD_URL: "http://data-integration:8080/loads/srp-quickbooks-loader/run"
+      QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS: "5400"
