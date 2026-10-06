@@ -7,6 +7,9 @@ source_commit: HEAD
 targets:
   stack_dir: /home/shared/bci-clients/srp
   compose_project: bci-srp-production
+  compose_files:
+    - docker-compose.yml
+    - platform-analytics.compose.yml
 
 runtime_config:
   services:
