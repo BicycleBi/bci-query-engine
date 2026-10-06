@@ -1,0 +1,146 @@
+{
+  "client": "srp",
+  "environment": "production",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/load_actions.py",
+        "role": "load-actions",
+        "sha256": "71bd45339bf96e0ef4f4a464fe6141d72a2ec1942f9816214c9450666da4ddf7"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_load_actions.py",
+        "role": "test-load-actions",
+        "sha256": "c43c95e4ed6535f04ef1583185d854a53c90ca3bf94f0b1084932f72407609cd"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "dbb7b6832052c61249466e439333978ac51c10da",
+    "branch_provenance": {
+      "change_class": "release-content",
+      "expected_advance_ref": "refs/heads/main",
+      "qa_validated_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+      "schema_version": 3,
+      "source_commit": "b732273f06d162a81573557b9fb972a394ca449a",
+      "source_ref": "refs/heads/codex/srp-qbo-manual-load-production-20261006",
+      "target_commit": "b5e6814671564af911a3c7c0ad76866a9ced913b",
+      "target_ref": "refs/heads/main"
+    },
+    "change_class": "release-content",
+    "change_id": "srp-production-qbo-manual-load-actions-20261006",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "deployment/promotions/production-srp-quickbooks-load-actions-20261006-base.yml",
+        "reason": "declared protected package dependency",
+        "role": "production-srp-quickbooks-load-actions-20261006-base",
+        "sha256": "d26e946a30814420171af35d88e491c72bbac17282d6a22b7fbb85c73d72a1a2"
+      },
+      {
+        "operation": "validate-only",
+        "path": "deployment/acceptances/srp-qbo-manual-load-actions-dev-20261002.json",
+        "reason": "declared protected package dependency",
+        "role": "srp-qbo-manual-load-actions-dev-20261002",
+        "sha256": "dfb90575a309a5a65d031f42c8873bd332d81fc5b120e345ac99266c49943e01"
+      },
+      {
+        "operation": "validate-only",
+        "path": "deployment/acceptances/srp-qbo-manual-load-actions-qa-20261006.json",
+        "reason": "declared protected package dependency",
+        "role": "srp-qbo-manual-load-actions-qa-20261006",
+        "sha256": "5179031f27dceb2270a2f53e547973f1c580ffd233ad6c0391d8008c686bdd37"
+      }
+    ],
+    "environment": "production",
+    "forbidden_units": [],
+    "generated_at": "2026-10-06T08:09:14Z",
+    "intent": "Promote the QA-accepted durable QuickBooks-only load action and correlation-ID propagation to the SRP Production Query Engine while preserving the active Analytics overlay",
+    "operator": "codex",
+    "package_path": "deployment/packages/srp-production-qbo-manual-load-actions-20261006",
+    "production_reconciliation": {
+      "branch": "codex/srp-qbo-manual-load-production-20261006",
+      "qa_validated_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518"
+    },
+    "regression_checks": [],
+    "release_content": {
+      "acceptance_path": "deployment/acceptances/srp-qbo-manual-load-actions-qa-20261006.json",
+      "acceptance_sha256": "5179031f27dceb2270a2f53e547973f1c580ffd233ad6c0391d8008c686bdd37",
+      "upstream_lane": "qa"
+    },
+    "rollback": {
+      "method": "Apply the separately checked exact Production Query Engine runtime rollback package.",
+      "reference": "8b857741705a4eba17afef2b3bfa59a7af8eab45"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "b732273f06d162a81573557b9fb972a394ca449a",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-manual-load-production-20261006"
+  },
+  "runtime_config": {
+    "services": {
+      "query-engine": {
+        "container_env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpprod_quickbooks_connection_admin,srp_production_admin"
+        },
+        "env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpprod_quickbooks_connection_admin,srp_production_admin"
+        },
+        "reconcile": "recreate-if-env-changed"
+      }
+    }
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "SRP Production authenticated durable QuickBooks-only full-load actions with end-to-end correlation IDs",
+      "release_id": "service-runtime-srpprod-qbo-manual-load-20261006-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "b732273f06d162a81573557b9fb972a394ca449a",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-manual-load-production-20261006",
+  "targets": {
+    "compose_files": [
+      "docker-compose.yml",
+      "platform-analytics.compose.yml"
+    ],
+    "compose_project": "bci-srp-production",
+    "stack_dir": "/home/shared/bci-clients/srp"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    },
+    {
+      "env": {
+        "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+        "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+        "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+        "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+        "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+        "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpprod_quickbooks_connection_admin,srp_production_admin"
+      },
+      "service": "query-engine",
+      "type": "service-env"
+    }
+  ]
+}
