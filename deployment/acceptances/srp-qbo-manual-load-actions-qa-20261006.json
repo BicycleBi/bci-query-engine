@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "type": "bci-release-content-acceptance",
+  "client": "srp",
+  "lane": "qa",
+  "release_id": "service-runtime-srpqa-qbo-manual-load-20261005-v1",
+  "source_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+  "accepted_by": "Jeanre Van Wyk",
+  "accepted_at": "2026-10-06",
+  "upstream": {
+    "lane": "dev",
+    "path": "deployment/acceptances/srp-qbo-manual-load-actions-dev-20261002.json",
+    "sha256": "dfb90575a309a5a65d031f42c8873bd332d81fc5b120e345ac99266c49943e01"
+  },
+  "content_units": [
+    {
+      "path": "app/load_actions.py",
+      "sha256": "71bd45339bf96e0ef4f4a464fe6141d72a2ec1942f9816214c9450666da4ddf7"
+    },
+    {
+      "path": "tests/test_load_actions.py",
+      "sha256": "c43c95e4ed6535f04ef1583185d854a53c90ca3bf94f0b1084932f72407609cd"
+    }
+  ]
+}
