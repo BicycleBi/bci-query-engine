@@ -40,6 +40,7 @@ from .load_actions import (
     DataLoadAlreadyRunning,
     get_data_load_action,
     get_latest_data_load_action,
+    get_live_quickbooks_load_progress,
     queue_data_load_action,
     run_data_load_action_worker,
 )
@@ -474,6 +475,8 @@ def latest_quickbooks_full_load_action(
         "quickbooks-profit-loss-report",
         "quickbooks-full-load",
     )
+    if result and result.get("status") == "running" and result.get("action_id"):
+        result.update(get_live_quickbooks_load_progress(result["action_id"]))
     return result or DataLoadActionResponse(
         client_key="srp",
         artifact_key="quickbooks-profit-loss-report",
@@ -501,6 +504,8 @@ def quickbooks_full_load_action_status(
     )
     if result is None:
         raise HTTPException(status_code=404, detail="QuickBooks load action was not found")
+    if result.get("status") == "running":
+        result.update(get_live_quickbooks_load_progress(result["action_id"]))
     return result
 
 

@@ -1,0 +1,149 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/load_actions.py",
+        "role": "load-actions",
+        "sha256": "b2e5ff73df154b5b7530dc90a9bd26fcb472142571e71d6107334872d2f72492"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "72136c437719e72c1feccb4d80781b6bb3c2805ca29c372547e144b11e8922c8"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "ce927c1f16251216d11e2c2d9904484b2c9af9fae03d2b2f78ce0cc9c2f49faa"
+      },
+      {
+        "operation": "replace",
+        "path": "docs/srp-quickbooks-load-progress.md",
+        "role": "srp-quickbooks-load-progress",
+        "sha256": "e4d059b51b7e69b708117c5282e8e8963e245e5ba8182deedfc64c8ab65190b9"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_load_actions.py",
+        "role": "test-load-actions",
+        "sha256": "b9df85d6e2994df2cdd9526c1864328fd9a6aa9eec185906dec9c6893a2b5280"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_main_auth.py",
+        "role": "test-main-auth",
+        "sha256": "d149e6eabf8577cfc4dc2eeb89501523d16d169868e33f2de23378b964fd06b3"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+    "branch_provenance": {
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 1,
+      "source_commit": "7c1739d281710099f7bdc19344352890a5b8fbcc",
+      "source_ref": "refs/heads/codex/srp-qbo-progress-qa-source-20261007",
+      "target_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "release-content",
+    "change_id": "srpqa-qbo-progress-20261007",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "deployment/promotions/qa-srp-qbo-progress-20261007-base.yml",
+        "reason": "declared protected package dependency",
+        "role": "qa-srp-qbo-progress-20261007-base",
+        "sha256": "d62e26026364bb64cfc615214b64362e3229ba3de3135a557a3fb97d11a34c2b"
+      },
+      {
+        "operation": "validate-only",
+        "path": "deployment/acceptances/srp-qbo-progress-dev-20261007.json",
+        "reason": "declared protected package dependency",
+        "role": "srp-qbo-progress-dev-20261007",
+        "sha256": "3b4fbdfaa76f9e28ded586bb1d09e98e485cc5ae0cfdddc8d4de5ef71c6b4d67"
+      }
+    ],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-10-07T11:47:55Z",
+    "intent": "Promote Dev-accepted safe per-company QuickBooks load progress and isolated failure reporting to SRP QA",
+    "operator": "codex",
+    "package_path": "deployment/packages/srpqa-qbo-progress-20261007",
+    "regression_checks": [],
+    "release_content": {
+      "acceptance_path": "deployment/acceptances/srp-qbo-progress-dev-20261007.json",
+      "acceptance_sha256": "3b4fbdfaa76f9e28ded586bb1d09e98e485cc5ae0cfdddc8d4de5ef71c6b4d67",
+      "upstream_lane": "dev"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "7c1739d281710099f7bdc19344352890a5b8fbcc",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-progress-qa-20261007"
+  },
+  "runtime_config": {
+    "services": {
+      "query-engine": {
+        "container_env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+        },
+        "env": {
+          "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+          "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+          "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+          "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+          "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+          "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+        },
+        "reconcile": "recreate-if-env-changed"
+      }
+    }
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "SRP QA safe per-company QuickBooks load progress and isolated failure reporting",
+      "release_id": "service-runtime-srpqa-qbo-progress-20261007-v1",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "7c1739d281710099f7bdc19344352890a5b8fbcc",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-qbo-progress-qa-20261007",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    },
+    {
+      "env": {
+        "DATA_LOAD_ACTION_LEASE_SECONDS": "7200",
+        "DATA_LOAD_ACTION_POLL_SECONDS": "1",
+        "DATA_LOAD_ACTION_WORKER_ENABLED": "true",
+        "QUICKBOOKS_FULL_LOAD_TIMEOUT_SECONDS": "5400",
+        "QUICKBOOKS_FULL_LOAD_URL": "http://data-integration:8080/loads/srp-quickbooks-loader/run",
+        "QUICKBOOKS_LOAD_CONTROL_ROLES": "srpqa_quickbooks_connection_admin,srpqa_admin"
+      },
+      "service": "query-engine",
+      "type": "service-env"
+    }
+  ]
+}
