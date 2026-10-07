@@ -303,6 +303,62 @@ def test_quickbooks_latest_action_is_capability_checked_and_returns_idle(monkeyp
     assert response.json()["status"] == "idle"
 
 
+def test_quickbooks_running_action_includes_safe_live_progress(monkeypatch):
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_artifact_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "get_latest_data_load_action",
+        lambda *args: {
+            "action_id": "11111111-1111-1111-1111-111111111111",
+            "client_key": "srp",
+            "artifact_key": "quickbooks-profit-loss-report",
+            "action_key": "quickbooks-full-load",
+            "status": "running",
+        },
+    )
+    monkeypatch.setattr(
+        main,
+        "get_live_quickbooks_load_progress",
+        lambda *args: {
+            "progress_phase": "running",
+            "current_entity": "Hogan Spine",
+            "current_step": "Loading Profit & Loss detail (2 of 4)",
+            "entities_completed": 5,
+            "entities_failed": 1,
+            "entities_total": 13,
+            "entity_failures": [
+                {
+                    "entity_name": "Austin Spine and Rehab",
+                    "reason_code": "authorization_required",
+                    "message": "QuickBooks authorization needs attention.",
+                }
+            ],
+        },
+    )
+    client = TestClient(main.app)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "srp",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": ["srpdev_bicycle_dev"],
+            "sub": "jeanre",
+        }
+    )
+
+    response = client.get(
+        "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/latest",
+        headers=_auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["current_entity"] == "Hogan Spine"
+    assert response.json()["entities_failed"] == 1
+
+
 def test_protected_routes_accept_valid_internal_token(monkeypatch):
     main = _load_main(monkeypatch)
     client = TestClient(main.app)

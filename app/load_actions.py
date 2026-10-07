@@ -80,8 +80,15 @@ def _ensure_table(meta) -> None:
             completed_at TIMESTAMPTZ,
             lease_owner TEXT,
             lease_expires_at TIMESTAMPTZ,
-            attempt_count INTEGER NOT NULL DEFAULT 0
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            progress JSONB NOT NULL DEFAULT '{}'::jsonb
         )
+        """
+    )
+    meta.execute(
+        """
+        ALTER TABLE log.data_load_actions
+        ADD COLUMN IF NOT EXISTS progress JSONB NOT NULL DEFAULT '{}'::jsonb
         """
     )
     meta.execute(
@@ -111,7 +118,7 @@ def _safe_error_message(error_code: Optional[str]) -> Optional[str]:
 
 
 def _row_result(row) -> dict[str, Any]:
-    return {
+    result = {
         "action_id": str(row[0]),
         "client_key": row[1],
         "artifact_key": row[2],
@@ -122,12 +129,111 @@ def _row_result(row) -> dict[str, Any]:
         "completed_at": row[7],
         "error_message": _safe_error_message(row[8]),
     }
+    result.update(_normalize_progress(row[9] if len(row) > 9 else None))
+    return result
 
 
 _SELECT_COLUMNS = """
     action_id, client_key, artifact_key, action_key, status,
-    requested_at, started_at, completed_at, error_code
+    requested_at, started_at, completed_at, error_code, progress
 """
+
+
+_PROGRESS_PHASES = {
+    "running",
+    "finalizing",
+    "completed",
+    "completed_with_warnings",
+    "failed",
+}
+_FAILURE_MESSAGES = {
+    "authorization_required": "QuickBooks authorization needs attention.",
+    "quickbooks_timeout": "QuickBooks did not respond before the request timed out.",
+    "quickbooks_rate_limited": "QuickBooks temporarily limited requests.",
+    "quickbooks_unavailable": "QuickBooks is temporarily unavailable.",
+    "quickbooks_request_failed": "QuickBooks could not complete this company refresh.",
+    "processing_failed": "This company could not be refreshed.",
+}
+
+
+def _bounded_text(value: Any, length: int) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split()).strip()
+    return value[:length] or None
+
+
+def _bounded_count(value: Any) -> int:
+    return max(0, min(500, value if isinstance(value, int) else 0))
+
+
+def _normalize_progress(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    phase = value.get("phase") if value.get("phase") in _PROGRESS_PHASES else None
+    failures = []
+    for item in value.get("failures", []) if isinstance(value.get("failures"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        reason_code = item.get("reason_code")
+        entity_name = _bounded_text(item.get("entity_name"), 120)
+        if not entity_name or reason_code not in _FAILURE_MESSAGES:
+            continue
+        failures.append(
+            {
+                "entity_name": entity_name,
+                "reason_code": reason_code,
+                "message": _FAILURE_MESSAGES[reason_code],
+            }
+        )
+        if len(failures) >= 50:
+            break
+    result = {
+        "progress_phase": phase,
+        "current_entity": _bounded_text(value.get("current_entity"), 120),
+        "current_step": _bounded_text(value.get("current_step"), 180),
+        "entities_completed": _bounded_count(value.get("entities_completed")),
+        "entities_failed": _bounded_count(value.get("entities_failed")),
+        "entities_total": _bounded_count(value.get("entities_total")),
+        "progress_updated_at": _bounded_text(value.get("progress_updated_at"), 40),
+        "entity_failures": failures,
+    }
+    return {key: item for key, item in result.items() if item is not None}
+
+
+def _progress_storage(value: Any) -> dict[str, Any]:
+    normalized = _normalize_progress(value)
+    return {
+        "phase": normalized.get("progress_phase"),
+        "current_entity": normalized.get("current_entity"),
+        "current_step": normalized.get("current_step"),
+        "entities_completed": normalized.get("entities_completed", 0),
+        "entities_failed": normalized.get("entities_failed", 0),
+        "entities_total": normalized.get("entities_total", 0),
+        "progress_updated_at": normalized.get("progress_updated_at"),
+        "failures": normalized.get("entity_failures", []),
+    }
+
+
+def get_live_quickbooks_load_progress(action_id: str) -> dict[str, Any]:
+    service_token = os.getenv("SERVICE_TOKEN", "").strip()
+    url_template = os.getenv(
+        "QUICKBOOKS_FULL_LOAD_PROGRESS_URL",
+        "http://data-integration:8080/loads/srp-quickbooks-loader/progress/{action_id}",
+    ).strip()
+    if not service_token or "{action_id}" not in url_template:
+        return {}
+    try:
+        response = requests.get(
+            url_template.format(action_id=str(uuid.UUID(action_id))),
+            headers={"Authorization": f"Bearer {service_token}"},
+            timeout=5,
+        )
+        if response.status_code != 200:
+            return {}
+        return _normalize_progress(response.json())
+    except (ValueError, RequestsRequestException):
+        return {}
 
 
 def queue_data_load_action(
@@ -280,7 +386,12 @@ def claim_queued_data_load_action() -> Optional[dict[str, Any]]:
     }
 
 
-def _finish_action(action_id: str, status: str, error_code: Optional[str] = None) -> None:
+def _finish_action(
+    action_id: str,
+    status: str,
+    error_code: Optional[str] = None,
+    progress: Optional[dict[str, Any]] = None,
+) -> None:
     with get_metadata_conn() as meta:
         _ensure_table(meta)
         meta.execute(
@@ -288,12 +399,18 @@ def _finish_action(action_id: str, status: str, error_code: Optional[str] = None
             UPDATE log.data_load_actions
             SET status = %s,
                 error_code = %s,
+                progress = COALESCE(%s::jsonb, progress),
                 completed_at = NOW(),
                 lease_owner = NULL,
                 lease_expires_at = NULL
             WHERE action_id = %s::uuid AND status = 'running'
             """,
-            (status, error_code, action_id),
+            (
+                status,
+                error_code,
+                json.dumps(_progress_storage(progress)) if progress else None,
+                action_id,
+            ),
         )
         meta.commit()
 
@@ -346,7 +463,19 @@ def execute_data_load_action(action: dict[str, Any]) -> None:
                 response.status_code,
             )
         else:
-            _finish_action(action_id, "completed")
+            payload = response.json() if callable(getattr(response, "json", None)) else {}
+            progress = payload.get("progress") if isinstance(payload, dict) else None
+            loader_status = payload.get("status") if isinstance(payload, dict) else None
+            if loader_status == "completed_with_warnings":
+                _finish_action(
+                    action_id,
+                    "completed_with_warnings",
+                    progress=progress,
+                )
+            elif loader_status == "failed":
+                _finish_action(action_id, "failed", "load_failed", progress=progress)
+            else:
+                _finish_action(action_id, "completed", progress=progress)
             logger.info(
                 "QuickBooks load action completed correlation_id=%s http_status=%s",
                 action_id,
