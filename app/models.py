@@ -223,6 +223,12 @@ class HealthResponse(BaseModel):
     service: str = "bci-query-engine"
 
 
+class DataLoadEntityFailure(BaseModel):
+    entity_name: str
+    reason_code: str
+    message: str
+
+
 class DataLoadActionResponse(BaseModel):
     action_id: Optional[str] = None
     client_key: str
@@ -233,6 +239,14 @@ class DataLoadActionResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    progress_phase: Optional[str] = None
+    current_entity: Optional[str] = None
+    current_step: Optional[str] = None
+    entities_completed: int = 0
+    entities_failed: int = 0
+    entities_total: int = 0
+    progress_updated_at: Optional[datetime] = None
+    entity_failures: list[DataLoadEntityFailure] = Field(default_factory=list)
 
     @field_validator("action_id", mode="before")
     @classmethod
