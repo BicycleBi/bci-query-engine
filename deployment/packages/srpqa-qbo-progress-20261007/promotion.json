@@ -56,6 +56,13 @@
     "dependencies": [
       {
         "operation": "validate-only",
+        "path": "deployment/promotions/qa-srp-qbo-progress-20261007-base.yml",
+        "reason": "declared protected package dependency",
+        "role": "qa-srp-qbo-progress-20261007-base",
+        "sha256": "d62e26026364bb64cfc615214b64362e3229ba3de3135a557a3fb97d11a34c2b"
+      },
+      {
+        "operation": "validate-only",
         "path": "deployment/acceptances/srp-qbo-progress-dev-20261007.json",
         "reason": "declared protected package dependency",
         "role": "srp-qbo-progress-dev-20261007",
@@ -64,7 +71,7 @@
     ],
     "environment": "qa",
     "forbidden_units": [],
-    "generated_at": "2026-10-07T11:46:19Z",
+    "generated_at": "2026-10-07T11:47:55Z",
     "intent": "Promote Dev-accepted safe per-company QuickBooks load progress and isolated failure reporting to SRP QA",
     "operator": "codex",
     "package_path": "deployment/packages/srpqa-qbo-progress-20261007",
