@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "type": "bci-release-content-acceptance",
+  "client": "srp",
+  "lane": "dev",
+  "release_id": "dev-20261007T110815Z-226a5578",
+  "source_commit": "0a6eab59e812f43f5606fcbab7f0868894d733dc",
+  "accepted_by": "Jeanre Van Wyk",
+  "accepted_at": "2026-10-07",
+  "content_units": [
+    {
+      "path": "app/load_actions.py",
+      "sha256": "b2e5ff73df154b5b7530dc90a9bd26fcb472142571e71d6107334872d2f72492"
+    },
+    {
+      "path": "app/main.py",
+      "sha256": "72136c437719e72c1feccb4d80781b6bb3c2805ca29c372547e144b11e8922c8"
+    },
+    {
+      "path": "app/models.py",
+      "sha256": "ce927c1f16251216d11e2c2d9904484b2c9af9fae03d2b2f78ce0cc9c2f49faa"
+    },
+    {
+      "path": "docs/srp-quickbooks-load-progress.md",
+      "sha256": "e4d059b51b7e69b708117c5282e8e8963e245e5ba8182deedfc64c8ab65190b9"
+    },
+    {
+      "path": "tests/test_load_actions.py",
+      "sha256": "b9df85d6e2994df2cdd9526c1864328fd9a6aa9eec185906dec9c6893a2b5280"
+    },
+    {
+      "path": "tests/test_main_auth.py",
+      "sha256": "d149e6eabf8577cfc4dc2eeb89501523d16d169868e33f2de23378b964fd06b3"
+    }
+  ]
+}
