@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Supply templates that request it with the active, client-scoped artifact keys
+  readable by the request's freshly authorized roles. Include that permission
+  set in rendered-response cache isolation so navigation cannot expose stale or
+  unauthorized artifact links after a grant changes.
 - Move BCI Analytics assignment, audience, artifact, wildcard-grant, activity,
   and authenticated-denial semantics into an explicit metadata-database layer.
 - Allow bounded audience filtering on the compact Access summary while

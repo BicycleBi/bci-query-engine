@@ -773,11 +773,61 @@ def _subject_hash(authenticated_subject: Optional[str]) -> Optional[str]:
     return hashlib.sha256(authenticated_subject.encode("utf-8")).hexdigest()
 
 
-def _authorization_context_hash(authorized_roles: Optional[list[str]]) -> Optional[str]:
-    if not authorized_roles:
+def _authorization_context_hash(
+    authorized_roles: Optional[list[str]],
+    authorized_artifact_keys: Optional[list[str]] = None,
+) -> Optional[str]:
+    if not authorized_roles and authorized_artifact_keys is None:
         return None
-    normalized = json.dumps(sorted(set(authorized_roles)), separators=(",", ":"))
+    if authorized_artifact_keys is None:
+        context: Any = sorted(set(authorized_roles or []))
+    else:
+        context = {
+            "artifact_read": sorted(set(authorized_artifact_keys)),
+            "roles": sorted(set(authorized_roles or [])),
+        }
+    normalized = json.dumps(context, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _authorized_artifact_keys(
+    meta,
+    client_key: str,
+    authorized_roles: Optional[list[str]],
+) -> list[str]:
+    """Resolve active artifacts readable by the freshly authorized roles.
+
+    This mirrors Security's exact-resource and wildcard matching for
+    ``artifact:read``. Security has already resolved direct and group roles,
+    including assignment expiry, before Query Engine receives this context.
+    """
+    roles = sorted(set(authorized_roles or []))
+    if not roles:
+        return []
+
+    rows = meta.execute(
+        """
+        SELECT DISTINCT artifact.artifact_key
+        FROM app.artifacts artifact
+        WHERE artifact.client_key = %s
+          AND artifact.active
+          AND EXISTS (
+              SELECT 1
+              FROM security_role_permissions permission
+              WHERE permission.role_key = ANY(%s)
+                AND permission.permission_key IN ('artifact:read', '*')
+                AND permission.resource_key IN (
+                    'artifact:' || artifact.client_key || ':' || artifact.artifact_key,
+                    'artifact:' || artifact.client_key || ':*',
+                    'artifact:*:*',
+                    '*'
+                )
+          )
+        ORDER BY artifact.artifact_key
+        """,
+        (client_key, roles),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def _set_authorization_context(
@@ -1183,6 +1233,11 @@ def execute_artifact(
             template_body = render_artifact["template_body"]
             render_artifact_id = render_artifact["artifact_id"]
             render_template_id = render_artifact["template_id"]
+            authorization_template_context: dict[str, Any] = {}
+            if "authorized_artifact_keys" in template_body:
+                authorization_template_context["authorized_artifact_keys"] = (
+                    _authorized_artifact_keys(meta, client_key, authorized_roles)
+                )
 
             cache_settings = get_cache_settings()
             cacheable_render = (
@@ -1215,7 +1270,10 @@ def execute_artifact(
                 template_id=render_template_id,
                 render_artifact_id=render_artifact_id,
                 authenticated_subject_hash=_subject_hash(authenticated_subject),
-                authorization_context_hash=_authorization_context_hash(authorized_roles),
+                authorization_context_hash=_authorization_context_hash(
+                    authorized_roles,
+                    authorization_template_context.get("authorized_artifact_keys"),
+                ),
                 data_freshness_timestamp=data_freshness_timestamp,
             )
             cached_render = None
@@ -1254,7 +1312,11 @@ def execute_artifact(
             if cached_render is None:
                 # 3. Render
                 render_started = perf_counter()
-                html = render(template_body, data_rows)
+                html = render(
+                    template_body,
+                    data_rows,
+                    context=authorization_template_context,
+                )
                 render_ms = (perf_counter() - render_started) * 1000
                 row_count = len(data_rows)
                 if (

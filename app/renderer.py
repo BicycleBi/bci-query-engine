@@ -6,13 +6,19 @@ from typing import Any
 from jinja2 import Environment, Undefined
 
 
-def render(template_content: str, rows: list[dict[str, Any]]) -> str:
+def render(
+    template_content: str,
+    rows: list[dict[str, Any]],
+    *,
+    context: dict[str, Any] | None = None,
+) -> str:
     """
     Render a Jinja2 HTML template with the supplied data rows.
 
     The template receives:
       - rows    list of dicts, one per result row from the view
       - columns list of column names (derived from the first row)
+      - context values supplied by Query Engine from trusted runtime state
     """
     env = Environment(
         autoescape=True,
@@ -20,4 +26,4 @@ def render(template_content: str, rows: list[dict[str, Any]]) -> str:
     )
     tmpl = env.from_string(template_content)
     columns = list(rows[0].keys()) if rows else []
-    return tmpl.render(rows=rows, columns=columns)
+    return tmpl.render(rows=rows, columns=columns, **(context or {}))
