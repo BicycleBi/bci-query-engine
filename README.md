@@ -2,6 +2,14 @@
 
 Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Intelligence.
 
+## Client Onboarding
+
+Start with the [orchestration client onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
+for the cross-repository sequence and reusable instructions. This repository
+provides the [Query Engine artifact contract and synthetic web/email examples](docs/artifact-contract-and-examples.md).
+The owning client repository supplies identities, data contracts, branding,
+audiences, and schedules.
+
 Query Engine is also the single persistence boundary for the shared Usage
 Monitoring System. Security submits bounded login and authorization events to
 `POST /internal/usage/events` using the existing service token. Nginx sends its
@@ -120,9 +128,9 @@ can override it with `EMAIL_SERVICE_TIMEOUT_SECONDS`.
 **Request body:**
 ```json
 {
-  "client_key": "srp",
-  "artifact_key": "visit-counts-quick-email",
-  "behavior": "deliver",
+  "client_key": "example",
+  "artifact_key": "weekly-summary-email",
+  "behavior": "dry-run",
   "output_formats": [],
   "query": null,
   "distribution_group_keys": []
@@ -133,6 +141,9 @@ Supported behaviors:
 - `deliver` — render and deliver if the artifact metadata allows it
 - `display` — render and log while returning HTML in `preview_html`
 - `dry-run` — render and log without sending
+
+Always specify `behavior` in onboarding requests: its API default is `deliver`.
+The fictional `example` definitions are documented in the service contract.
 
 Supported optional output formats:
 - `pdf` — render one PDF per data row returned by the artifact view
@@ -192,17 +203,19 @@ role can move an exact list of non-batch `queued` run IDs to terminal
 is all-or-nothing and preserves the audit rows; it never deletes delivery
 history or changes an in-progress/batch execution.
 
-Example PDF display execution:
+Example PDF display request shape (synthetic fixture only):
 
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "client_key": "srp",
-    "artifact_key": "srp-practice-publication",
-    "behavior": "display",
-    "output_formats": ["pdf"]
-  }'
+```http
+POST /artifact-executions
+Authorization: Bearer <SIGNED_INTERNAL_TOKEN_FOR_CLIENT>
+Content-Type: application/json
+
+{
+  "client_key": "example",
+  "artifact_key": "weekly-summary",
+  "behavior": "display",
+  "output_formats": ["pdf"]
+}
 ```
 
 ### Legacy `POST /run/{client_key}/{artifact_key}`
@@ -357,29 +370,19 @@ digest or version in their path. The client promotion package owns the asset
 bytes and registry rows; Query Engine does not read client source directories
 or expose a generic filesystem route.
 
-## Running locally (with compose)
+## Development And Environment Setup
 
-```bash
-# from bci-container-orch
-cd stacks/srp-local
-docker compose up -d --build postgres credential-helper email-service query-engine
-```
+Use local source checks and synthetic fixtures for service development. Keep
+client databases and client data loads on the secured host development stack.
+The [orchestration onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
+routes environment setup and development/deployment work. The
+[service contract](docs/artifact-contract-and-examples.md) covers Query Engine data,
+artifact, and execution examples.
 
-The SRP local stack exposes query-engine at `http://127.0.0.1:18300`.
-The seeded `srp / visit-counts-quick-email` artifact sends to
-`daniel@bicyclebi.com` and `jeanre@bicyclebi.com`.
-
-SRP Dev runtime changes use the governed BCI Promote specification at
-`deployment/promotions/dev-srp-query-engine-runtime.yml`. The Dev service
-runtime lane stages the exact committed source revision, builds only
-`query-engine`, recreates it with no dependencies, and validates Compose plus
-service health.
-
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{"client_key":"srp","artifact_key":"visit-counts-quick-email","behavior":"deliver"}'
-```
+Resolve service revisions, runtime allocation, authentication, and the installed
+BCI Promote workflow from the requested client/environment. Use its reviewed
+runtime or artifact package rather than a client-specific default Compose
+recipe, port, seed script, or live-send command.
 
 ## Sibling repos required
 
@@ -411,7 +414,13 @@ outside the response path so an observability outage cannot break a dashboard.
 `log.artifact_runs` remains the authoritative dashboard execution lifecycle and
 is correlated to request spans by `run_id`.
 
-### SRP usage and current-access reporting
+### Client-Specific Reporting Integration
+
+The following records an existing client integration and its source evidence.
+Use the orchestration onboarding guide for new clients; these identities and
+permissions are not defaults for another environment.
+
+#### SRP usage and current-access reporting
 
 The SRP usage summary requires an explicit live `usage:read` permission on
 `artifact:srp:usage-monitoring-dashboard`. Wildcard artifact permissions and

@@ -1,0 +1,6 @@
+{
+  "client_key": "example",
+  "artifact_key": "weekly-summary",
+  "behavior": "display",
+  "output_formats": []
+}

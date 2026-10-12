@@ -1,0 +1,6 @@
+{
+  "client_key": "example",
+  "artifact_key": "weekly-summary-email",
+  "behavior": "dry-run",
+  "output_formats": []
+}
