@@ -4,12 +4,11 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
 
 ## Client Onboarding
 
-Start with [Client-Agnostic Query Engine Onboarding](docs/client-onboarding-manual.md)
-for the reusable onboarding sequence and synthetic web/email examples. Use
-[AI Client Setup Prompts](docs/ai-client-setup-prompts.md) for matching Codex
-instructions. The owning client repository supplies identities, data contracts,
-branding, audiences, and schedules; orchestration owns environment setup and
-deployment. Another client's stack is not an onboarding template.
+Start with the [orchestration client onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
+for the cross-repository sequence and reusable instructions. This repository
+provides the [Query Engine artifact contract and synthetic web/email examples](docs/client-onboarding-manual.md).
+The owning client repository supplies identities, data contracts, branding,
+audiences, and schedules.
 
 Query Engine is also the single persistence boundary for the shared Usage
 Monitoring System. Security submits bounded login and authorization events to
@@ -144,7 +143,7 @@ Supported behaviors:
 - `dry-run` — render and log without sending
 
 Always specify `behavior` in onboarding requests: its API default is `deliver`.
-The fictional `example` definitions are documented in the onboarding guide.
+The fictional `example` definitions are documented in the service contract.
 
 Supported optional output formats:
 - `pdf` — render one PDF per data row returned by the artifact view
@@ -375,8 +374,10 @@ or expose a generic filesystem route.
 
 Use local source checks and synthetic fixtures for service development. Keep
 client databases and client data loads on the secured host development stack.
-The [onboarding guide](docs/client-onboarding-manual.md) links to the generic
-orchestration setup specification and controlling development/deployment rules.
+The [orchestration onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
+routes environment setup and development/deployment work. The
+[service contract](docs/client-onboarding-manual.md) covers Query Engine data,
+artifact, and execution examples.
 
 Resolve service revisions, runtime allocation, authentication, and the installed
 BCI Promote workflow from the requested client/environment. Use its reviewed
@@ -416,7 +417,7 @@ is correlated to request spans by `run_id`.
 ### Client-Specific Reporting Integration
 
 The following records an existing client integration and its source evidence.
-Use the client-agnostic onboarding guide for new clients; these identities and
+Use the orchestration onboarding guide for new clients; these identities and
 permissions are not defaults for another environment.
 
 #### SRP usage and current-access reporting
