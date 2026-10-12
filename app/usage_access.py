@@ -23,6 +23,9 @@ def require_analytics_reporting_access(identity: dict[str, Any], client_key: str
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
               'subject': identity['sub'], 'email': str(identity.get('email') or ''),
               'resource': f'artifact:{client_key}:usage-monitoring-dashboard',
+              # Match Security's canonical resource hierarchy, within the live
+              # client/role/identity contract enforced by the query below.
+              'wildcard_resources': [f'artifact:{client_key}:*', 'artifact:*:*', '*'],
               'admin_role': admin_role,
               'configured_client_role': client_role or None,
               'corporate_role': client_role if report == 'access' else admin_role,
@@ -39,7 +42,9 @@ def require_analytics_reporting_access(identity: dict[str, Any], client_key: str
                     AND (g.user_id = %(subject)s
                          OR (%(email)s <> '' AND lower(g.email) = lower(%(email)s)))
                     AND g.role_key IN (%(admin_role)s, %(corporate_role)s)
-                    AND g.resource_key = %(resource)s AND g.permission_key = %(permission)s
+                    AND (g.resource_key = %(resource)s
+                         OR g.resource_key = ANY(%(wildcard_resources)s))
+                    AND (g.permission_key = %(permission)s OR g.permission_key = '*')
                 ), EXISTS (
                   SELECT 1 FROM analytics_reporting.effective_assignments a
                   WHERE a.client_key = %(client)s AND a.active
