@@ -6,7 +6,7 @@ Postgres-driven HTML report renderer and artifact runner for Bicycle Curated Int
 
 Start with the [orchestration client onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
 for the cross-repository sequence and reusable instructions. This repository
-provides the [Query Engine artifact contract and synthetic web/email examples](docs/client-onboarding-manual.md).
+provides the [Query Engine artifact contract and synthetic web/email examples](docs/artifact-contract-and-examples.md).
 The owning client repository supplies identities, data contracts, branding,
 audiences, and schedules.
 
@@ -376,7 +376,7 @@ Use local source checks and synthetic fixtures for service development. Keep
 client databases and client data loads on the secured host development stack.
 The [orchestration onboarding guide](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-onboarding-guide.md)
 routes environment setup and development/deployment work. The
-[service contract](docs/client-onboarding-manual.md) covers Query Engine data,
+[service contract](docs/artifact-contract-and-examples.md) covers Query Engine data,
 artifact, and execution examples.
 
 Resolve service revisions, runtime allocation, authentication, and the installed
