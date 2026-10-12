@@ -1,0 +1,12 @@
+[
+  {
+    "report_week": "2026-01-05",
+    "team_name": "Example North",
+    "completed_items": 25
+  },
+  {
+    "report_week": "2026-01-05",
+    "team_name": "Example South",
+    "completed_items": 18
+  }
+]

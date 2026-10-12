@@ -1,210 +1,157 @@
-# AI Client Setup Prompts
+# Client-Agnostic AI Onboarding Prompts
 
-Use these prompts with Codex when setting up a new client. They are written to
-keep the work aligned with the current implementation:
+Use these prompts with [Client-Agnostic Query Engine Onboarding](client-onboarding-manual.md).
+Fill in the approved inputs for the client; the shared service examples use
+only fictional identities and synthetic data.
 
-- client-specific Docker Compose stack
-- Postgres `metadata` and `data` databases
-- client data and report views in `data.public`
-- artifact metadata created through query-engine `POST /artifacts`
-- email delivery through query-engine -> email-service -> Microsoft Graph
+The owning repositories and installed workflow determine source, environment,
+authorization, and execution requirements. These prompts do not authorize a
+deployment, database mutation, direct artifact API write, or live email send.
 
-Reference docs:
-
-- [Client Onboarding Manual](client-onboarding-manual.md)
-- [Database Technical Design](../../bci-container-orch/docs/database-design.md)
-- [Email Service Technical Design](../../bci-container-orch/docs/email-service-design.md)
-
-## Prompt 1: Assess A New Client Setup
+## 1. Assess And Plan Onboarding
 
 ```text
-We need to set up a new BCI client.
+Prepare a Query Engine onboarding plan for:
+Client key and display name:
+Owning client repo:
+Environment:
+New environment or existing environment:
+Artifact purpose and delivery channels:
+Approved data classification and source contract:
+Audience and authorization requirements:
+Refresh/delivery owner:
 
-Client key:
-Client display name:
-Desired stack folder:
-Available source data:
-Expected artifact:
-Expected recipients:
-
-Please inspect bci-container-orch, bci-query-engine, bci-postgres-service,
-and bci-email-service. Confirm what already exists and produce an exact setup
-checklist for this client.
-
-Use docs/client-onboarding-manual.md as the source of truth. Do not introduce
-new architecture unless the current implementation cannot support the need.
-Call out any missing information before changing files.
+Read bci-query-engine/docs/client-onboarding-manual.md, the client repo's
+AGENTS.md and relevant handoffs, and the current bci-container-orch development,
+initial-stack/deployment, and data-safety rules.
+Resolve missing non-secret inputs from repository evidence.
+Separate environment setup, client data contracts, artifact metadata/templates,
+authorization, delivery, monitoring, and inventory work by owning workflow.
+Use the generic orchestration setup contract for a new environment.
+Produce the proposed sequence and concrete files; do not clone another client's
+stack or assume its ports, roles, report schema, or recipient configuration.
 ```
 
-## Prompt 2: Create The Client Stack
+## 2. Prepare Environment Inputs
 
 ```text
-Create a new local client stack from stacks/srp-local.
-
+Prepare the non-secret environment inputs for:
 Client key:
-Client display name:
-New stack folder:
-Compose project name:
-Query-engine host port:
-Email-service host port:
-Credential-helper host port:
+Environment and technical key:
+Reviewed host/runtime allocation:
+Hostname and identity-provider readiness:
+Existing or new boundary:
+Required service/source revisions:
 
-Update docker-compose.yml and .env.example for this client.
-Keep Postgres internal-only on port 62345.
-Keep email-service POSTGRES_SCHEMA=log.
-Keep query-engine EMAIL_SERVICE_URL=http://email-service:8200.
-Do not commit or print any real .env secrets.
-
-After editing, validate docker compose config and show the commands needed to
-start the stack.
+For a new boundary, follow the current initial-client-stack-setup runbook and
+its generic setup-spec example. Prepare the exact source/support files and
+read-only preflight inputs. Follow the runbook's separate administrator apply
+authority; do not substitute a raw Compose command.
+For an existing boundary, verify its inventory and current workflow rather
+than rerunning bootstrap.
+Record only secret references and operator-confirmed readiness, never values.
 ```
 
-## Prompt 3: Prepare The Client Database
+## 3. Prepare The Data And Rendering Contract
 
 ```text
-Prepare the data database for this client.
-
-Client key:
-Stack folder:
-Source file or dump path:
-Target source table names:
-Required report-ready view names:
-
-Use the current model: source data and reporting views live in the data database,
-normally in the public schema. The query-engine must read schema-qualified views
-such as public.weekly_report.
-
-Create or update scripts needed to load the data and create stable reporting views.
-Then provide validation SQL for row counts and sample records.
-Do not expose Postgres on the host unless there is no other practical path.
-```
-
-## Prompt 4: Define A Web Artifact
-
-```text
-Create a web artifact definition for this client through query-engine.
-
-Query-engine URL:
-Client key:
-Client display name:
-Artifact key:
-Display name:
-Description:
-Data view name:
-Template file or HTML:
-
-Build the POST /artifacts JSON body using the current query-engine schema.
-The artifact should include view_name, delivery_mode=web, and a template.
-Send the request if the query-engine is running, then validate that
-GET /artifacts/{client_key}/{artifact_key} renders HTML.
-```
-
-## Prompt 5: Define An Email Artifact
-
-```text
-Create an email wrapper artifact for this client through query-engine.
-
-Query-engine URL:
-Client key:
-Client display name:
-Email artifact key:
-Display name:
-Description:
-Referenced body artifact key:
-Recipients:
-
-Build the POST /artifacts JSON body using delivery_mode=email.
-Do not include view_name or template on the email wrapper.
-Add recipients with delivery_type to, cc, or bcc.
-Add one body reference pointing to the web artifact.
-Send the request if query-engine is running, then validate recipients in
-metadata.app.artifact_recipients.
-```
-
-## Prompt 6: Run Display, Dry-Run, And Live Send
-
-```text
-Validate this client artifact end to end.
-
-Stack folder:
-Query-engine URL:
-Client key:
-Web artifact key:
-Email artifact key:
-
-Run these in order:
-1. GET /health for query-engine and email-service.
-2. GET /artifacts/{client_key}/{web_artifact_key}.
-3. POST /artifact-executions with behavior=dry-run for the email artifact.
-4. POST /artifact-executions with behavior=deliver for the email artifact.
-5. Query metadata.log.artifact_runs.
-6. Query metadata.log.bci_email_delivery.
-
-Report run_id, recipient_count, delivery status, Graph status_code, and
-provider_message_id. If delivery fails, inspect query-engine and email-service
-logs and identify the exact failing boundary.
-```
-
-## Prompt 7: Update Documentation After Setup
-
-```text
-Update the documentation after setting up this client.
-
-Client key:
-Stack folder:
-Artifacts created:
-Data views created:
-Validation results:
-
-Update only docs that are useful to future operators. Keep docs aligned with the
-current implementation. Remove or revise anything that suggests YAML runtime
-artifact config, a report-service/frontend replacing query-engine, Redis as a
-required local component, or direct Vault access from email-service.
-
-Do not document secrets. Commit and push the final documentation changes.
-```
-
-## Prompt 8: Troubleshoot A Failed Send
-
-```text
-Troubleshoot a failed BCI email delivery.
-
-Stack folder:
-Query-engine URL:
+Prepare the client-owned Query Engine data contract for:
 Client key:
 Artifact key:
-Run ID if available:
+Approved schema-qualified render relation:
+Output grain and columns:
+Data classification:
+Refresh owner and freshness requirement:
 
-Check the failure in this order:
-1. query-engine response and logs
-2. metadata.log.artifact_runs
-3. email-service logs
-4. metadata.log.bci_email_delivery
-5. credential-helper logs
-6. service token alignment
-7. POSTGRES_SCHEMA for email-service
-8. Vault item names and credential-helper health
-
-Explain whether the failure is query-engine -> email-service auth, email-service
-audit logging, credential retrieval, Microsoft Graph delivery, or artifact/data
-configuration. Apply a fix only when the cause is clear.
+Keep client-specific SQL, migrations, grants, templates, and validators in the
+client repository. Use the approved secured-host Dev stack for database-backed
+work; do not copy client databases or client data to a developer machine.
+Use synthetic fixtures for local rendering checks.
+Prepare reviewed non-exposing validation for schema, permissions, counts,
+freshness, and contract readiness. Do not inspect raw client rows, report
+payloads, recipient details, or secrets.
+Follow stricter repository rules and the controlling data-safety policy.
 ```
 
-## Prompt 9: Commit And Push Client Setup Work
+## 4. Prepare Artifact Definitions And Navigation
 
 ```text
-Commit and push the completed client setup work.
+Prepare the artifact package for:
+Client key and display name:
+Artifact/template key:
+Render relation:
+Template source:
+Web/email channels:
+Approved audience/reference to delivery configuration:
+Homepage impact:
 
-Repos involved:
-Expected files changed:
+Use Query Engine's current ArtifactWriteRequest model and the synthetic
+examples in docs/examples/onboarding as contract references.
+A direct web artifact needs both view_name and template.
+An email wrapper may reference the web artifact as its single body source.
+Review full recipients/references lists: artifact upsert replaces those lists,
+including empty defaults when omitted.
+Prepare source payloads for the governing artifact/metadata workflow.
+Do not automatically POST to a running service.
+Preserve unrelated home cards, permissions, artifacts, and schedules.
+```
 
-Before committing:
-1. Show git status for each repo.
-2. Verify no .env files or secrets are staged.
-3. Run available syntax/config checks.
-4. Summarize live validation results.
+## 5. Validate Without Sending
 
-Commit each repo with a clear message and push main.
-After pushing, show final status and latest commit hashes.
+```text
+Prepare and run the permitted validation for:
+Client key and environment:
+Artifact identities:
+Exact source/package/runtime:
+Approved authorization audiences:
 
+Use local static/model validation and synthetic template rendering first.
+For live checks, follow the owning host workflow and current data-safety rules.
+Specify behavior=display or behavior=dry-run explicitly; omitted behavior
+defaults to deliver. A dry-run still renders data and logs a run.
+Verify authorized access, expected denial, asset loading, layout, zero-row
+state, and safe data-contract results.
+Keep real report HTML, client values, recipient identities, and secrets out
+of AI-visible outputs. Use human browser review or non-exposing checks.
+Record pass/fail evidence and blockers. Do not advance to live sending.
+```
+
+## 6. Prepare Authorized Delivery Or Scheduling
+
+```text
+Prepare delivery/schedule work for this explicitly requested scope:
+Client key and environment:
+Artifact:
+Approved sending identity:
+Approved test audience reference:
+Delivery window or schedule:
+Acceptance and current workflow authority:
+
+Resolve the current delivery and scheduling contracts from the owning
+repositories. Preserve exact recipients and environment boundaries.
+Proceed only through already-authorized workflow steps; present a genuine
+workflow authorization gate once with the complete reviewable scope.
+Track a queued delivery by run_id. Do not blindly retry a timeout or unknown
+send. Distinguish provider_accepted from trace-confirmed delivered.
+Record the outcome without recipient details or message contents.
+```
+
+## 7. Diagnose Or Close Out
+
+```text
+Diagnose or close out Query Engine onboarding for:
+Client key and environment:
+Artifact and release/package:
+Safe validation results or failed check:
+Outstanding scope:
+
+Inspect repository context and permitted status/metadata evidence.
+Use reviewed non-exposing diagnostics; do not dump client data or raw logs.
+Route a correction to the workflow that owns it.
+Record client-specific scope, exact source/runtime, validation, inventories,
+monitoring completion, pending work, and restart instructions in the owning
+client/orchestration records.
+Commit and push coherent source documentation on its correctly routed branch.
+Do not push or merge a protected branch merely because onboarding was requested.
+Keep the shared Query Engine guide and examples client-agnostic.
 ```

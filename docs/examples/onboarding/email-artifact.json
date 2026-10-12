@@ -1,0 +1,24 @@
+{
+  "client_key": "example",
+  "client_display_name": "Example Company",
+  "artifact_key": "weekly-summary-email",
+  "display_name": "Weekly Summary",
+  "description": "Synthetic email wrapper; the example.invalid address is not a delivery target.",
+  "delivery_mode": "email",
+  "active": true,
+  "recipients": [
+    {
+      "email": "reviewer@example.invalid",
+      "delivery_type": "to",
+      "active": true
+    }
+  ],
+  "references": [
+    {
+      "referenced_artifact_key": "weekly-summary",
+      "reference_role": "body",
+      "output_format": "html",
+      "active": true
+    }
+  ]
+}

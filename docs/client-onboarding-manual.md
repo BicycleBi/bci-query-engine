@@ -1,502 +1,266 @@
-# Client Onboarding Manual
+# Client-Agnostic Query Engine Onboarding
 
-This manual describes how to set up a new BCI client using the current container model.
-It is written for operators setting up a client-specific Postgres container, query-engine,
-email-service, and artifact metadata.
+Status: Active service onboarding guide
+Scope: reusable Query Engine instructions for any client and environment
 
-The current proven reference implementation is `stacks/srp-local`. For a new client,
-use that stack as the working template until a generic `stacks/client-template` exists.
+Use this guide to prepare a client's data contract, artifact definitions, and
+validation evidence. Client identity, business logic, branding, authorization,
+recipients, and schedules belong to the owning client repository and reviewed
+environment configuration. Query Engine's service code stays client-agnostic.
 
-## Current Model
+The examples use the fictional client `example`, synthetic summary rows, and
+a non-deliverable `example.invalid` address. They are API and rendering
+examples, not a client stack to clone or an instruction to deploy a demo client.
+Replace example identities and contracts with the approved onboarding inputs.
 
-Each client gets its own isolated runtime stack:
+## 1. Read The Controlling Workflow
 
-1. Postgres container
-   - `metadata` database for app config, security metadata, and logs
-   - `data` database for client data and report views
-2. credential-helper container
-   - retrieves Graph/email credentials from Vaultwarden
-3. email-service container
-   - sends rendered HTML through Microsoft Graph
-   - writes delivery audit rows to `metadata.log.bci_email_delivery`
-4. query-engine container
-   - reads artifact config from `metadata.app.*`
-   - reads report data from views in `data.public`
-   - renders HTML
-   - calls email-service for delivery
-   - writes run rows to `metadata.log.artifact_runs`
+This guide owns the Query Engine onboarding contract. It supplements the
+orchestration workflow; it does not define another deployment path.
 
-The query-engine is client-agnostic. Client-specific behavior comes from database
-metadata and the client data views.
+| Work | Controlling document in `BicycleBi/bci-container-orch` |
+| --- | --- |
+| Client artifact development | [Client Development Runbook](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/development/client-development-runbook.md) and [Client-Agnostic Artifact Development Framework](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/development/client-agnostic-artifact-development-framework.md) |
+| New environment boundary | [Initial Client Stack Setup Runbook](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/initial-client-stack-setup-runbook.md) |
+| Environment deployment and validation | [Deployment Checklist](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/client-environment-deployment-checklist.md) and [AI Deployment Runbook](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/ai-client-environment-deployment-runbook.md) |
+| QA or Production release content | [QA and Production Promotion Runbook](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/qa-production-promotion-runbook.md) |
+| Data and operating boundaries | [Development and Deployment Guardrails](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/security/development-deployment-guardrails.md) and [Database Access Safety Policy](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/security/database-access-safety-policy.md) |
 
-## Before You Start
+Read those files in the reviewed orchestration source used for the work. The
+links identify the repositories and paths; a local checkout may be on another
+revision. Use the installed workflow's current command, policy, and authority
+requirements when executing work.
 
-Choose these client values first:
+Client databases and client data loads stay on the secured host development
+stack. Local work consists of source editing, static checks, and synthetic
+fixture rendering. AI-visible validation follows the controlling data policy:
+metadata/schema checks and reviewed non-exposing outputs, rather than raw
+client rows, rendered client reports, recipient details, or secrets.
 
-| Value | Example | Notes |
+## 2. Record The Onboarding Inputs
+
+Resolve these inputs before preparing changes. Record non-secret references;
+keep secret values in the approved secret-management path.
+
+| Input | Synthetic example | Actual source |
 | --- | --- | --- |
-| Client key | `abc` | Short lowercase identifier. Used in API requests and metadata. |
-| Client display name | `ABC Health` | Human-readable label. |
-| Stack name | `bci-abc-local` | Docker Compose project name. |
-| Data database | `data` | Current standard. |
-| Metadata database | `metadata` | Current standard. |
-| Postgres port inside Docker | `62345` | Current standard. No host port required. |
-| Query-engine host port | `18300` | Pick a free localhost port per stack. |
-| Email-service host port | `18200` | Pick a free localhost port per stack. |
-| Credential-helper host port | `18100` | Pick a free localhost port per stack. |
+| Client key and display name | `example`, Example Company | Approved client identity |
+| Environment | `dev` | Requested lane: `dev`, `qa`, or `production` |
+| Owning client repository and branch | `<client-repo>`, `<source-branch>` | Repository rules and release lineage |
+| Host, hostname, technical key, runtime path, port allocation | `<reviewed-environment-allocation>` | Orchestration setup spec and deployment inventory |
+| First artifact and template key | `weekly-summary` | Client artifact contract |
+| Schema-qualified render relation | `rpt.weekly_summary` | Client-owned reporting migration |
+| Columns and output grain | One team/week; `report_week`, `team_name`, `completed_items` | Reviewed data contract |
+| Authentication and authorization | `<approved-audience-and-resource-scope>` | Security configuration and authorization inventory |
+| Delivery audience and sending configuration | `<approved-test-audience>` | Reviewed delivery metadata and Email Service configuration |
+| Refresh and delivery ownership | `<owner-and-schedule>` | Client DI and scheduler contracts |
+| Acceptance and validation | `<upstream-acceptance-and-safe-checks>` | Governing lane workflow and client handoff |
 
-Required sibling repos:
+Do not copy another client's ports, credentials, roles, routes, report views,
+branding, or recipient lists. Query Engine does not require client-specific
+service code to onboard a new client.
 
-```text
-bci-container-orch/
-bci-postgres-service/
-bci-query-engine/
-bci-email-service/
-vault-credentials/
+## 3. Establish Or Verify The Environment
+
+For a new environment, use the orchestration initial-stack workflow and its
+[generic setup specification example](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/deployment/initial-client-stack-setup-spec.example.yml).
+The documented preflight shape is:
+
+```bash
+/path/to/clean/bci-container-orch-worktree/scripts/bci-promote \
+  stack-setup-preflight --spec <reviewed-initial-stack-setup.yml>
 ```
 
-## Secrets And Vault
+Preflight is read-only. Initial apply is a separate administrator operation
+under that runbook's authorization requirements. For an existing environment,
+verify its inventory and use the current governed content/runtime workflow;
+do not bootstrap it again.
 
-The `.env` file for the stack is local-only and must not be committed.
+The required repositories and services come from the orchestration
+[repository catalog](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/architecture/repositories.md)
+and the selected environment's reviewed configuration.
 
-Required `.env` values:
-
-| Variable | Purpose |
+| Component | Onboarding responsibility |
 | --- | --- |
-| `SERVICE_TOKEN` | Shared internal bearer token. Query-engine sends it to email-service; email-service sends it to credential-helper. |
-| `POSTGRES_PASSWORD` | Password for the client Postgres container. |
-| `BW_CLIENTID` | Vaultwarden API client ID. |
-| `BW_CLIENTSECRET` | Vaultwarden API client secret. |
-| `BW_PASSWORD` | Vaultwarden master password. |
-| `BW_SERVER_URL` | Vaultwarden URL. |
-| `GRAPH_APP_VAULT_ITEM` | Vault item containing Graph app config. |
-| `GRAPH_CERT_VAULT_ITEM` | Vault item containing Graph certificate credential. |
+| Postgres | Metadata storage and the approved client reporting database |
+| Query Engine | Generic artifact storage, rendering, execution, and run/output logging |
+| Security and ingress | Authenticated client boundary, audience/resource permissions, and public routes |
+| Data Integration | Client source acquisition, transformation, report-ready contracts, and refresh |
+| Email Service and credential helper | Governed sending configuration and delivery evidence |
+| Redis, scheduler, and monitoring | The caching, schedule, and observation contracts selected by the environment |
 
-Generate local secrets:
+Query Engine's database connections are configured through `METADATA_DB_*`
+and `DATA_DB_*`; resolved values belong to the environment. Email Service and
+security configuration likewise come from that boundary. Use approved secret
+references; do not print filled environment files or expanded Compose output.
 
-```bash
-openssl rand -hex 32   # SERVICE_TOKEN
-openssl rand -hex 16   # POSTGRES_PASSWORD
-```
+## 4. Prepare The Data And Rendering Contract
 
-The email-service must use:
+The client repository owns the schema-qualified relation named by `view_name`.
+Choose its schema from the approved client model; `public` is not a universal
+requirement. Query Engine reads that relation using its configured Data
+connection and provides the resulting dictionaries as `rows` to Jinja2.
+`columns` contains the first row's column names.
 
-```text
-GRAPH_CONFIG_SOURCE=credential_service
-CREDENTIAL_SERVICE_URL=http://credential-helper:8100
-POSTGRES_CONFIG_SOURCE=env
-POSTGRES_SCHEMA=log
-```
+For the synthetic example, the relation `rpt.weekly_summary` has this shape:
 
-`POSTGRES_SCHEMA=log` matters because the delivery audit table is
-`metadata.log.bci_email_delivery`.
+| Column | Type | Example |
+| --- | --- | --- |
+| `report_week` | date | `2026-01-05` |
+| `team_name` | text | Example North |
+| `completed_items` | integer | `25` |
 
-## Create The Client Stack
-
-Until a generic template exists, copy the SRP stack:
-
-```bash
-cd /Users/Daniel/GIT-Repos/bci-container-orch
-cp -R stacks/srp-local stacks/abc-local
-```
-
-Then update `stacks/abc-local/docker-compose.yml`:
-
-1. Change the top-level compose `name`.
-2. Keep the internal Postgres port as `62345`.
-3. Choose unique localhost ports for exposed services.
-4. Keep query-engine on the same internal Docker network as Postgres and email-service.
-5. Keep query-engine `EMAIL_SERVICE_URL=http://email-service:8200`.
-6. Keep email-service `POSTGRES_SCHEMA=log`.
-
-Copy and fill the environment file:
-
-```bash
-cp stacks/abc-local/.env.example stacks/abc-local/.env
-```
-
-Start the stack:
-
-```bash
-cd stacks/abc-local
-docker compose up -d --build postgres credential-helper email-service query-engine
-```
-
-Health checks:
-
-```bash
-curl http://127.0.0.1:18300/health
-curl http://127.0.0.1:18200/health
-curl http://127.0.0.1:18100/health
-```
-
-Use the ports chosen for the new client.
-
-## Database Setup
-
-The Postgres image initializes the standard metadata and data structure from
-`bci-postgres-service/initdb`:
-
-| Database | Purpose |
-| --- | --- |
-| `metadata` | `app`, `security`, and `log` schemas |
-| `data` | Client data tables and reporting views |
-
-The query-engine expects:
-
-1. Client source tables loaded into `data`.
-2. Report-ready views in `data.public`.
-3. Artifact metadata in `metadata.app.*`.
-
-For the current implementation, put client reporting views in `public`.
-Example:
+This query illustrates the fixture values that a reviewed view migration
+could use. It is not a live-data validation query:
 
 ```sql
-CREATE OR REPLACE VIEW public.weekly_visit_counts AS
-SELECT
-  location_name,
-  visit_date,
-  visit_count
-FROM public.client_visit_source;
+SELECT DATE '2026-01-05' AS report_week,
+       'Example North'::text AS team_name,
+       25::integer AS completed_items
+UNION ALL
+SELECT DATE '2026-01-05', 'Example South'::text, 18::integer;
 ```
 
-The `view_name` stored on a web artifact must include the schema:
+For local template checks, use
+[weekly-summary-rows.json](examples/onboarding/weekly-summary-rows.json)
+directly with the renderer; no database or client-data copy is needed.
+The example template loops over `rows` and provides a zero-row state.
 
-```text
-public.weekly_visit_counts
-```
+For real onboarding, prepare the relation, required grants, and safe validator
+in the client repository. Apply them through the reviewed host workflow.
+Validation should prove object shape, ownership, permissions, freshness, and
+expected counts without exposing underlying client records. Query Engine's
+artifact upsert does not create the Data relation or its grants.
 
-## Loading Client Data
+Interactive artifacts may additionally define `{view_name}_query(jsonb)`
+for filtering, sorting, pagination, and response construction. The client
+database owns that logic; see the [service API reference](../README.md#interactive-artifact-data).
 
-The ingestion path depends on the client source.
+## 5. Prepare Web And Email Artifact Definitions
 
-Common options:
+Use [web-artifact.json](examples/onboarding/web-artifact.json) as the complete
+synthetic web definition. Its core contract is:
 
-1. Restore a dump into `data`.
-2. Load CSV/extract files into `data.public`.
-3. Run a client-specific ETL container or script.
+- `client_key` identifies the metadata client and authenticated client scope.
+- `artifact_key` and `template_key` are stable client-owned identities.
+- `view_name` and `template` are both required for a direct-source web artifact.
+- `template.html_content` contains Jinja2 HTML; Query Engine HTML-escapes values.
+- `delivery_mode: "web"` defines a display artifact.
 
-After loading data, create one or more stable reporting views. The query-engine reads
-from views; it should not contain client-specific SQL logic.
+Use [email-artifact.json](examples/onboarding/email-artifact.json) for a
+separate email wrapper. It has `delivery_mode: "email"`, one `body` reference
+to `weekly-summary`, and no direct `view_name` or `template`.
+The recipient is deliberately non-deliverable; never use this fixture for a
+real send.
 
-Validation:
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d data -p 62345 \
-  -c "SELECT count(*) FROM public.weekly_visit_counts;"
-```
-
-## Artifact Setup
-
-There are two useful artifact shapes today.
-
-### Web Artifact
-
-A web artifact owns the data source and template. It can be rendered through `GET`.
-
-Required fields:
-
-- `client_key`
-- `artifact_key`
-- `view_name`
-- `delivery_mode`
-- `template`
-
-Example request:
-
-```bash
-curl -X POST http://127.0.0.1:18300/artifacts \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "client_key": "abc",
-    "client_display_name": "ABC Health",
-    "artifact_key": "weekly-visit-counts-page",
-    "display_name": "Weekly Visit Counts",
-    "description": "HTML page for weekly visit counts.",
-    "view_name": "public.weekly_visit_counts",
-    "delivery_mode": "web",
-    "active": true,
-    "template": {
-      "template_key": "weekly-visit-counts-page",
-      "version": 1,
-      "display_name": "Weekly Visit Counts",
-      "content_type": "html",
-      "html_content": "<html><body><h1>Weekly Visit Counts</h1>{% for row in rows %}<p>{{ row.location_name }}: {{ row.visit_count }}</p>{% endfor %}</body></html>",
-      "is_active": true
-    },
-    "recipients": []
-  }'
-```
-
-Render it:
-
-```bash
-curl http://127.0.0.1:18300/artifacts/abc/weekly-visit-counts-page
-```
-
-### Email Wrapper Artifact
-
-An email wrapper artifact references another artifact as its body. It does not need
-its own `view_name` or template.
-
-Required fields:
-
-- `client_key`
-- `artifact_key`
-- `delivery_mode=email`
-- `recipients`
-- `references`
-
-Example request:
-
-```bash
-curl -X POST http://127.0.0.1:18300/artifacts \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "client_key": "abc",
-    "client_display_name": "ABC Health",
-    "artifact_key": "weekly-visit-counts-email",
-    "display_name": "Weekly Visit Counts Email",
-    "description": "Email delivery wrapper for weekly visit counts.",
-    "delivery_mode": "email",
-    "active": true,
-    "recipients": [
-      {"email": "person@example.com", "delivery_type": "to", "active": true}
-    ],
-    "references": [
-      {
-        "referenced_artifact_key": "weekly-visit-counts-page",
-        "reference_role": "body",
-        "output_format": "html",
-        "active": true
-      }
-    ]
-  }'
-```
-
-Recipient `delivery_type` can be:
-
-- `to`
-- `cc`
-- `bcc`
-
-Posting an artifact definition is an upsert. For recipients and references, the current
-implementation replaces the artifact's existing rows with the rows in the request.
-
-## Query-Engine Requests
-
-### Health
-
-```bash
-curl http://127.0.0.1:18300/health
-```
-
-### Save Or Update Artifact
+The request shape implemented by Query Engine is:
 
 ```http
 POST /artifacts
+Authorization: Bearer <SIGNED_INTERNAL_TOKEN_FOR_CLIENT>
+Content-Type: application/json
+
+<complete artifact definition from the example JSON file>
 ```
 
-Use this for both web artifacts and email wrapper artifacts.
+This is a service API contract example. Actual environment artifact changes
+must use the current governed artifact/metadata workflow and its reviewed
+payloads. Do not substitute a direct API write for a required promotion.
 
-### Render For Display
+`POST /artifacts` upserts client, template, and artifact metadata. It
+**replaces the artifact's static recipients and references** with the supplied
+lists; omitted lists default to empty. Review the complete intended definition
+before an update. Authentication, authorization grants, data objects, home
+cards, and schedules require their own reviewed declarations.
 
-```http
-GET /artifacts/{client_key}/{artifact_key}
-```
+Static recipient configuration is the simplest example. Configured
+recipient-source views and distribution groups are also supported by the
+service; use the approved audience contract described in the
+[API reference](../README.md). Distribution membership does not grant artifact
+read or execute access.
 
-Example:
+## 6. Validate Display And Dry-Run Separately
 
-```bash
-curl http://127.0.0.1:18300/artifacts/abc/weekly-visit-counts-page
-```
+Confirm service health and the exact installed runtime before artifact checks.
+`GET /health` alone does not prove that the report, authorization, or delivery
+configuration works.
 
-### Execute Artifact
+| Check | Request contract | Expected evidence |
+| --- | --- | --- |
+| Normal display | `GET /artifacts/example/weekly-summary` | Authenticated HTML; expected layout and zero-row state |
+| Display execution | `POST /artifact-executions` with [display-execution.json](examples/onboarding/display-execution.json) | Run result and `preview_html`; no email |
+| Email dry-run | `POST /artifact-executions` with [dry-run-execution.json](examples/onboarding/dry-run-execution.json) | Render/run evidence; no email |
+| Authorization | Authorized and denied audiences through the environment's actual ingress | Correct client/artifact scope, including required assets |
+| Data contract | Client-owned reviewed validator | Safe schema, permission, count, and freshness results |
 
-```http
-POST /artifact-executions
-```
+Protected service routes require a valid signed internal bearer token whose
+`client_key` matches the requested client. Display and execution also require
+the authenticated subject and permitted artifact scope. Use the environment's
+existing Security/ingress path; do not mint example tokens or bypass it.
 
-Behaviors:
+An execution request should always specify `behavior`; the API default is
+`deliver`. `display` and `dry-run` avoid sending, but still render data and
+write execution evidence. Real rendered responses require human review or
+non-exposing validation; synthetic fixture HTML may be inspected locally.
 
-| Behavior | Result |
+PDF is an optional execution output. CSV requires the artifact's database-owned
+query contract and an execution `query`. Onboard either only when required by
+the client artifact contract; see the API reference for their exact semantics.
+
+## 7. Enable Delivery And Scheduling When Requested
+
+A successful dry-run does not authorize a live send. Resolve the approved
+sending identity, exact test audience, artifact scope, environment, and
+delivery window before enabling delivery or a schedule. Real recipients stay
+in the approved configuration; do not put them into these shared examples.
+
+For an authorized delivery, the execution shape is the dry-run request with
+`behavior: "deliver"` and the approved client's artifact identities.
+Delivery may return a queued run; track its `run_id` through
+`GET /artifact-executions/{run_id}`. Do not blindly repeat a send after a
+timeout or unknown delivery status.
+
+`provider_accepted` means the provider accepted the message. It is not
+confirmed delivery; the service's reconciliation contract distinguishes those
+states. Scheduling belongs to the owning scheduler/DI workflow and must retain
+the environment's declared schedule ownership.
+
+## 8. Troubleshoot From Safe Evidence
+
+| Symptom | First check |
 | --- | --- |
-| `display` | Render HTML, log the run, and return `preview_html`. |
-| `dry-run` | Render HTML and log the run without sending email. |
-| `deliver` | Render and send email when `delivery_mode` is `email` or `both`. |
+| Unauthorized or denied request | Installed Security contract, token client scope, subject, current roles, artifact permission, and ingress route |
+| Missing render relation | Schema-qualified name, migration state, connection binding, and Query Engine's object grants |
+| Wrong columns or empty output | Reviewed data-contract validator and template's zero-row behavior |
+| Delivery rejected or unresolved | Run/delivery status and reviewed non-exposing Email Service/credential-helper diagnostics |
+| Old display content | Runtime/source identity, report freshness, and the environment's cache contract |
 
-Example dry run:
+Use status summaries and reviewed diagnostics. Do not copy raw service logs,
+recipient rows, client report HTML, or secret values into the onboarding record.
+A fix to service runtime, client content, authorization, or environment state
+must return to the workflow that owns that change.
 
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{"client_key":"abc","artifact_key":"weekly-visit-counts-email","behavior":"dry-run"}'
-```
+## 9. Record Completion In The Owning Repositories
 
-Example live delivery:
+Onboarding is complete when the required environment and artifact checks pass
+and the durable records identify:
 
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{"client_key":"abc","artifact_key":"weekly-visit-counts-email","behavior":"deliver"}'
-```
+- client and environment, owner, and approved audience;
+- client source repo/branch/commit and pinned service runtime;
+- artifact/template identities, routes, and data contract;
+- exact package/release and upstream acceptance when applicable;
+- safe validation evidence and any pending delivery or schedule scope;
+- deployed-state and authorization-state inventory updates;
+- monitoring registration/validation for a new environment;
+- the next action for any unresolved work.
 
-### Get Run Status
+Use the orchestration
+[deployment inventory](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/inventory/deployment-inventory.md),
+[authorization inventory](https://github.com/BicycleBi/bci-container-orch/blob/main/docs/inventory/authorization-access-inventory.md),
+and monitoring
+[client-stack contract](https://github.com/BicycleBi/bci-monitoring/blob/main/docs/client-stack-monitoring.md).
+Client-specific decisions and handoffs belong in the client repo. Keep this
+guide and its examples reusable.
 
-```http
-GET /artifact-executions/{run_id}
-```
-
-Example:
-
-```bash
-curl http://127.0.0.1:18300/artifact-executions/00000000-0000-0000-0000-000000000000
-```
-
-Legacy routes still exist:
-
-- `POST /run/{client_key}/{artifact_key}?mode=email`
-- `POST /run/{client_key}/{artifact_key}?mode=dry-run`
-- `POST /run/{client_key}/{artifact_key}?mode=preview`
-- `GET /run/{run_id}`
-
-Use the `/artifact-executions` routes for new work.
-
-## Validate A Client Setup
-
-Run these checks before considering a client ready.
-
-### Containers
-
-```bash
-docker compose ps
-```
-
-Expected:
-
-- Postgres healthy
-- credential-helper healthy
-- email-service healthy
-- query-engine healthy
-
-### Metadata
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d metadata -p 62345 \
-  -c "SELECT client_key, artifact_key, delivery_mode, active FROM app.artifacts ORDER BY artifact_key;"
-```
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d metadata -p 62345 \
-  -c "SELECT a.artifact_key, r.email, r.delivery_type, r.active FROM app.artifact_recipients r JOIN app.artifacts a ON a.artifact_id = r.artifact_id ORDER BY a.artifact_key, r.email;"
-```
-
-### Data View
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d data -p 62345 \
-  -c "SELECT count(*) FROM public.weekly_visit_counts;"
-```
-
-### Display Render
-
-```bash
-curl -o /tmp/client-artifact.html \
-  http://127.0.0.1:18300/artifacts/abc/weekly-visit-counts-page
-```
-
-### Dry Run
-
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{"client_key":"abc","artifact_key":"weekly-visit-counts-email","behavior":"dry-run"}'
-```
-
-### Live Send
-
-```bash
-curl -X POST http://127.0.0.1:18300/artifact-executions \
-  -H 'Content-Type: application/json' \
-  -d '{"client_key":"abc","artifact_key":"weekly-visit-counts-email","behavior":"deliver"}'
-```
-
-### Logs
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d metadata -p 62345 \
-  -c "SELECT run_id, client_key, artifact_key, status, row_count, recipient_count, error_message, completed_at FROM log.artifact_runs ORDER BY started_at DESC LIMIT 10;"
-```
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d metadata -p 62345 \
-  -c "SELECT delivery_id, to_recipients, status, status_code, provider_message_id, error_code, error_message, completed_at FROM log.bci_email_delivery ORDER BY created_at DESC LIMIT 10;"
-```
-
-Success for email means:
-
-- query-engine execution returns `status: success`
-- `log.artifact_runs.status = completed`
-- `log.bci_email_delivery.status = sent`
-- `log.bci_email_delivery.status_code = 202`
-
-## Troubleshooting
-
-### Query-engine returns Postgres password authentication failed
-
-The Docker volume may have been initialized with an older Postgres password. Either:
-
-1. recreate the volume, or
-2. rotate the local database password to match the current `.env`.
-
-For local development, recreating the volume is often simpler:
-
-```bash
-docker compose down -v
-docker compose up -d --build postgres credential-helper email-service query-engine
-```
-
-Only use `down -v` when it is acceptable to delete the local Postgres data volume.
-
-### Email-service returns 401 or 403
-
-Check that `SERVICE_TOKEN` is the same for query-engine, email-service, and credential-helper.
-
-### Email-service says `public.bci_email_delivery` does not exist
-
-Set email-service `POSTGRES_SCHEMA=log`.
-
-### Delivery hangs or times out while fetching credentials
-
-Check credential-helper health and logs:
-
-```bash
-docker compose logs --tail=100 credential-helper
-```
-
-Also confirm the Vault item names in `.env`.
-
-### Query-engine cannot find the data view
-
-Check that the view exists in the `data` database and that the artifact `view_name`
-uses the schema-qualified name, for example `public.weekly_visit_counts`.
-
-## Current Limits
-
-The following are not fully implemented yet:
-
-- query-driven or burst-recipient resolution
-- attachments such as PDF, XLSX, CSV, or TXT
-- scheduler-driven executions
-- security service and user-facing authentication
-- generic client stack scaffolding
-- production hardening around retries and delivery controls
-
-For now, production-like sends should be triggered manually through
-`POST /artifact-executions` after display and dry-run validation.
+For reusable Codex instructions, continue with
+[AI Client Setup Prompts](ai-client-setup-prompts.md).

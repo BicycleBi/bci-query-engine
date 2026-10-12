@@ -1,0 +1,20 @@
+{
+  "client_key": "example",
+  "client_display_name": "Example Company",
+  "artifact_key": "weekly-summary",
+  "display_name": "Weekly Summary",
+  "description": "Synthetic onboarding example; contains no client data.",
+  "view_name": "rpt.weekly_summary",
+  "delivery_mode": "web",
+  "active": true,
+  "template": {
+    "template_key": "weekly-summary",
+    "version": 1,
+    "display_name": "Weekly Summary",
+    "content_type": "html",
+    "html_content": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Weekly Summary</title></head><body><h1>Weekly Summary</h1><p>Synthetic onboarding example</p><table><caption>Completed items by team and week</caption><thead><tr><th scope=\"col\">Week</th><th scope=\"col\">Team</th><th scope=\"col\">Completed items</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.report_week }}</td><td>{{ row.team_name }}</td><td>{{ row.completed_items }}</td></tr>{% else %}<tr><td colspan=\"3\">No results available.</td></tr>{% endfor %}</tbody></table></body></html>",
+    "is_active": true
+  },
+  "recipients": [],
+  "references": []
+}
