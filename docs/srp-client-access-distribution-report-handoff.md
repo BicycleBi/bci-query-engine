@@ -33,3 +33,7 @@ Approval relation `public.srp_report_distribution_approval` is optional and is n
 ## Exact Dev baseline reconciliation
 
 Before any apply, secured-host source hashes identified the live application as 10fa9ee5. Latest main c0f932b has unrelated load-action runtime content not present live. The exact endpoint/module/tests were transplanted onto the live baseline on this Dev branch; no load-action change is included. Initial native plan/check on aef2a3d was non-mutating and is superseded. Repeat both packages' native plan/check against the final source before apply. Metadata/schema-only preflight confirmed recipient fields and zero existing-viewer coverage gaps without contact or payload inspection.
+
+## Actual Dev deployment — 27 October 2026
+
+Scope ledger: update this existing handoff only to record validation and deployment; no additional runtime changes. Applied source 2298601fb29f41525d9eb3693981d0c7c08bf5e3 on exact live baseline 10fa9ee5. Native plan/check/apply/validate passed; runtime release dev-20261027T091949Z-a6c60b72, generation 1426. Combined client release dev-20261027T092550Z-eb43596d validated generation 1427. Safe read-only validation returned 52 configured rows and unauthenticated HTTP 401; browser pagination passed. Approval remains Not confirmed and source coverage partial as above. Evidence lives in SRP deployment/reviews/client-access-distribution-report-20261027/. No main/QA/Production integration or runtime configuration expansion. Retain this Dev source branch/worktree for feedback.
