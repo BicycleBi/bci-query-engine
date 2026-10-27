@@ -84,7 +84,7 @@ _data_load_action_worker_started = False
 
 def start_delivery_worker() -> None:
     global _delivery_worker_started
-    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "true").lower() != "true":
+    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "false").lower() != "true":
         return
     try:
         worker_count = max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
