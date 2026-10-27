@@ -3,8 +3,8 @@
 Date: 27 October 2026
 Owner/requester: Daniel Van Wyk
 Client task: https://tw.bicyclebi.com/app/tasks/36603566
-Branch: codex/srp-access-distributions
-Base: origin/main c0f932b
+Branch: codex/srp-access-distributions-dev-20261027
+Base: exact running Dev application source 10fa9ee57c37c5af67a27e3a3c625099f3a7b232
 Client source: BicycleBi/SRP, codex/srp-client-access-distribution-report-20261026
 
 ## Authorized scope and object ledger
@@ -29,3 +29,7 @@ Approval relation `public.srp_report_distribution_approval` is optional and is n
 ## Validation and release status
 
 71 synthetic tests passed across distribution reporting, existing access and usage summary suites. No environment has been changed at this checkpoint. Native runtime plan/check, exact host-source/live-runtime compatibility, apply, validation, safe authenticated status checks and canonical Dev closeout remain required. Source test success is not deployment or approved recipient evidence.
+
+## Exact Dev baseline reconciliation
+
+Before any apply, secured-host source hashes identified the live application as 10fa9ee5. Latest main c0f932b has unrelated load-action runtime content not present live. The exact endpoint/module/tests were transplanted onto the live baseline on this Dev branch; no load-action change is included. Initial native plan/check on aef2a3d was non-mutating and is superseded. Repeat both packages' native plan/check against the final source before apply. Metadata/schema-only preflight confirmed recipient fields and zero existing-viewer coverage gaps without contact or payload inspection.
