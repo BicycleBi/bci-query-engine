@@ -276,7 +276,7 @@ Content-Type: application/json
 | `CACHE_RENDERED` | Enables rendered HTML cache reads/writes when Redis is enabled (default: `true`) |
 | `PORT` | Port to listen on (default: 8300) |
 | `ARTIFACT_OUTPUT_DIR` | Directory where generated file outputs are written. Defaults to `/tmp/bci-query-engine/artifact-outputs`. |
-| `ARTIFACT_DELIVERY_WORKER_ENABLED` | Enables durable delivery workers (default: `true`). |
+| `ARTIFACT_DELIVERY_WORKER_ENABLED` | Enables durable delivery workers (default: `false`; enable explicitly only where the delivery schema and workflow are installed). |
 | `ARTIFACT_DELIVERY_WORKERS` | Number of bounded delivery worker threads (default: `2`). |
 | `ARTIFACT_DELIVERY_POLL_SECONDS` | Empty-queue poll interval (default: `1`). |
 | `ARTIFACT_DELIVERY_LEASE_SECONDS` | Worker lease duration, refreshed before provider send (default: `1200`, minimum: `600`). |
