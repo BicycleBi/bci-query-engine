@@ -63,6 +63,7 @@ def test_duplicate_names_never_attach_mapping_to_arbitrary_facility():
     assert len(rows)==3
     assert all(r['weekly']['configuration']=='not_configured' for r in rows if r['facility_ids'])
     assert any('ambiguous_name' in r['exceptions'] for r in rows)
+    assert all(r['report_statuses']['weekly']=='check_facility_name' for r in rows)
 
 
 def test_orphan_operational_and_monthly_facilities_are_not_lost():
@@ -121,3 +122,64 @@ def test_facility_route_preserves_existing_authorization_and_no_store(monkeypatc
     monkeypatch.setattr(main,'require_analytics_reporting_access',denied)
     monkeypatch.setattr(main,'get_facility_report',lambda **kw:pytest.fail('source read before authorization'))
     assert client.get(path,headers=_auth_headers(_token('srp'))).status_code==403
+
+
+def test_business_statuses_are_concise_and_registration_is_not_an_inclusion_test():
+    data=sources(facilities=[('1','Example')],weekly_mapping=[('Example',True,True,True)],
+        weekly_report=[('Example',)],monthly_report=[('1','Example','available')],
+        pnl_crosswalk=[('entity','Example',True)],pnl_entities=[('entity','Example')],
+        pnl_data=[('entity',)],pnl_scope=[('entity','example-email',True)],pnl_recipients=[('entity',True)])
+    row=reporting.build_inventory(data)[0]
+    assert row['report_statuses']=={'weekly':'included','monthly':'included','pnl':'included'}
+    assert row['weekly']['registry']=='not_registered'
+    data['recipient_registry']=None
+    assert reporting.build_inventory(data)[0]['report_statuses']==row['report_statuses']
+    data['monthly_report']=[('1','Example','unavailable')]
+    assert reporting.build_inventory(data)[0]['report_statuses']['monthly']=='waiting_for_activity'
+    data['monthly_report']=None
+    assert reporting.build_inventory(data)[0]['report_statuses']['monthly']=='not_verified'
+
+
+@pytest.mark.parametrize('mapping,expected', [
+    ([], 'not_configured'),
+    ([('Example',False,False,True)], 'excluded'),
+    ([('Example',True,False,True)], 'not_ready'),
+    ([('Example',True,True,False)], 'not_ready'),
+    (None,'not_verified'),
+])
+def test_business_configuration_statuses(mapping,expected):
+    row=reporting.build_inventory(sources(facilities=[('1','Example')],weekly_mapping=mapping))[0]
+    assert row['report_statuses']['weekly']==row['report_statuses']['monthly']==expected
+
+
+def test_ready_mapping_without_facility_is_not_claimed_included():
+    row=reporting.build_inventory(sources(weekly_mapping=[('Example Unmatched',True,True,True)],weekly_report=[]))[0]
+    assert row['report_statuses']['weekly']==row['report_statuses']['monthly']=='check_facility_name'
+
+
+def test_pnl_available_without_active_scope_is_not_claimed_included():
+    data=sources(pnl_entities=[('example','Example')],pnl_data=[('example',)])
+    assert reporting.build_inventory(data)[0]['report_statuses']['pnl']=='available_not_included'
+    data['pnl_data']=[]
+    assert reporting.build_inventory(data)[0]['report_statuses']['pnl']=='no_report_data'
+
+
+def test_source_checks_do_not_execute_report_renderers():
+    queries={name:query for name,_,query in reporting.SOURCES}
+    assert 'render_payload' not in queries['weekly_report']+queries['monthly_report']
+    assert 'srp_weekly_email_prototype_burst_recipients' in queries['weekly_report']
+    assert 'send_enabled AND ready_for_release' in queries['weekly_report']
+    monthly=queries['monthly_report']
+    assert "AT TIME ZONE 'America/New_York'" in monthly
+    assert "interval '1 month'" in monthly
+    assert 'a._is_current' in monthly and 'c._is_current' in monthly
+    assert '>= m.start_date' in monthly and '< m.end_date' in monthly
+
+
+def test_pnl_scope_requires_ready_recipient_before_claiming_included():
+    data=sources(pnl_entities=[('example','Example')],pnl_data=[('example',)],pnl_scope=[('example','example-email',True)])
+    assert reporting.build_inventory(data)[0]['report_statuses']['pnl']=='not_ready'
+    data['pnl_recipients']=None
+    assert reporting.build_inventory(data)[0]['report_statuses']['pnl']=='not_verified'
+    data['pnl_recipients']=[('example',True)]
+    assert reporting.build_inventory(data)[0]['report_statuses']['pnl']=='included'

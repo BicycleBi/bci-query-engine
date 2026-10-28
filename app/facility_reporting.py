@@ -14,14 +14,80 @@ SOURCES = [
     ('appointments', 'public.srp_core_appointments', "SELECT DISTINCT nullif(btrim(facility_id),'') FROM public.srp_core_appointments WHERE _is_current AND nullif(btrim(facility_id),'') IS NOT NULL ORDER BY 1"),
     ('claims', 'public.srp_core_claim_activity_associated_by_service_date', "SELECT DISTINCT nullif(btrim(facility_id),'') FROM public.srp_core_claim_activity_associated_by_service_date WHERE _is_current AND nullif(btrim(facility_id),'') IS NOT NULL ORDER BY 1"),
     ('weekly_mapping', 'public.srp_weekly_report_recipient_mapping', "SELECT facility_name, send_enabled, ready_for_release, nullif(btrim(recipient_email),'') IS NOT NULL FROM public.srp_weekly_report_recipient_mapping ORDER BY facility_name"),
-    ('weekly_report', 'public.srp_weekly_email_prototype_render_payload', 'SELECT DISTINCT practice_name FROM public.srp_weekly_email_prototype_render_payload ORDER BY practice_name'),
-    ('monthly_report', 'public.srp_monthly_practice_report_render_payload', "SELECT DISTINCT payload_json #>> '{header,facility_id}', payload_json #>> '{header,practice_name}', payload_json #>> '{coverage,status}' FROM public.srp_monthly_practice_report_render_payload ORDER BY 1,2,3"),
+    ('weekly_report', 'public.srp_weekly_email_prototype_burst_recipients', "SELECT DISTINCT slice_key FROM public.srp_weekly_email_prototype_burst_recipients WHERE send_enabled AND ready_for_release AND recipient_email IS NOT NULL ORDER BY slice_key"),
+    # Monthly releases accept both available and partial coverage. That boundary
+    # depends only on source-row presence in the report month, not any measure.
+    # Project the same current facility/date selection without constructing JSON,
+    # provider tables, EWC or financial calculations in the full renderer.
+    ('monthly_report', 'public.srp_weekly_report_facility_input_v1', """
+      WITH report_month AS (
+        SELECT (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York') - interval '1 month')::date AS start_date,
+               date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date AS end_date
+      ), activity AS (
+        SELECT DISTINCT nullif(btrim(a.facility_id),'') AS facility_id
+        FROM public.srp_core_appointments a CROSS JOIN report_month m
+        WHERE a._is_current AND nullif(btrim(a.facility_id),'') IS NOT NULL
+          AND nullif(btrim(a.appointment_date),'')::date >= m.start_date
+          AND nullif(btrim(a.appointment_date),'')::date < m.end_date
+        UNION
+        SELECT DISTINCT nullif(btrim(c.facility_id),'')
+        FROM public.srp_core_claim_activity_associated_by_service_date c CROSS JOIN report_month m
+        WHERE c._is_current AND nullif(btrim(c.facility_id),'') IS NOT NULL
+          AND nullif(btrim(c.service_date),'')::date >= m.start_date
+          AND nullif(btrim(c.service_date),'')::date < m.end_date
+      )
+      SELECT f.facility_id, f.facility_name,
+             CASE WHEN a.facility_id IS NOT NULL THEN 'available' ELSE 'unavailable' END
+      FROM public.srp_weekly_report_facility_input_v1 f
+      LEFT JOIN activity a USING (facility_id)
+      ORDER BY f.facility_id,f.facility_name
+    """),
     ('pnl_crosswalk', 'public.srp_pnl_weekly_recipient_facility_map', 'SELECT entity_code, weekly_facility_name, active FROM public.srp_pnl_weekly_recipient_facility_map ORDER BY entity_code'),
     ('pnl_entities', 'public.srp_qbo_pnl_account_min', 'SELECT DISTINCT entity_code, entity_name FROM public.srp_qbo_pnl_account_min ORDER BY entity_code,entity_name'),
     ('pnl_data', 'public.srp_qbo_pnl_detail_min', 'SELECT DISTINCT entity_code FROM public.srp_qbo_pnl_detail_min ORDER BY entity_code'),
     ('pnl_scope', 'public.srp_pnl_owner_delivery_scope', 'SELECT entity_code, artifact_key, active FROM public.srp_pnl_owner_delivery_scope ORDER BY entity_code'),
+    ('pnl_recipients', 'public.srp_pnl_owner_delivery_recipient_source', """
+      SELECT entity_code, bool_or(send_enabled AND ready_for_release AND nullif(btrim(recipient_email),'') IS NOT NULL)
+      FROM public.srp_pnl_owner_delivery_recipient_source GROUP BY entity_code ORDER BY entity_code
+    """),
     ('facility_approval', 'public.srp_report_facility_approval', "SELECT facility_key, facility_name, practice_status, weekly_included, monthly_included, pnl_included, approval_source, approver, approval_date, maintenance_owner, approval_version, maintenance_process FROM public.srp_report_facility_approval WHERE client_key='srp' AND active AND (effective_from IS NULL OR effective_from<=CURRENT_DATE) AND (effective_until IS NULL OR effective_until>=CURRENT_DATE) ORDER BY facility_key"),
 ]
+
+
+def business_statuses(row):
+    """Describe actual configured inclusion; approval stays independent."""
+    configuration = row['weekly']['configuration']
+    if configuration == 'unavailable':
+        weekly = monthly = 'not_verified'
+    elif 'ambiguous_name' in row['exceptions']:
+        weekly = monthly = 'check_facility_name'
+    elif configuration == 'not_configured':
+        weekly = monthly = 'not_configured'
+    elif configuration == 'disabled':
+        weekly = monthly = 'excluded'
+    elif configuration == 'not_ready':
+        weekly = monthly = 'not_ready'
+    elif not row['facility_ids'] or 'ambiguous_name' in row['exceptions']:
+        weekly = monthly = 'check_facility_name'
+    else:
+        weekly = ('not_verified' if row['weekly']['report_inclusion'] == 'unavailable' else
+                  'included' if row['weekly']['report_inclusion'] == 'present' else 'check_facility_name')
+        monthly = ('included' if row['monthly']['eligibility'] == 'eligible' else
+                   'waiting_for_activity' if row['monthly']['eligibility'] == 'no_source_activity' else 'not_verified')
+    pnl = row['pnl']
+    if pnl['source'] == 'unavailable' or pnl['scope'] == 'unavailable':
+        pnl_status = 'not_verified'
+    elif 'ambiguous_pnl_crosswalk' in row['exceptions'] or 'inactive_pnl_crosswalk' in row['exceptions']:
+        pnl_status = 'check_facility_name'
+    elif pnl['source'] == 'available':
+        pnl_status = ('available_not_included' if pnl['scope'] != 'configured' else
+                      'not_verified' if pnl['recipient_ready'] is None else
+                      'included' if pnl['recipient_ready'] else 'not_ready')
+    elif pnl['source'] == 'entity_only':
+        pnl_status = 'no_report_data'
+    else:
+        pnl_status = 'not_available'
+    return dict(weekly=weekly, monthly=monthly, pnl=pnl_status)
 
 
 def build_inventory(data):
@@ -53,6 +119,8 @@ def build_inventory(data):
             names[name].add(key)
         if len(matches) > 1:
             row['exceptions'].append('ambiguous_name')
+            for match in matches:
+                rows[match]['exceptions'].append('ambiguous_name')
         if not row['facility_ids']:
             row['exceptions'].append('unresolved_identity')
         row['sources'].append(source)
@@ -138,6 +206,7 @@ def build_inventory(data):
     appointments = {str(x[0]).strip() for x in data.get('appointments') or []}
     claims = {str(x[0]).strip() for x in data.get('claims') or []}
     registry = {key: (active, count) for key, active, count in data.get('recipient_registry') or []}
+    pnl_recipients = {entity:bool(ready) for entity,ready in data.get('pnl_recipients') or []}
     for key, row in rows.items():
         ids = set(row['facility_ids'])
         if data.get('appointments') is None or data.get('claims') is None or (not ids and data.get('facilities') is None):
@@ -162,6 +231,7 @@ def build_inventory(data):
             'no_source_activity' if coverage == {'unavailable'} else 'eligible')
         row['pnl'] = dict(source='unavailable' if data.get('pnl_data') is None or data.get('pnl_entities') is None else
             'available' if pnl_data & set(row['entity_codes']) else 'entity_only' if 'pnl_entities' in row['sources'] else 'not_present',
+            recipient_ready=None if data.get('pnl_recipients') is None else any(pnl_recipients.get(entity,False) for entity in row['entity_codes']),
             scope='unavailable' if data.get('pnl_scope') is None else 'configured' if any(x['active'] for x in row['pnl_scope']) else 'disabled' if row['pnl_scope'] else 'not_configured')
         for family in ('weekly', 'monthly'):
             state = row[family]['configuration']
@@ -190,6 +260,7 @@ def build_inventory(data):
         row['exceptions'] = sorted(set(row['exceptions']))
         row['sources'] = sorted(set(row['sources']))
         row['entity_codes'].sort()
+        row['report_statuses'] = business_statuses(row)
     return sorted(rows.values(), key=lambda row: (row['facility_name'].casefold(), row['facility_key']))
 
 
