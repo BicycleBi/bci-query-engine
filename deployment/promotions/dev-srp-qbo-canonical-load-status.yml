@@ -1,7 +1,7 @@
 schema_version: 1
 client: srp
 environment: dev
-source_repo: .
+source_repo: /home/shared/repos/bci-query-engine-promote-dev-qbo-canonical-status-20261028
 source_commit: HEAD
 
 targets:
