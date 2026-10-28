@@ -69,6 +69,7 @@ from .monitoring import (
 )
 from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
 from .distribution_reporting import get_distribution_report
+from .facility_reporting import get_facility_report
 
 _delivery_worker_started = False
 
@@ -487,6 +488,25 @@ def distribution_summary(
         raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
     except Exception:
         raise HTTPException(503, "Distribution reporting is unavailable") from None
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/facility-summary")
+def facility_summary(
+    response: Response, client_key: str, artifact_key: str,
+    search: str = "", status: str = "", offset: int = 0,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Facility reporting is unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return get_facility_report(search=search, status=status, offset=offset)
+    except ValueError:
+        raise HTTPException(400, "Invalid facility reporting bounds") from None
+    except Exception:
+        raise HTTPException(503, "Facility reporting is unavailable") from None
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
