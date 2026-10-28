@@ -38,9 +38,11 @@ from .engine import (
 )
 from .load_actions import (
     DataLoadAlreadyRunning,
+    get_canonical_quickbooks_load_status,
     get_data_load_action,
     get_latest_data_load_action,
     get_live_quickbooks_load_progress,
+    latest_quickbooks_load_status,
     queue_data_load_action,
     run_data_load_action_worker,
 )
@@ -470,10 +472,14 @@ def latest_quickbooks_full_load_action(
 ):
     """Return the latest safe status and act as the UI capability check."""
     _authorize_quickbooks_full_load(identity, x_identity_roles)
-    result = get_latest_data_load_action(
+    request_action = get_latest_data_load_action(
         "srp",
         "quickbooks-profit-loss-report",
         "quickbooks-full-load",
+    )
+    result = latest_quickbooks_load_status(
+        request_action,
+        get_canonical_quickbooks_load_status(),
     )
     if result and result.get("status") == "running" and result.get("action_id"):
         result.update(get_live_quickbooks_load_progress(result["action_id"]))
@@ -496,12 +502,13 @@ def quickbooks_full_load_action_status(
 ):
     """Return only bounded status for one authorized QuickBooks load action."""
     _authorize_quickbooks_full_load(identity, x_identity_roles)
-    result = get_data_load_action(
+    request_action = get_data_load_action(
         str(action_id),
         "srp",
         "quickbooks-profit-loss-report",
         "quickbooks-full-load",
     )
+    result = get_canonical_quickbooks_load_status(str(action_id)) or request_action
     if result is None:
         raise HTTPException(status_code=404, detail="QuickBooks load action was not found")
     if result.get("status") == "running":

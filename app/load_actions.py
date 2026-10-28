@@ -114,6 +114,10 @@ def _safe_error_message(error_code: Optional[str]) -> Optional[str]:
         "worker_interrupted": "Load status is unavailable. Check the operator audit before retrying.",
         "timeout_unknown": "The load is taking longer than expected. Check the operator audit before retrying.",
         "unexpected_error": "The QuickBooks load could not be completed.",
+        "no_companies_refreshed": "No QuickBooks companies could be refreshed. Existing report data was retained.",
+        "legacy_load_failed": "The QuickBooks load failed. Existing report data was retained.",
+        "legacy_running_state": "The recorded load status needs an operator check.",
+        "report_refresh_failed": "The QuickBooks source loaded, but the Profit & Loss report refresh needs attention.",
     }.get(error_code)
 
 
@@ -234,6 +238,98 @@ def get_live_quickbooks_load_progress(action_id: str) -> dict[str, Any]:
         return _normalize_progress(response.json())
     except (ValueError, RequestsRequestException):
         return {}
+
+
+def _canonical_status_url(action_id: Optional[str]) -> Optional[str]:
+    if action_id:
+        template = os.getenv(
+            "QUICKBOOKS_FULL_LOAD_STATUS_URL",
+            "http://data-integration:8080/loads/srp-quickbooks-loader/status/{action_id}",
+        ).strip()
+        if "{action_id}" not in template:
+            return None
+        return template.format(action_id=str(uuid.UUID(action_id)))
+    return os.getenv(
+        "QUICKBOOKS_FULL_LOAD_LATEST_URL",
+        "http://data-integration:8080/loads/srp-quickbooks-loader/latest",
+    ).strip() or None
+
+
+def get_canonical_quickbooks_load_status(
+    action_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Read the shared manual/scheduled/promotion status from Data Integration."""
+    service_token = os.getenv("SERVICE_TOKEN", "").strip()
+    try:
+        url = _canonical_status_url(action_id)
+    except ValueError:
+        return None
+    if not service_token or not url:
+        return None
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {service_token}"},
+            timeout=5,
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except (ValueError, RequestsRequestException):
+        return None
+    if not isinstance(payload, dict) or not payload.get("run_id"):
+        return None
+    status = payload.get("status")
+    if status not in {
+        "queued", "running", "completed", "completed_with_warnings",
+        "failed", "attention_required", "superseded",
+    }:
+        return None
+    result = {
+        "action_id": str(payload["run_id"]),
+        "client_key": "srp",
+        "artifact_key": "quickbooks-profit-loss-report",
+        "action_key": "quickbooks-full-load",
+        "status": status,
+        "trigger_source": _bounded_text(payload.get("trigger_source"), 40),
+        "requested_at": payload.get("started_at"),
+        "started_at": payload.get("started_at"),
+        "updated_at": payload.get("updated_at"),
+        "completed_at": payload.get("completed_at"),
+        "error_message": _safe_error_message(payload.get("error_code")),
+    }
+    result.update(_normalize_progress(payload.get("progress")))
+    return result
+
+
+def _timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def latest_quickbooks_load_status(
+    request_action: Optional[dict[str, Any]],
+    canonical_run: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Prefer canonical execution state, except for a newer undispatched request."""
+    if canonical_run is None:
+        return request_action
+    if request_action is None:
+        return canonical_run
+    if (
+        request_action.get("status") in {"queued", "running"}
+        and request_action.get("action_id") != canonical_run.get("action_id")
+        and _timestamp(request_action.get("requested_at"))
+        > _timestamp(canonical_run.get("started_at"))
+    ):
+        return request_action
+    return canonical_run
 
 
 def queue_data_load_action(
