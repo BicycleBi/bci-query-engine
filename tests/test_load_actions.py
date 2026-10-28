@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 from app import load_actions
 
@@ -151,3 +152,67 @@ def test_live_progress_is_bounded_and_uses_safe_failure_copy(monkeypatch):
     assert result["current_entity"] == "Austin Spine and Rehab"
     assert result["entities_total"] == 13
     assert "secret" not in str(result)
+
+
+def test_canonical_status_covers_scheduled_runs_and_uses_safe_fields(monkeypatch):
+    monkeypatch.setenv("SERVICE_TOKEN", "internal-secret")
+    response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {
+            "run_id": "11111111-1111-1111-1111-111111111111",
+            "status": "completed",
+            "trigger_source": "scheduled",
+            "started_at": "2026-10-28T10:00:00Z",
+            "updated_at": "2026-10-28T10:08:00Z",
+            "completed_at": "2026-10-28T10:08:00Z",
+            "error_code": None,
+            "progress": {
+                "phase": "completed",
+                "entities_completed": 13,
+                "entities_total": 13,
+                "secret": "must not cross the boundary",
+            },
+        },
+    )
+    captured = {}
+    monkeypatch.setattr(
+        load_actions.requests,
+        "get",
+        lambda url, **kwargs: captured.update(url=url, **kwargs) or response,
+    )
+
+    result = load_actions.get_canonical_quickbooks_load_status()
+
+    assert captured["url"].endswith("/loads/srp-quickbooks-loader/latest")
+    assert result["status"] == "completed"
+    assert result["trigger_source"] == "scheduled"
+    assert result["entities_completed"] == 13
+    assert "secret" not in str(result)
+
+
+def test_canonical_run_wins_over_stale_manual_request_status():
+    manual = {
+        "action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "status": "failed",
+        "requested_at": datetime(2026, 10, 16, tzinfo=timezone.utc),
+    }
+    canonical = {
+        "action_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "status": "completed",
+        "started_at": "2026-10-28T10:00:00Z",
+    }
+    assert load_actions.latest_quickbooks_load_status(manual, canonical) is canonical
+
+
+def test_new_queued_request_temporarily_wins_before_canonical_run_exists():
+    manual = {
+        "action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "status": "queued",
+        "requested_at": datetime(2026, 10, 28, 11, 0, tzinfo=timezone.utc),
+    }
+    canonical = {
+        "action_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "status": "completed",
+        "started_at": "2026-10-28T10:00:00Z",
+    }
+    assert load_actions.latest_quickbooks_load_status(manual, canonical) is manual
