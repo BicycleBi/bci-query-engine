@@ -1,0 +1,94 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-qbo-canonical-load-status-20261028-base.yml",
+        "role": "qa-srp-qbo-canonical-load-status-20261028-base",
+        "sha256": "10e2187f2a5b91bf0bc599ca5329da3e9c23293db16eaa33e671736485555a91"
+      },
+      {
+        "operation": "replace",
+        "path": "app/load_actions.py",
+        "role": "load-actions",
+        "sha256": "ac51c366af24fe811c3595a1953e475fcc53b40ce5a847f0b1c354f1670e341f"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "8d9a1677dfaa2d9ec0342d7ebaa7bb0cdc73fb805c0a73b8f1ece6a844a60a9d"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "f8cf23e5ceca283eb448662df7ffff4acef223ba170b3d1e3786e3b694a16aaf"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "080005f8a027580493e3dfa3f8105538e615f8dc",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "e6fa53fc7114c7c310b1ed00d418c69cb989d366",
+      "source_ref": "refs/heads/codex/qbo-canonical-load-status-qa-20261028",
+      "target_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-qbo-canonical-load-status-20261028",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "tests/test_load_actions.py",
+        "reason": "declared protected package dependency",
+        "role": "test-load-actions",
+        "sha256": "c73667a4026953275addf8f26cb9c389aa558e7a2098552077f1a8c137b8e848"
+      }
+    ],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-10-28T12:38:15Z",
+    "intent": "Update the QA Query Engine load-status adapter so the Profit and Loss report returns the latest canonical manual or automated QuickBooks run.",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srpqa-qbo-canonical-load-status-20261028",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "e6fa53fc7114c7c310b1ed00d418c69cb989d366",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-qbo-canonical-status-20261028"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Serve the canonical manual, scheduled, or promotion QuickBooks load status to the QA P&L artifact",
+      "release_id": "srp-qa-qbo-canonical-load-status-20261028",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "e6fa53fc7114c7c310b1ed00d418c69cb989d366",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-qbo-canonical-status-20261028",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
