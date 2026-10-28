@@ -235,8 +235,10 @@ class DataLoadActionResponse(BaseModel):
     artifact_key: str
     action_key: str
     status: str
+    trigger_source: Optional[str] = None
     requested_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     progress_phase: Optional[str] = None
