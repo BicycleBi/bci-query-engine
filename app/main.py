@@ -548,6 +548,7 @@ def usage_summary(
     client_key: str,
     artifact_key: str,
     days: int = 30,
+    audience: str = "",
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Return bounded monitoring aggregates for one authorized client."""
@@ -556,9 +557,16 @@ def usage_summary(
         raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
-    require_analytics_reporting_access(identity, client_key, "usage")
+    config = get_analytics_reporting_config(client_key)
+    requested_audience = audience or client_key
+    if requested_audience not in config.audiences:
+        raise HTTPException(status_code=400, detail="Invalid usage audience")
+    is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "usage")
+    effective_audience = requested_audience if is_bicycle_admin else client_key
     response.headers["Cache-Control"] = "no-store"
-    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
+    result = get_usage_summary(client_key=client_key, days=days, audience=effective_audience)
+    result["allowed_audiences"] = ["all", client_key, "bicycle"] if is_bicycle_admin else [client_key]
+    return UsageSummaryResponse(**result)
 
 
 @app.get("/artifacts/{client_key}/{artifact_key}/access-summary")

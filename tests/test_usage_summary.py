@@ -51,6 +51,8 @@ def _token(client_key="rf"):
 def _summary(client_key, days):
     return {
         "client_key": client_key,
+        "audience": client_key,
+        "allowed_audiences": [client_key],
         "days": days,
         "period_start": "2026-08-05T00:00:00Z",
         "period_end": "2026-09-04T00:00:00Z",
@@ -71,7 +73,9 @@ def test_usage_summary_is_authenticated_and_client_scoped(monkeypatch):
     monkeypatch.setattr(
         main,
         "get_usage_summary",
-        lambda *, client_key, days: captured.append((client_key, days)) or _summary(client_key, days),
+        lambda *, client_key, days, audience: captured.append((client_key, days, audience)) or {
+            **_summary(client_key, days), "audience": audience,
+        },
     )
     client = TestClient(main.app)
 
@@ -87,7 +91,41 @@ def test_usage_summary_is_authenticated_and_client_scoped(monkeypatch):
     assert response.status_code == 200
     assert response.json()["totals"]["requests"] == 2
     assert response.json()["users"][0]["display_name"] == "Jeanre"
-    assert captured == [("rf", 30)]
+    assert response.json()["audience"] == "rf"
+    assert captured == [("rf", 30, "rf")]
+
+
+def test_usage_summary_allows_admin_to_select_a_database_owned_audience(monkeypatch):
+    monkeypatch.setenv("ANALYTICS_REPORTING_CLIENT_KEY", "srp")
+    monkeypatch.setenv("ANALYTICS_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev")
+    main = _load_main(monkeypatch)
+    monkeypatch.setattr(main, "require_analytics_reporting_access", lambda *args: True)
+    captured = []
+    monkeypatch.setattr(
+        main,
+        "get_usage_summary",
+        lambda **kwargs: captured.append(kwargs) or {
+            **_summary(kwargs["client_key"], kwargs["days"]),
+            "audience": kwargs["audience"],
+        },
+    )
+    response = TestClient(main.app).get(
+        "/artifacts/srp/usage-monitoring-dashboard/usage-summary",
+        params={"days": 30, "audience": "bicycle"},
+        headers=_auth_headers(_token("srp")),
+    )
+    assert response.status_code == 200
+    assert captured == [{"client_key": "srp", "days": 30, "audience": "bicycle"}]
+    assert response.json()["allowed_audiences"] == ["all", "srp", "bicycle"]
+
+
+def test_usage_summary_rejects_unknown_audience(monkeypatch):
+    main = _load_main(monkeypatch)
+    response = TestClient(main.app).get(
+        "/artifacts/srp/usage-monitoring-dashboard/usage-summary?audience=unknown",
+        headers=_auth_headers(_token("srp")),
+    )
+    assert response.status_code == 400
 
 
 def test_usage_summary_rejects_unbounded_period(monkeypatch):

@@ -427,6 +427,8 @@ class UsageLoginSummary(BaseModel):
 class UsageSummaryResponse(BaseModel):
     monitoring_available: bool = True
     client_key: str
+    audience: str
+    allowed_audiences: list[str] = Field(default_factory=list)
     days: int
     period_start: datetime
     period_end: datetime

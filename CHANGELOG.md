@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Default Usage summaries to the security-derived client audience and allow
+  authorized Bicycle administrators to request explicit `all`, client, or
+  `bicycle` cohorts. The same cohort is applied to totals, daily activity,
+  artifact adoption, users, interactions, and login outcomes.
 - Move BCI Analytics assignment, audience, artifact, wildcard-grant, activity,
   and authenticated-denial semantics into an explicit metadata-database layer.
 - Allow bounded audience filtering on the compact Access summary while

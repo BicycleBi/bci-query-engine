@@ -15,6 +15,7 @@ import socket
 import threading
 from typing import Any, Optional
 
+from .analytics import get_analytics_reporting_config
 from .db import get_metadata_conn
 
 
@@ -43,11 +44,15 @@ def _rounded_ms(value: Any) -> Optional[float]:
     return round(float(value), 1) if value is not None else None
 
 
-def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
-    """Return a bounded client-scoped reporting summary, never raw telemetry."""
+def get_usage_summary(*, client_key: str, days: int, audience: Optional[str] = None) -> dict[str, Any]:
+    """Return bounded client- and audience-scoped aggregates, never raw telemetry."""
+    config = get_analytics_reporting_config(client_key)
+    effective_audience = audience or client_key
+    if effective_audience not in config.audiences:
+        raise ValueError("Invalid usage audience")
     period_end = datetime.now(tz=timezone.utc)
     period_start = period_end - timedelta(days=days)
-    parameters = (client_key, period_start, period_end)
+    parameters = (client_key, period_start, period_end, config.admin_role, effective_audience)
 
     with get_metadata_conn() as meta:
         meta.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -58,6 +63,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
         if not relation or relation[0] is None or relation[1] is None:
             return {
                 "client_key": client_key,
+                "audience": effective_audience,
                 "days": days,
                 "period_start": period_start,
                 "period_end": period_end,
@@ -79,12 +85,21 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                     count(*) FILTER (WHERE outcome <> 'completed')::integer AS failed_requests,
                     avg(duration_ms)::numeric AS average_response_ms,
                     percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::numeric AS p95_response_ms
-                FROM monitoring.request_spans
-                WHERE client_key = %s
+                FROM monitoring.request_spans span
+                WHERE span.client_key = %s
                   AND artifact_key IS NOT NULL
                   AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
                   AND started_at >= %s
                   AND started_at < %s
+                  AND EXISTS (
+                      SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                      WHERE audience_user.client_key = span.client_key
+                        AND audience_user.admin_role_key = %s
+                        AND audience_user.audience_key = %s
+                        AND (audience_user.user_id = span.user_id
+                             OR (span.email IS NOT NULL AND lower(audience_user.email) = lower(span.email))
+                             OR (span.username IS NOT NULL AND lower(audience_user.email) = lower(span.username)))
+                  )
             ),
             event_totals AS (
                 SELECT
@@ -95,10 +110,19 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                     count(*) FILTER (WHERE event_type = 'login_started')::integer AS login_started,
                     count(*) FILTER (WHERE event_type = 'login_completed' AND event_status = 'succeeded')::integer AS login_succeeded,
                     count(*) FILTER (WHERE event_type IN ('login_denied', 'auth_denied'))::integer AS login_denied
-                FROM monitoring.events
-                WHERE client_key = %s
+                FROM monitoring.events event
+                WHERE event.client_key = %s
                   AND occurred_at >= %s
                   AND occurred_at < %s
+                  AND EXISTS (
+                      SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                      WHERE audience_user.client_key = event.client_key
+                        AND audience_user.admin_role_key = %s
+                        AND audience_user.audience_key = %s
+                        AND (audience_user.user_id = event.user_id
+                             OR (event.email IS NOT NULL AND lower(audience_user.email) = lower(event.email))
+                             OR (event.username IS NOT NULL AND lower(audience_user.email) = lower(event.username)))
+                  )
             )
             SELECT
                 r.requests, r.active_users, r.successful_requests, r.failed_requests,
@@ -117,12 +141,21 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 count(DISTINCT COALESCE(NULLIF(user_id, ''), NULLIF(username, '')))::integer,
                 count(*) FILTER (WHERE outcome <> 'completed')::integer,
                 avg(duration_ms)::numeric
-            FROM monitoring.request_spans
-            WHERE client_key = %s
+            FROM monitoring.request_spans span
+            WHERE span.client_key = %s
               AND artifact_key IS NOT NULL
               AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND started_at >= %s
               AND started_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                  WHERE audience_user.client_key = span.client_key
+                    AND audience_user.admin_role_key = %s
+                    AND audience_user.audience_key = %s
+                    AND (audience_user.user_id = span.user_id
+                         OR (span.email IS NOT NULL AND lower(audience_user.email) = lower(span.email))
+                         OR (span.username IS NOT NULL AND lower(audience_user.email) = lower(span.username)))
+              )
             GROUP BY started_at::date
             ORDER BY started_at::date
             """,
@@ -150,6 +183,15 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
               AND s.route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND s.started_at >= %s
               AND s.started_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                  WHERE audience_user.client_key = s.client_key
+                    AND audience_user.admin_role_key = %s
+                    AND audience_user.audience_key = %s
+                    AND (audience_user.user_id = s.user_id
+                         OR (s.email IS NOT NULL AND lower(audience_user.email) = lower(s.email))
+                         OR (s.username IS NOT NULL AND lower(audience_user.email) = lower(s.username)))
+              )
             GROUP BY s.artifact_key, a.display_name
             ORDER BY count(*) DESC, s.artifact_key
             LIMIT 20
@@ -167,12 +209,21 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 count(*) FILTER (WHERE outcome <> 'completed')::integer,
                 avg(duration_ms)::numeric,
                 max(started_at)
-            FROM monitoring.request_spans
-            WHERE client_key = %s
+            FROM monitoring.request_spans span
+            WHERE span.client_key = %s
               AND artifact_key IS NOT NULL
               AND route_template NOT IN ('/artifacts/{client_key}/{artifact_key}/usage-summary', '/artifacts/{client_key}/{artifact_key}/access-summary')
               AND started_at >= %s
               AND started_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                  WHERE audience_user.client_key = span.client_key
+                    AND audience_user.admin_role_key = %s
+                    AND audience_user.audience_key = %s
+                    AND (audience_user.user_id = span.user_id
+                         OR (span.email IS NOT NULL AND lower(audience_user.email) = lower(span.email))
+                         OR (span.username IS NOT NULL AND lower(audience_user.email) = lower(span.username)))
+              )
             GROUP BY COALESCE(NULLIF(user_id, ''), NULLIF(username, ''), 'unknown'),
                      COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), 'Unknown user'),
                      NULLIF(username, '')
@@ -192,11 +243,20 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 END,
                 reason_code,
                 count(*)::integer
-            FROM monitoring.events
-            WHERE client_key = %s
+            FROM monitoring.events event
+            WHERE event.client_key = %s
               AND event_type IN ('login_started', 'login_completed', 'login_denied', 'auth_denied')
               AND occurred_at >= %s
               AND occurred_at < %s
+              AND EXISTS (
+                  SELECT 1 FROM analytics_reporting.authorized_user_audiences audience_user
+                  WHERE audience_user.client_key = event.client_key
+                    AND audience_user.admin_role_key = %s
+                    AND audience_user.audience_key = %s
+                    AND (audience_user.user_id = event.user_id
+                         OR (event.email IS NOT NULL AND lower(audience_user.email) = lower(event.email))
+                         OR (event.username IS NOT NULL AND lower(audience_user.email) = lower(event.username)))
+              )
             GROUP BY 1, reason_code
             ORDER BY 1, count(*) DESC, reason_code NULLS FIRST
             LIMIT 20
@@ -207,6 +267,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
     totals_row = totals_row or (0, 0, 0, 0, None, None, 0, 0, 0, 0)
     return {
         "client_key": client_key,
+        "audience": effective_audience,
         "days": days,
         "period_start": period_start,
         "period_end": period_end,

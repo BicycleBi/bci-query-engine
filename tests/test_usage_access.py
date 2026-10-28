@@ -249,6 +249,31 @@ def test_usage_unavailable_is_not_reported_as_observed_zero(monkeypatch):
     result=monitoring.get_usage_summary(client_key='srp',days=30)
     assert result['monitoring_available'] is False
     assert result['totals'] == {}
+    assert result['audience'] == 'srp'
+
+
+def test_usage_summary_applies_database_owned_client_audience_to_every_measure(monkeypatch):
+    from app import monitoring
+    from pglast import parse_sql
+    db = Metadata([
+        [("monitoring.request_spans", "monitoring.events")],
+        [(0, 0, 0, 0, None, None, 0, 0, 0, 0)],
+        [], [], [], [],
+    ])
+    @contextmanager
+    def connection():
+        yield db
+    monkeypatch.setattr(monitoring, 'get_metadata_conn', connection)
+    result = monitoring.get_usage_summary(client_key='srp', days=30, audience='srp')
+    assert result['audience'] == 'srp'
+    reporting_queries = [sql for sql, _ in db.calls if 'analytics_reporting.authorized_user_audiences' in sql]
+    assert len(reporting_queries) == 5
+    assert reporting_queries[0].count('analytics_reporting.authorized_user_audiences') == 2
+    for sql in reporting_queries:
+        parse_sql(sql.replace('%s', "'synthetic'"))
+    assert all('analytics_reporting.authorized_user_audiences' in sql for sql in reporting_queries)
+    query_params = [params for sql, params in db.calls if 'analytics_reporting.authorized_user_audiences' in sql]
+    assert all('srp' in params and 'srpdev_bicycle_dev' in params for params in query_params)
 
 @pytest.mark.parametrize('perspective,subjects,expected_name', [
     ('users',[('u1','Synthetic User','user@example.test',True)],'Synthetic User'),
