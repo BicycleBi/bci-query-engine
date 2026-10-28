@@ -36,7 +36,7 @@
       "schema_version": 4,
       "source_commit": "e6fa53fc7114c7c310b1ed00d418c69cb989d366",
       "source_ref": "refs/heads/codex/qbo-canonical-load-status-qa-20261028",
-      "target_commit": "2c72c3caf7fd89859f29427ccb09de4ddb659518",
+      "target_commit": "080005f8a027580493e3dfa3f8105538e615f8dc",
       "target_ref": "refs/heads/qa"
     },
     "change_class": "client-stack-architecture",
@@ -53,7 +53,7 @@
     ],
     "environment": "qa",
     "forbidden_units": [],
-    "generated_at": "2026-10-28T12:38:15Z",
+    "generated_at": "2026-10-28T13:01:48Z",
     "intent": "Update the QA Query Engine load-status adapter so the Profit and Loss report returns the latest canonical manual or automated QuickBooks run.",
     "operator": "bcipromote",
     "package_path": "deployment/packages/srpqa-qbo-canonical-load-status-20261028",
