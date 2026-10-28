@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from .db import get_data_conn, get_metadata_conn
-from .distribution_reporting import _read as _bounded_read, _slug
+from .distribution_reporting import _read, _slug
 from .analytics import get_analytics_reporting_config
 
 PAGE_SIZE = 50
@@ -11,8 +11,8 @@ FILTERS = {'', 'exceptions', 'no_data', 'not_configured', 'disabled', 'unresolve
 # Fixed projections only: never return metrics, contacts or full report payloads.
 SOURCES = [
     ('facilities', 'public.srp_core_facility', "SELECT facility_id, facility_name FROM public.srp_core_facility WHERE _is_current AND nullif(btrim(facility_id),'') IS NOT NULL AND nullif(btrim(facility_name),'') IS NOT NULL ORDER BY facility_id"),
-    ('appointments', 'public.srp_weekly_report_appointment_input_v1', 'SELECT DISTINCT facility_id FROM public.srp_weekly_report_appointment_input_v1 ORDER BY facility_id'),
-    ('claims', 'public.srp_weekly_report_claim_input_v1', 'SELECT DISTINCT facility_id FROM public.srp_weekly_report_claim_input_v1 ORDER BY facility_id'),
+    ('appointments', 'public.srp_core_appointments', "SELECT DISTINCT nullif(btrim(facility_id),'') FROM public.srp_core_appointments WHERE _is_current AND nullif(btrim(facility_id),'') IS NOT NULL ORDER BY 1"),
+    ('claims', 'public.srp_core_claim_activity_associated_by_service_date', "SELECT DISTINCT nullif(btrim(facility_id),'') FROM public.srp_core_claim_activity_associated_by_service_date WHERE _is_current AND nullif(btrim(facility_id),'') IS NOT NULL ORDER BY 1"),
     ('weekly_mapping', 'public.srp_weekly_report_recipient_mapping', "SELECT facility_name, send_enabled, ready_for_release, nullif(btrim(recipient_email),'') IS NOT NULL FROM public.srp_weekly_report_recipient_mapping ORDER BY facility_name"),
     ('weekly_report', 'public.srp_weekly_email_prototype_render_payload', 'SELECT DISTINCT practice_name FROM public.srp_weekly_email_prototype_render_payload ORDER BY practice_name'),
     ('monthly_report', 'public.srp_monthly_practice_report_render_payload', "SELECT DISTINCT payload_json #>> '{header,facility_id}', payload_json #>> '{header,practice_name}', payload_json #>> '{coverage,status}' FROM public.srp_monthly_practice_report_render_payload ORDER BY 1,2,3"),
@@ -22,23 +22,6 @@ SOURCES = [
     ('pnl_scope', 'public.srp_pnl_owner_delivery_scope', 'SELECT entity_code, artifact_key, active FROM public.srp_pnl_owner_delivery_scope ORDER BY entity_code'),
     ('facility_approval', 'public.srp_report_facility_approval', "SELECT facility_key, facility_name, practice_status, weekly_included, monthly_included, pnl_included, approval_source, approver, approval_date, maintenance_owner, approval_version, maintenance_process FROM public.srp_report_facility_approval WHERE client_key='srp' AND active AND (effective_from IS NULL OR effective_from<=CURRENT_DATE) AND (effective_until IS NULL OR effective_until>=CURRENT_DATE) ORDER BY facility_key"),
 ]
-
-
-def _read(factory, relation, query, params=None):
-    if relation != 'public.srp_monthly_practice_report_render_payload':
-        return _bounded_read(factory, relation, query, params)
-    # The canonical Monthly view computes coverage from report-ready inputs.
-    # Keep its existing calculation; bound this projection without changing
-    # timeout behavior on any other report/source.
-    with factory() as conn:
-        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        conn.execute("SET LOCAL statement_timeout = '30s'")
-        if not conn.execute('SELECT to_regclass(%s)', (relation,)).fetchone()[0]:
-            return None
-        rows = conn.execute(query + ' LIMIT 5001', params).fetchall()
-        if len(rows) > 5000:
-            raise RuntimeError('Facility source exceeds reporting bound')
-        return rows
 
 
 def build_inventory(data):
