@@ -16,6 +16,7 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
+from .facility_reporting import get_facility_report
 from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
@@ -602,6 +603,25 @@ def access_summary(
         return result
     except Exception:
         raise HTTPException(503, "Access reporting is unavailable") from None
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/facility-summary")
+def facility_summary(
+    response: Response, client_key: str, artifact_key: str,
+    search: str = "", status: str = "", offset: int = 0,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Facility reporting is unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return get_facility_report(search=search, status=status, offset=offset)
+    except ValueError:
+        raise HTTPException(400, "Invalid facility reporting bounds") from None
+    except Exception:
+        raise HTTPException(503, "Facility reporting is unavailable") from None
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
