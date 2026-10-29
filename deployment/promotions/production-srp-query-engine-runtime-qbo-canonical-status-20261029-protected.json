@@ -47,7 +47,7 @@
       "expected_advance_ref": "refs/heads/main",
       "schema_version": 4,
       "source_commit": "9a73bc1bdd907e1a5ef580cdd89d5461373df58b",
-      "source_ref": "refs/heads/codex/qbo-production-canonical-load-status-reconcile-20261029",
+      "source_ref": "refs/heads/codex/qbo-production-canonical-load-status-source-20261029",
       "target_commit": "2db7d08cbac0ff5b89117176f7ed1169093f57f7",
       "target_ref": "refs/heads/main"
     },
