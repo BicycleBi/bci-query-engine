@@ -12,9 +12,9 @@ service_runtime:
   promote:
     source: .
     service: query-engine
-    release_id: srp-qa-qbo-canonical-load-status-20261028
+    release_id: srp-qa-ppp-bootstrap-on-open-20261103
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: Serve the canonical manual, scheduled, or promotion QuickBooks load status to the QA P&L artifact
+    purpose: Prepare an opted-in report bootstrap before consulting the rendered cache; preserve existing QA runtime behavior
 
 validate:
   - type: compose-config
