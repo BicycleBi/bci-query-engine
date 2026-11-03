@@ -1,0 +1,74 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "b254020314b37444a985449c4f54dece8451de5ad0bc8682f520a77ce6a9bd4b"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-qbo-canonical-load-status-20261028-base.yml",
+        "role": "qa-srp-qbo-canonical-load-status-20261028-base",
+        "sha256": "98a9fc49d5af1c1fcb8c3d25422e1274ad04acabd73da719e3b95d4e6f1f5886"
+      }
+    ],
+    "approver": "Daniel",
+    "baseline_commit": "10a1c0c22f20899e4b0d9b9306ae310503ecff21",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "b46f7060aa1f31bf3789e9a0aea3be2001d218c2",
+      "source_ref": "refs/heads/codex/ppp-bootstrap-qa-source",
+      "target_commit": "10a1c0c22f20899e4b0d9b9306ae310503ecff21",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-ppp-bootstrap-runtime-20261103",
+    "client": "srp",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-11-03T08:39:20Z",
+    "intent": "Enable automatic report bootstrap preparation before Redis lookup, preserving all other QA runtime behavior",
+    "operator": "Daniel",
+    "package_path": "deployment/packages/srpqa-qbo-canonical-load-status-20261028",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "b46f7060aa1f31bf3789e9a0aea3be2001d218c2",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-qbo-canonical-status-20261028"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Prepare an opted-in report bootstrap before consulting the rendered cache; preserve existing QA runtime behavior",
+      "release_id": "srp-qa-ppp-bootstrap-on-open-20261103",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "b46f7060aa1f31bf3789e9a0aea3be2001d218c2",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-qbo-canonical-status-20261028",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
