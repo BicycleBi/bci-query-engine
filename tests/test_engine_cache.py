@@ -78,6 +78,8 @@ class FakeData:
     def execute(self, sql, params=None):
         if sql == "SELECT to_regprocedure(%s)" and params[0].endswith("_prepare()"):
             return FakeResult(row=(None,))
+        if sql == "SELECT to_regprocedure(%s)" and params[0].endswith("_cache_freshness()"):
+            return FakeResult(row=(None,))
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
@@ -500,6 +502,8 @@ class FakeQueryData(FakeData):
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
         if "SELECT to_regprocedure(%s)" in sql:
+            if str(params[0]).endswith("_cache_freshness()"):
+                return FakeResult(row=(None,))
             if str(params[0]).endswith("_query_cache_scope(jsonb)"):
                 return FakeResult(
                     row=("rpt.visit_counts_query_cache_scope(jsonb)",)
@@ -514,6 +518,102 @@ class FakeQueryData(FakeData):
             self.query_payloads.append(params[0])
             return FakeResult(row=(self.result,))
         raise AssertionError(f"Unexpected data query: {sql}")
+
+
+@pytest.mark.parametrize("generation", ["source-v1", "source-v2"])
+def test_view_freshness_hook_precedes_legacy(generation):
+    calls = []
+
+    def execute(sql, params=None):
+        calls.append((sql, params))
+        if sql == "SELECT to_regprocedure(%s)":
+            assert params == ("rpt.visit_counts_cache_freshness()",)
+            return FakeResult(row=("rpt.visit_counts_cache_freshness()",))
+        assert sql == "SELECT rpt.visit_counts_cache_freshness()::text"
+        return FakeResult(row=(generation,))
+
+    result = engine._artifact_cache_freshness_timestamp(
+        SimpleNamespace(execute=execute), "srp", "visit-counts", view_name="rpt.visit_counts"
+    )
+    assert result == generation
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("generation", [None, "", "   "])
+def test_declared_freshness_hook_cannot_fall_back_on_empty_generation(generation):
+    def execute(sql, params=None):
+        if sql == "SELECT to_regprocedure(%s)":
+            return FakeResult(row=("hook",))
+        assert sql == "SELECT rpt.visit_counts_cache_freshness()::text"
+        return FakeResult(row=(generation,))
+
+    with pytest.raises(ValueError, match="no source generation"):
+        engine._artifact_cache_freshness_timestamp(
+            SimpleNamespace(execute=execute), "srp", "visit-counts", view_name="rpt.visit_counts"
+        )
+
+
+def test_declared_freshness_hook_propagates_failure():
+    def execute(sql, params=None):
+        if sql == "SELECT to_regprocedure(%s)":
+            return FakeResult(row=("hook",))
+        raise RuntimeError("source unavailable")
+
+    with pytest.raises(RuntimeError, match="source unavailable"):
+        engine._artifact_cache_freshness_timestamp(
+            SimpleNamespace(execute=execute), "srp", "visit-counts", view_name="rpt.visit_counts"
+        )
+
+
+def test_absent_freshness_hook_preserves_legacy_generation():
+    assert engine._artifact_cache_freshness_timestamp(
+        FakeData(freshness_timestamp="legacy"), "srp", "visit-counts",
+        view_name="rpt.visit_counts",
+    ) == "legacy"
+
+
+def test_freshness_hook_rejects_unsafe_identifier_before_sql():
+    def execute(*args):
+        pytest.fail("unsafe identifier reached database")
+
+    with pytest.raises(ValueError):
+        engine._artifact_cache_freshness_timestamp(
+            SimpleNamespace(execute=execute), "srp", "visit-counts",
+            view_name="rpt.visit_counts; DROP TABLE reports",
+        )
+
+
+@pytest.mark.parametrize("path", ["render", "query", "prewarm"])
+def test_source_generation_changes_cache_key_on_every_path(monkeypatch, path):
+    data = FakeData() if path == "render" else FakeQueryData(cache_scope="shared")
+    original_execute = data.execute
+    generation = ["source-v1"]
+
+    def execute(sql, params=None):
+        if sql == "SELECT to_regprocedure(%s)" and params == ("rpt.visit_counts_cache_freshness()",):
+            return FakeResult(row=("rpt.visit_counts_cache_freshness()",))
+        if sql == "SELECT rpt.visit_counts_cache_freshness()::text":
+            return FakeResult(row=(generation[0],))
+        return original_execute(sql, params)
+
+    data.execute = execute
+    _patch_connections(monkeypatch, data=data)
+    cache = FakeCache()
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=True))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: cache)
+    for version in ("source-v1", "source-v2"):
+        generation[0] = version
+        if path == "render":
+            result = engine.execute_artifact("srp", "visit-counts", behavior="display")
+            assert result["status"] == "success"
+        elif path == "query":
+            engine.execute_artifact_query("srp", "visit-counts", query={"operation": "summary"})
+        else:
+            engine.prewarm_artifact_query_cache("srp", "visit-counts", queries=[{"operation": "summary"}])
+    assert len(cache.set_calls) == 2
+    assert cache.set_calls[0][0] != cache.set_calls[1][0]
+    assert "source-v1" in cache.set_calls[0][0]
+    assert "source-v2" in cache.set_calls[1][0]
 
 
 def test_artifact_query_passes_opaque_json_to_database(monkeypatch):
