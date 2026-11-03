@@ -30,10 +30,18 @@
     "change_class": "client-stack-architecture",
     "change_id": "srpqa-ppp-bootstrap-runtime-20261103",
     "client": "srp",
-    "dependencies": [],
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "tests/test_engine_cache.py",
+        "reason": "declared protected package dependency",
+        "role": "test-engine-cache",
+        "sha256": "54e23110758d6d9020567d787aa392cee172a46548b7c8c9bf02255c64c8a39b"
+      }
+    ],
     "environment": "qa",
     "forbidden_units": [],
-    "generated_at": "2026-11-03T08:39:20Z",
+    "generated_at": "2026-11-03T08:43:55Z",
     "intent": "Enable automatic report bootstrap preparation before Redis lookup, preserving all other QA runtime behavior",
     "operator": "Daniel",
     "package_path": "deployment/packages/srpqa-qbo-canonical-load-status-20261028",
