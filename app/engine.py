@@ -747,35 +747,8 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _prepare_artifact_render(data, view_name: str) -> None:
-    """Run an optional, view-owned bootstrap before consulting rendered caches."""
-    function_name = _safe_view_name(f"{_safe_view_name(view_name)}_prepare")
-    exists = data.execute(
-        "SELECT to_regprocedure(%s)", (f"{function_name}()",)
-    ).fetchone()
-    if exists and exists[0] is not None:
-        # The identifier comes from validated artifact metadata, never a request.
-        # Errors must propagate: serving the old cache would hide a failed build.
-        data.execute(f"SELECT {function_name}()")  # noqa: S608
-
-
-def _artifact_cache_freshness_timestamp(
-    data, client_key: str, artifact_key: str, *, view_name: Optional[str] = None
-) -> Optional[str]:
-    """Resolve an opted-in source generation, otherwise retain legacy freshness."""
-    if view_name is not None:
-        function_name = _safe_view_name(f"{_safe_view_name(view_name)}_cache_freshness")
-        exists = data.execute(
-            "SELECT to_regprocedure(%s)", (f"{function_name}()",)
-        ).fetchone()
-        if exists and exists[0] is not None:
-            # Server-owned metadata supplies the identifier, never query input.
-            # A declared hook must fail closed rather than reuse an older key.
-            row = data.execute(f"SELECT {function_name}()::text").fetchone()  # noqa: S608
-            if row is None or row[0] is None or not str(row[0]).strip():
-                raise ValueError("Artifact freshness hook returned no source generation")
-            return str(row[0])
-
+def _artifact_cache_freshness_timestamp(data, client_key: str, artifact_key: str) -> Optional[str]:
+    """Return an optional client-defined freshness timestamp for cache keys."""
     try:
         exists = data.execute(
             "SELECT to_regprocedure('public.bci_artifact_cache_freshness(text,text)') IS NOT NULL"
@@ -1044,7 +1017,7 @@ def execute_artifact_query(
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
         _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key, view_name=view_name)
+        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
         cache_params = _artifact_query_cache_params(
@@ -1111,7 +1084,7 @@ def prewarm_artifact_query_cache(
     entries: list[tuple[str, Any]] = []
     with get_data_conn() as data:
         _set_authorization_context(data, client_key, None, None)
-        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key, view_name=view_name)
+        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
             if cache_scope != "shared":
@@ -1222,12 +1195,10 @@ def execute_artifact(
             data_query_ms: Optional[float] = None
             render_ms: Optional[float] = None
             data_freshness_timestamp: Optional[str] = None
-            if cacheable_render:
+            if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                    _prepare_artifact_render(data, view_name)
-                    if cache_settings.enabled:
-                        data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key, view_name=view_name)
+                    data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
                 cache_status = "bypass"
