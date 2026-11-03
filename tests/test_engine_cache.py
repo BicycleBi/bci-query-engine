@@ -76,6 +76,8 @@ class FakeData:
         self.platform_corporate_roles = []
 
     def execute(self, sql, params=None):
+        if sql == "SELECT to_regprocedure(%s)" and params[0].endswith("_prepare()"):
+            return FakeResult(row=(None,))
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
@@ -297,6 +299,54 @@ def test_display_cache_hit_skips_data_query(monkeypatch):
     assert result["preview_html"] == "<p>cached</p>"
     assert data.calls == 0
     assert meta.log_params[7] == 4
+
+
+@pytest.mark.parametrize("redis_enabled", [False, True])
+def test_display_prepares_before_cache_and_reads_new_generation(monkeypatch, redis_enabled):
+    events = []
+
+    class PreparedData(FakeData):
+        def execute(self, sql, params=None):
+            if sql == "SELECT to_regprocedure(%s)" and params == ("rpt.visit_counts_prepare()",):
+                return FakeResult(row=("rpt.visit_counts_prepare()",))
+            if sql == "SELECT rpt.visit_counts_prepare()":
+                assert self.authenticated_subjects
+                events.append("prepare")
+                self.freshness_timestamp = "new-generation"
+                return FakeResult(row=(None,))
+            return super().execute(sql, params)
+
+    data = PreparedData()
+    _patch_connections(monkeypatch, data=data)
+    cache = FakeCache(payload=None)
+    original_get = cache.get
+
+    def get(key):
+        assert events == ["prepare"]
+        assert key.endswith(":new-generation")
+        return original_get(key)
+
+    cache.get = get
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=redis_enabled))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: cache)
+    result = engine.execute_artifact("srp", "visit-counts", behavior="display", authenticated_subject="test-user")
+    assert result["status"] == "success"
+    assert events == ["prepare"]
+
+
+def test_prepare_failure_does_not_serve_old_render(monkeypatch):
+    _patch_connections(monkeypatch)
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=True))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: pytest.fail("must not consult cache after failed prepare"))
+
+    def fail(data, view_name):
+        raise RuntimeError("bootstrap failed")
+
+    monkeypatch.setattr(engine, "_prepare_artifact_render", fail)
+    result = engine.execute_artifact("srp", "visit-counts", behavior="display")
+    assert result["status"] == "error"
+    assert result["error_message"] == "bootstrap failed"
+    assert "preview_html" not in result
 
 
 def test_display_cache_key_includes_data_freshness_timestamp(monkeypatch):
