@@ -747,6 +747,18 @@ def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _prepare_artifact_render(data, view_name: str) -> None:
+    """Run an optional, view-owned bootstrap before consulting rendered caches."""
+    function_name = _safe_view_name(f"{_safe_view_name(view_name)}_prepare")
+    exists = data.execute(
+        "SELECT to_regprocedure(%s)", (f"{function_name}()",)
+    ).fetchone()
+    if exists and exists[0] is not None:
+        # The identifier comes from validated artifact metadata, never a request.
+        # Errors must propagate: serving the old cache would hide a failed build.
+        data.execute(f"SELECT {function_name}()")  # noqa: S608
+
+
 def _artifact_cache_freshness_timestamp(data, client_key: str, artifact_key: str) -> Optional[str]:
     """Return an optional client-defined freshness timestamp for cache keys."""
     try:
@@ -1195,10 +1207,12 @@ def execute_artifact(
             data_query_ms: Optional[float] = None
             render_ms: Optional[float] = None
             data_freshness_timestamp: Optional[str] = None
-            if cacheable_render and cache_settings.enabled:
+            if cacheable_render:
                 with get_data_conn() as data:
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                    data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+                    _prepare_artifact_render(data, view_name)
+                    if cache_settings.enabled:
+                        data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if not cacheable_render:
                 cache_status = "bypass"
