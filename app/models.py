@@ -170,6 +170,7 @@ class ArtifactQueryCachePrewarmResponse(BaseModel):
     artifact_key: str
     status: str
     entry_count: int
+    refresh_mode: Optional[str] = None
 
 
 class ArtifactExecutionResponse(BaseModel):
