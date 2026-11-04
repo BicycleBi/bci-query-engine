@@ -1,0 +1,21 @@
+schema_version: 1
+client: srp
+environment: dev
+source_repo: .
+source_commit: b9d6e35c8323fc66518fc35d6ed877ed94d2589b
+
+targets:
+  stack_dir: /home/shared/bci-clients/srpdev
+  compose_project: srpdev
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Persistent load-bound query-cache generations for Practice Performance Pulse
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
