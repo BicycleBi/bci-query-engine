@@ -2,7 +2,7 @@ schema_version: 1
 client: srp
 environment: dev
 source_repo: .
-source_commit: b9d6e35c8323fc66518fc35d6ed877ed94d2589b
+source_commit: HEAD
 
 targets:
   stack_dir: /home/shared/bci-clients/srpdev
