@@ -1,0 +1,102 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "aaf38d5a43a383e595a33714beb207acc214444fa5f9e0ac9be7471949aed859"
+      },
+      {
+        "operation": "replace",
+        "path": "bci_redis_cache/cache.py",
+        "role": "cache",
+        "sha256": "c0f24bdebf5da82518d985307acbb03249460e1304103e16ee6f636a272f5b44"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-ppp-cache-generation-20261105.yml",
+        "role": "qa-srp-ppp-cache-generation-20261105",
+        "sha256": "f65d50b5afa1034ca8a27d97f90dc6d61e69509a256f8c65c5bba0538ca7b0ea"
+      }
+    ],
+    "approver": "Daniel",
+    "baseline_commit": "16b38d975bb0682299a6940629dbbb2b9bb28bc1",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "5b2bfa726192ffa04fb93febaa48eb21ee1992c8",
+      "source_ref": "refs/heads/codex/ppp-query-cache-ttl-qa-20261105",
+      "target_commit": "16b38d975bb0682299a6940629dbbb2b9bb28bc1",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-ppp-cache-generation-20261105",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "tests/test_cache.py",
+        "reason": "declared protected package dependency",
+        "role": "test-cache",
+        "sha256": "625f62fb95f2d7bd2d6503a1ea588f0ef8fcfa52bcb6c1141c75461143a1b0ca"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_engine_cache.py",
+        "reason": "declared protected package dependency",
+        "role": "test-engine-cache",
+        "sha256": "a8b5ed54876deb853ba89a49cb3aa463a6f215927d636dc9a2447af62fec1514"
+      },
+      {
+        "operation": "validate-only",
+        "path": "docs/handoffs/ppp-per-artifact-cache-ttl-2026-11-05.md",
+        "reason": "declared protected package dependency",
+        "role": "ppp-per-artifact-cache-ttl-2026-11-05",
+        "sha256": "fd56f2ac1038e21ed99cb00f902947cc14682cadcc486769e04a5cd8c27a016d"
+      }
+    ],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-11-05T08:06:32Z",
+    "intent": "Enable PPP persistent atomic prewarm while preserving other reports default cache policy",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srpqa-ppp-cache-generation-20261105",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "5b2bfa726192ffa04fb93febaa48eb21ee1992c8",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-ppp-cache-20261105"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Preserve the shared cache default while enabling PPP's persistent atomic prewarm generation.",
+      "release_id": "srp-qa-ppp-cache-generation-20261105",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "5b2bfa726192ffa04fb93febaa48eb21ee1992c8",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-ppp-cache-20261105",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
