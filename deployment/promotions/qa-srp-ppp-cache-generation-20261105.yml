@@ -1,0 +1,19 @@
+schema_version: 1
+client: srp
+environment: qa
+source_repo: /home/shared/repos/bci-query-engine-promote-qa-ppp-cache-20261105
+source_commit: HEAD
+targets:
+  stack_dir: /home/shared/bci-clients/srpqa
+  compose_project: srpqa
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    release_id: srp-qa-ppp-cache-generation-20261105
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Preserve the shared cache default while enabling PPP's persistent atomic prewarm generation.
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine

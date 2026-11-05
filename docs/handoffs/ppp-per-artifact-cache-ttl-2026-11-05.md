@@ -8,6 +8,7 @@ Status: source implementation in progress; no environment mutation or promotion 
 | --- | --- | --- | --- | --- |
 | QE-PPP-TTL-1 | 2026-11-05, current Codex PPP QA cache chat | “so can we change the query engine so that it keeps the default but we can overwrite that default in a setting per report?” | Permit an artifact-owned query-cache TTL override while retaining the runtime default for artifacts without a setting. | Question proposing a design, not implementation authority. |
 | QE-PPP-TTL-2 | 2026-11-05, current Codex PPP QA cache chat | “lets do that” | Implement QE-PPP-TTL-1, allow PPP's existing policy to request no expiry, and replace stale PPP entries after a completed load. | Explicit implementation request. |
+| QE-PPP-TTL-3 | 2026-11-05, current Codex PPP migration chat | “okay migrate this plus jeanres changes to qa” | Include the QA-reconciled Query Engine cache-generation dependency in the PPP QA release, without changing other reports' TTL defaults. | QA migration request. |
 
 The previously requested PPP full-set filter cache remains the consumer. This change does not alter SQL metrics, other reports' TTL, the global default, schedules, deployment policy, or runtime configuration.
 
@@ -20,6 +21,8 @@ The previously requested PPP full-set filter cache remains the consumer. This ch
 | `bci_redis_cache/cache.py` cache write and scoped replacement | QE-PPP-TTL-2 | Interpret a selected TTL of zero as no expiration and atomically replace only this artifact's query entries after the replacement values are ready. |
 | Focused cache and engine tests | QE-PPP-TTL-2 | Verify default fallback, PPP-like override, no-expiry write, and prewarm replacement using synthetic fixtures. |
 | `codex/per-artifact-query-cache-ttl-20261105` worktree/branch | QE-PPP-TTL-2 | Isolate this change from unrelated Query Engine work. |
+| `deployment/promotions/qa-srp-ppp-cache-generation-20261105.yml` | QE-PPP-TTL-3 | Governed QA Query Engine runtime member required for PPP's persistent atomic cache generation. |
+| QA protected package and source/handoff refs | QE-PPP-TTL-3 | Bind exact source, baseline, hashes, and runtime validation for QA. |
 
 Excluded: global TTL/configuration changes, other cache types, other artifacts' policy sources, SQL metrics, periodic jobs, promotion policy, and environment mutations.
 
