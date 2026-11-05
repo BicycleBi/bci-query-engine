@@ -16,6 +16,7 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
+from .report_snapshot import get_copied_report
 from .facility_reporting import get_facility_report
 from .distribution_reporting import get_distribution_report
 from .analytics import get_analytics_reporting_config
@@ -583,7 +584,7 @@ def access_summary(
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     require_client_access(identity, client_key)
-    if artifact_key != "usage-monitoring-dashboard":
+    if artifact_key != "usage-monitoring-dashboard" and not (client_key == "srp" and artifact_key == "client-access-distribution-report"):
         raise HTTPException(404, "Access summary is unavailable for this artifact")
     if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
         raise HTTPException(400, "Invalid reporting period, search, or offset")
@@ -595,8 +596,15 @@ def access_summary(
     is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "access")
     effective_audience = audience if is_bicycle_admin else client_key
     response.headers["Cache-Control"] = "no-store"
+    if artifact_key == "client-access-distribution-report" and (perspective not in {"users", "artifacts"} or effective_audience != "srp"):
+        raise HTTPException(400, "Invalid SRP report perspective or audience")
     try:
-        if perspective:
+        copied = None
+        if artifact_key == "client-access-distribution-report":
+            copied = get_copied_report('access-' + perspective, search=search, offset=offset)
+        if copied is not None:
+            result = copied
+        elif perspective:
             result = get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=effective_audience)
         else:
             result = get_access_summary(client_key=client_key, days=days, search=search, offset=offset, audience=effective_audience)
@@ -618,7 +626,8 @@ def distribution_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        return get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        copied = get_copied_report('distributions', search=search, facility=facility, result=result, offset=offset)
+        return copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
     except ValueError:
         raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
     except Exception:
@@ -637,7 +646,8 @@ def facility_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        return get_facility_report(search=search, status=status, offset=offset)
+        copied = get_copied_report('facilities', search=search, status=status, offset=offset)
+        return copied if copied is not None else get_facility_report(search=search, status=status, offset=offset)
     except ValueError:
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
