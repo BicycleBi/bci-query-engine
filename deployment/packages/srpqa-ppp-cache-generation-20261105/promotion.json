@@ -1,0 +1,128 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "bf186ee5af9da693291aeddaffd4b37f5ca6fd1e2b4a1a5d6e1542f12d2d3926"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "9a0fc6ba36099d84b41f242004d4929b1b45682caf38ff9f1ca3fed3319a4573"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "c133709ceb0392797d7d008759f246f93570371535317386bb9a131c5572cf90"
+      },
+      {
+        "operation": "replace",
+        "path": "bci_redis_cache/cache.py",
+        "role": "cache",
+        "sha256": "467724e38a499262313e92c8a0c863e7f4f937cc9e8d911adef44dd9c45701a0"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-ppp-cache-generation-20261105.yml",
+        "role": "qa-srp-ppp-cache-generation-20261105",
+        "sha256": "5fe56a1c9d80a43faf92fa4e8de3862399927a37c50fb071284a68076687422a"
+      }
+    ],
+    "approver": "Daniel",
+    "baseline_commit": "16b38d975bb0682299a6940629dbbb2b9bb28bc1",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "ca08b020db417a840beedb0fa1a15e4276970f3e",
+      "source_ref": "refs/heads/codex/ppp-jeanre-cache-qa-20261105",
+      "target_commit": "16b38d975bb0682299a6940629dbbb2b9bb28bc1",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-ppp-cache-generation-20261105",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "README.md",
+        "reason": "declared protected package dependency",
+        "role": "runtime-contract",
+        "sha256": "cf0f00330c53dbc90d5cc1c9cc3fc0f7e40624801a717cb31be573c9ab3d9e95"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_engine_cache.py",
+        "reason": "declared protected package dependency",
+        "role": "test-engine-cache",
+        "sha256": "fe35b3372ad5a443900e625a5789163a4cf0114ec6e34437957bb6d20a83ff44"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_main_auth.py",
+        "reason": "declared protected package dependency",
+        "role": "test-main-auth",
+        "sha256": "ed95d4a8fe5b6bcf2a7b8ca021e34019f17988908b414b9a67b2d29ed60c580d"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_redis_cache_adapter.py",
+        "reason": "declared protected package dependency",
+        "role": "test-redis-cache-adapter",
+        "sha256": "70ad0ddf2b1f87de67b768edf15da9dab08caa434dc8dae2d603dbeba996d8c1"
+      },
+      {
+        "operation": "validate-only",
+        "path": "docs/handoffs/ppp-jeanre-cache-generation-qa-2026-11-05.md",
+        "reason": "declared protected package dependency",
+        "role": "ppp-jeanre-cache-generation-qa-2026-11-05",
+        "sha256": "064296c0f0e664deb43d386d81cc33909e31649992cdfbe05b03a01502f5f834"
+      }
+    ],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-11-05T08:37:02Z",
+    "intent": "Carry Jeanre's completed-load query-cache generations to SRP QA",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srpqa-ppp-cache-generation-20261105",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "ca08b020db417a840beedb0fa1a15e4276970f3e",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-ppp-cache-20261105"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Carry Jeanre's completed-load query-cache generation runtime to SRP QA.",
+      "release_id": "srp-qa-ppp-cache-generation-20261105",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "ca08b020db417a840beedb0fa1a15e4276970f3e",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-qa-ppp-cache-20261105",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
