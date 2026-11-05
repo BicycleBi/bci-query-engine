@@ -81,7 +81,12 @@ from .monitoring import (
     start_gateway_listener,
     stop_gateway_listener,
 )
-from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
+from .usage_access import (
+    get_access_summary,
+    get_access_matrix,
+    get_home_artifact_keys,
+    require_analytics_reporting_access,
+)
 
 _delivery_worker_started = False
 _data_load_action_worker_started = False
@@ -608,6 +613,8 @@ def access_summary(
             result = get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=effective_audience)
         else:
             result = get_access_summary(client_key=client_key, days=days, search=search, offset=offset, audience=effective_audience)
+        if artifact_key == "client-access-distribution-report":
+            result["home_artifact_keys"] = get_home_artifact_keys(client_key)
         result["allowed_audiences"] = ["all", client_key, "bicycle"] if is_bicycle_admin else [client_key]
         return result
     except Exception:

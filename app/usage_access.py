@@ -4,7 +4,27 @@ from typing import Any
 
 from fastapi import HTTPException
 from .analytics import get_analytics_reporting_config
-from .db import get_metadata_conn
+from .db import get_data_conn, get_metadata_conn
+
+
+def get_home_artifact_keys(client_key: str) -> list[str]:
+    """Return active artifacts with a usable link in the existing Home registry."""
+    with get_data_conn() as conn:
+        conn.execute('SET TRANSACTION READ ONLY')
+        conn.execute("SET LOCAL statement_timeout = '5s'")
+        rows = conn.execute(
+            """
+            SELECT artifact_key
+            FROM public.home_artifact_components
+            WHERE client_key = %s
+              AND home_artifact_key = 'home'
+              AND card_state = 'active'
+              AND NULLIF(btrim(component_json->>'href'), '') IS NOT NULL
+            ORDER BY artifact_key
+            """,
+            (client_key,),
+        ).fetchall()
+    return [row[0] for row in rows]
 
 def require_analytics_reporting_access(identity: dict[str, Any], client_key: str, report: str) -> bool:
     """Require a live report-specific grant and return whether the viewer is a Bicycle admin."""
