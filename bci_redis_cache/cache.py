@@ -57,10 +57,35 @@ class RedisCache:
         return value
 
     def set(self, key: str, value: dict[str, Any], ttl_seconds: int = 3600) -> None:
-        self.redis.set(key, json.dumps(value, sort_keys=True, default=str), ex=ttl_seconds)
+        if ttl_seconds < 0:
+            raise ValueError("Cache TTL must not be negative")
+        encoded = json.dumps(value, sort_keys=True, default=str)
+        if ttl_seconds == 0:
+            self.redis.set(key, encoded)
+        else:
+            self.redis.set(key, encoded, ex=ttl_seconds)
 
     def invalidate_pattern(self, pattern: str) -> int:
         removed = 0
         for key in self.redis.scan_iter(match=pattern):
             removed += int(self.redis.delete(key))
         return removed
+
+    def replace_pattern(
+        self, pattern: str, entries: list[tuple[str, dict[str, Any]]],
+        *, ttl_seconds: int,
+    ) -> None:
+        """Publish a prepared artifact query generation in one Redis transaction."""
+        if ttl_seconds < 0:
+            raise ValueError("Cache TTL must not be negative")
+        old_keys = list(self.redis.scan_iter(match=pattern))
+        with self.redis.pipeline(transaction=True) as transaction:
+            if old_keys:
+                transaction.delete(*old_keys)
+            for key, value in entries:
+                encoded = json.dumps(value, sort_keys=True, default=str)
+                if ttl_seconds == 0:
+                    transaction.set(key, encoded)
+                else:
+                    transaction.set(key, encoded, ex=ttl_seconds)
+            transaction.execute()

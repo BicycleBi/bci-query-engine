@@ -886,6 +886,11 @@ def _query_cache_scope_function_name(view_name: str) -> str:
     return _safe_view_name(f"{_safe_view_name(view_name)}_query_cache_scope")
 
 
+def _query_cache_policy_function_name(view_name: str) -> str:
+    """Return the optional database-owned query-cache policy contract."""
+    return _safe_view_name(f"{_safe_view_name(view_name)}_query_cache_policy")
+
+
 def _serialized_artifact_query(query: dict[str, Any]) -> str:
     if not isinstance(query, dict):
         raise ValueError("Artifact query must be a JSON object")
@@ -913,6 +918,30 @@ def _artifact_query_cache_scope(data, view_name: str, serialized_query: str) -> 
     if scope not in {"identity", "shared"}:
         raise ValueError(f"Artifact query cache scope is invalid: {scope or '<empty>'}")
     return scope
+
+
+def _artifact_query_cache_policy(
+    data, view_name: str, default_ttl: int,
+) -> tuple[int, Optional[str]]:
+    """Resolve an artifact-owned query-cache policy, preserving the default."""
+    policy_function = _query_cache_policy_function_name(view_name)
+    function_exists = data.execute(
+        "SELECT to_regprocedure(%s)",
+        (f"{policy_function}()",),
+    ).fetchone()[0]
+    if function_exists is None:
+        return default_ttl, None
+    row = data.execute(f"SELECT {policy_function}()", ()).fetchone()  # noqa: S608
+    policy = row[0] if row else None
+    if not isinstance(policy, dict):
+        raise ValueError("Artifact query cache policy must return a JSON object")
+    ttl = policy.get("ttl_seconds", default_ttl)
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
+        raise ValueError("Artifact query cache ttl_seconds must be a non-negative integer")
+    refresh_mode = policy.get("refresh_mode")
+    if refresh_mode not in {None, "prewarm_swap"}:
+        raise ValueError("Artifact query cache refresh_mode is invalid")
+    return ttl, refresh_mode
 
 
 def _artifact_query_cache_params(
@@ -1020,6 +1049,10 @@ def execute_artifact_query(
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
+        cache_ttl = (
+            _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)[0]
+            if cache else cache_settings.ttl_seconds
+        )
         cache_params = _artifact_query_cache_params(
             query=query,
             freshness=freshness,
@@ -1048,7 +1081,7 @@ def execute_artifact_query(
 
         if cache and cache_key:
             try:
-                cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+                cache.set(cache_key, result, ttl_seconds=cache_ttl)
             except Exception:
                 pass
         return result
@@ -1085,6 +1118,9 @@ def prewarm_artifact_query_cache(
     with get_data_conn() as data:
         _set_authorization_context(data, client_key, None, None)
         freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        cache_ttl, refresh_mode = _artifact_query_cache_policy(
+            data, view_name, cache_settings.ttl_seconds,
+        )
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
             if cache_scope != "shared":
@@ -1098,16 +1134,23 @@ def prewarm_artifact_query_cache(
             cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params)
             entries.append((cache_key, result))
 
-    cache.invalidate_pattern(f"bci:cache:{client_key}:{artifact_key}:artifact-query:*")
-    for cache_key, result in entries:
-        cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+    pattern = f"bci:cache:{client_key}:{artifact_key}:artifact-query:*"
+    if refresh_mode == "prewarm_swap":
+        cache.replace_pattern(pattern, entries, ttl_seconds=cache_ttl)
+    else:
+        cache.invalidate_pattern(pattern)
+        for cache_key, result in entries:
+            cache.set(cache_key, result, ttl_seconds=cache_ttl)
 
-    return {
+    receipt = {
         "client_key": client_key,
         "artifact_key": artifact_key,
         "status": "prewarmed",
         "entry_count": len(entries),
     }
+    if refresh_mode is not None:
+        receipt["refresh_mode"] = refresh_mode
+    return receipt
 
 
 def execute_artifact(
