@@ -655,6 +655,7 @@ def list_artifact_distribution_groups(
 @app.post(
     "/internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm",
     response_model=ArtifactQueryCachePrewarmResponse,
+    response_model_exclude_none=True,
 )
 def prewarm_artifact_data_cache(
     client_key: str,
