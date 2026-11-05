@@ -15,7 +15,9 @@ def _load_main(monkeypatch):
     monkeypatch.setenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", "bci-client")
     monkeypatch.setenv("SERVICE_TOKEN", "test-service-token")
     sys.modules.pop("app.main", None)
-    return importlib.import_module("app.main")
+    module = importlib.import_module("app.main")
+    monkeypatch.setattr(module, "get_copied_report", lambda *args, **kwargs: None)
+    return module
 
 
 def _encode_token(payload, secret="test-secret"):
