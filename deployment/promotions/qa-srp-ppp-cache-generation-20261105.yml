@@ -12,7 +12,7 @@ service_runtime:
     service: query-engine
     release_id: srp-qa-ppp-cache-generation-20261105
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: Preserve the shared cache default while enabling PPP's persistent atomic prewarm generation.
+    purpose: Carry Jeanre's completed-load query-cache generation runtime to SRP QA.
 validate:
   - type: compose-config
   - type: service-health
