@@ -41,6 +41,9 @@ def get_copied_report(section, *, search='', facility='', result='', status='', 
         records = [r for r in records if (not q or q in ' '.join([r['report_name'],r['artifact_key'],r['recipient_email'],*r['facilities']]).casefold())
                    and (not facility or facility in r['facilities']) and (not result or r['result'] == result)]
     else:
+        if not any(source.get('source') == 'facilities' and source.get('status') == 'available' for source in payload.get('sources', [])):
+            raise RuntimeError('Copied facility roster unavailable')
+        records = [r for r in records if 'facilities' in r.get('sources', [])]
         records = [r for r in records if (not q or q in ' '.join([r['facility_name'], r['facility_key'], *r['entity_codes']]).casefold()) and (
             not status or status == 'exceptions' and any(x != 'approval_not_confirmed' for x in r['exceptions']) or
             status == 'no_data' and r['operational_data'] == 'no_data' or

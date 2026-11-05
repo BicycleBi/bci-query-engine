@@ -206,3 +206,15 @@ def test_reference_only_facility_is_preserved_and_ambiguous_name_not_arbitrarily
     assert len(rows)==3
     assert sum(len(r['references']) for r in rows)==1
     assert next(r for r in rows if r['references'])['facility_ids']==[]
+
+
+def test_report_roster_excludes_mapping_excel_and_orphan_facilities(monkeypatch):
+    monkeypatch.setattr(reporting,'get_analytics_reporting_config',lambda client:type('Config',(),{'admin_role':'example-admin'})())
+    data=sources(facilities=[('1','Both'),('2','One'),('3','Neither')],appointments=[('1',),('2',),('99',)],claims=[('1',)],weekly_mapping=[('Mapping only',True,True,True)],pnl_entities=[('accounting','Accounting only')])
+    relations={relation:data[name] for name,relation,_ in reporting.SOURCES}
+    monkeypatch.setattr(reporting,'_read',lambda factory,relation,query,*args:relations.get(relation,[]))
+    result=reporting.get_facility_report()
+    assert result['total']==3
+    assert {r['facility_name']:r['operational_data'] for r in result['rows']}=={'Both':'available','One':'partial','Neither':'no_data'}
+    relations['public.srp_core_facility']=None
+    with pytest.raises(RuntimeError):reporting.get_facility_report()
