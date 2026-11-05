@@ -79,3 +79,19 @@ def test_denied_viewer_never_reads_snapshot(monkeypatch):
     client=TestClient(main.app)
     for section in ('access-summary?perspective=users&audience=srp','distribution-summary','facility-summary'):
         assert client.get('/artifacts/srp/client-access-distribution-report/'+section,headers=_auth_headers(_token('srp'))).status_code==403
+
+
+def test_copied_facilities_uses_only_current_roster(monkeypatch):
+    rows=[dict(facility_name='Example '+str(i),facility_key='ecw:'+str(i),entity_codes=[],sources=['facilities'],operational_data='no_data',approved=None) for i in range(55)]
+    rows.append(dict(facility_name='Excel only',facility_key='name:Excel only',entity_codes=[],sources=['facility_reference']))
+    docs=documents(rows,'facilities')
+    for key,payload,*_ in docs:
+        if key=='facilities':payload['sources']=[dict(source='facilities',status='available')]
+    bind(monkeypatch,docs)
+    assert m.get_copied_report('facilities')['total']==55
+    assert len(m.get_copied_report('facilities',offset=50)['rows'])==5
+    assert m.get_copied_report('facilities',search='Excel only')['total']==0
+    for key,payload,*_ in docs:
+        if key=='facilities':payload['sources'][0]['status']='unavailable'
+    bind(monkeypatch,docs)
+    with pytest.raises(RuntimeError):m.get_copied_report('facilities')

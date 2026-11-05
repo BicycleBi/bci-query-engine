@@ -318,9 +318,9 @@ def get_facility_report(*, search='', status='', offset=0):
     except Exception:
         data['recipient_registry'] = None
     sources.append(dict(source='recipient_registry',status='unavailable' if data['recipient_registry'] is None else 'available'))
-    if not any(data.get(name) is not None for name in ('facilities','weekly_mapping','pnl_entities','facility_approval')):
+    if data.get('facilities') is None:
         raise RuntimeError('Facility inventory sources unavailable')
-    rows = build_inventory(data)
+    rows = [row for row in build_inventory(data) if 'facilities' in row['sources']]
     approval_status = 'not_confirmed' if any(r['approved'] is None for r in rows) or not data.get('facility_approval') else 'available'
     query = search.strip().casefold()
     rows = [row for row in rows if (not query or query in ' '.join([row['facility_name'],row['facility_key'],*row['entity_codes']]).casefold()) and (
