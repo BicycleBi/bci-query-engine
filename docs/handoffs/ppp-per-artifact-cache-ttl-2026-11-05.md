@@ -1,6 +1,6 @@
 # PPP per-artifact query-cache TTL — 2026-11-05
 
-Status: source implementation in progress; no environment mutation or promotion authorized by this record.
+Status: superseded for the SRP QA release. The separate implementation in `b912a79` was reverted after the user challenged its necessity. The QA release must use Jeanre's `b9d6e35` load-bound generation implementation instead. This file preserves the prior proposal and does not authorize promotion.
 
 ## Chat agreement record
 

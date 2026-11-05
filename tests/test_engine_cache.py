@@ -110,7 +110,6 @@ class FakeCache:
         self.fail_get = fail_get
         self.set_calls = []
         self.invalidated_patterns = []
-        self.replacements = []
 
     @staticmethod
     def build_key(client_key, artifact_key, cache_type, params):
@@ -141,9 +140,6 @@ class FakeCache:
     def invalidate_pattern(self, pattern):
         self.invalidated_patterns.append(pattern)
         return 0
-
-    def replace_pattern(self, pattern, entries, *, ttl_seconds):
-        self.replacements.append((pattern, entries, ttl_seconds))
 
 
 @contextmanager
@@ -479,12 +475,10 @@ def test_query_function_name_follows_the_render_view_contract():
 
 
 class FakeQueryData(FakeData):
-    def __init__(self, *, contract_exists=True, cache_scope=None, cache_policy=None,
-                 result=None, **kwargs):
+    def __init__(self, *, contract_exists=True, cache_scope=None, result=None, **kwargs):
         super().__init__(**kwargs)
         self.contract_exists = contract_exists
         self.cache_scope = cache_scope
-        self.cache_policy = cache_policy
         self.result = result if result is not None else {"rows": [], "total_count": 0}
         self.query_payloads = []
 
@@ -512,17 +506,9 @@ class FakeQueryData(FakeData):
                     if self.cache_scope is not None
                     else (None,)
                 )
-            if str(params[0]).endswith("_query_cache_policy()"):
-                return FakeResult(
-                    row=("rpt.visit_counts_query_cache_policy()",)
-                    if self.cache_policy is not None
-                    else (None,)
-                )
             return FakeResult(row=("rpt.visit_counts_query(jsonb)",) if self.contract_exists else (None,))
         if "SELECT rpt.visit_counts_query_cache_scope" in sql:
             return FakeResult(row=(self.cache_scope,))
-        if "SELECT rpt.visit_counts_query_cache_policy" in sql:
-            return FakeResult(row=(self.cache_policy,))
         if "SELECT rpt.visit_counts_query" in sql:
             self.calls += 1
             self.query_payloads.append(params[0])
@@ -604,41 +590,6 @@ def test_shared_artifact_query_cache_key_is_not_identity_scoped(monkeypatch):
     assert fake_cache.set_calls[0][2] == 42
 
 
-def test_artifact_query_uses_its_declared_zero_ttl_without_changing_default(monkeypatch):
-    data = FakeQueryData(cache_scope="shared", cache_policy={"ttl_seconds": 0})
-    _patch_connections(monkeypatch, data=data)
-    fake_cache = FakeCache(payload=None)
-    monkeypatch.setattr(
-        cache_module,
-        "get_cache_settings",
-        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
-    )
-    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
-
-    engine.execute_artifact_query("srp", "visit-counts", query={"operation": "summary"})
-
-    assert fake_cache.set_calls[0][2] == 0
-
-
-@pytest.mark.parametrize("policy", [{"ttl_seconds": -1}, {"ttl_seconds": "0"},
-                                     {"ttl_seconds": True}, []])
-def test_artifact_query_rejects_invalid_ttl_policy(monkeypatch, policy):
-    data = FakeQueryData(cache_policy=policy)
-    _patch_connections(monkeypatch, data=data)
-    fake_cache = FakeCache(payload=None)
-    monkeypatch.setattr(
-        cache_module,
-        "get_cache_settings",
-        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
-    )
-    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
-
-    with pytest.raises(ValueError, match="query cache (policy|ttl_seconds)"):
-        engine.execute_artifact_query("srp", "visit-counts", query={"operation": "summary"})
-
-    assert fake_cache.set_calls == []
-
-
 def test_prewarm_builds_declared_shared_query_entries(monkeypatch):
     data = FakeQueryData(
         cache_scope="shared",
@@ -681,43 +632,6 @@ def test_prewarm_builds_declared_shared_query_entries(monkeypatch):
     )
 
     assert fake_cache.set_calls[1][0] == prewarmed_key
-
-
-def test_prewarm_replaces_prior_artifact_entries_with_nonexpiring_policy(monkeypatch):
-    data = FakeQueryData(
-        cache_scope="shared",
-        cache_policy={"ttl_seconds": 0, "refresh_mode": "prewarm_swap"},
-        result={"rows": []},
-    )
-    _patch_connections(monkeypatch, data=data)
-    fake_cache = FakeCache(payload=None)
-    monkeypatch.setattr(
-        cache_module,
-        "get_cache_settings",
-        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
-    )
-    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
-
-    result = engine.prewarm_artifact_query_cache(
-        "srp", "visit-counts", queries=[{"operation": "summary"}],
-    )
-
-    assert result["status"] == "prewarmed"
-    assert fake_cache.invalidated_patterns == []
-    assert fake_cache.replacements == [(
-        "bci:cache:srp:visit-counts:artifact-query:*",
-        [(fake_cache.build_key(
-            "srp", "visit-counts", "artifact-query",
-            {
-                "cache_version": 3,
-                "cache_scope": "shared",
-                "data_freshness_timestamp": None,
-                "query": {"operation": "summary"},
-            },
-        ), {"rows": []})],
-        0,
-    )]
-    assert result["refresh_mode"] == "prewarm_swap"
 
 
 def test_prewarm_rejects_identity_scoped_query(monkeypatch):
