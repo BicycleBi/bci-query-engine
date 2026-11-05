@@ -23,6 +23,7 @@ The previously requested PPP full-set filter cache remains the consumer. This ch
 | `codex/per-artifact-query-cache-ttl-20261105` worktree/branch | QE-PPP-TTL-2 | Isolate this change from unrelated Query Engine work. |
 | `deployment/promotions/qa-srp-ppp-cache-generation-20261105.yml` | QE-PPP-TTL-3 | Governed QA Query Engine runtime member required for PPP's persistent atomic cache generation. |
 | QA protected package and source/handoff refs | QE-PPP-TTL-3 | Bind exact source, baseline, hashes, and runtime validation for QA. |
+| `deployment/packages/srpqa-ppp-cache-generation-20261105/promotion.json` | QE-PPP-TTL-3 | Immutable protected runtime package for the exact QA cache-generation change. |
 
 Excluded: global TTL/configuration changes, other cache types, other artifacts' policy sources, SQL metrics, periodic jobs, promotion policy, and environment mutations.
 
