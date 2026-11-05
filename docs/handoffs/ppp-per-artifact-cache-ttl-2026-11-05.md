@@ -31,10 +31,19 @@ Excluded: global TTL/configuration changes, other cache types, other artifacts' 
 - Base: `origin/main` at `9adc72095420066c43485a6654790890c9b376de`
 - Cleanup condition: retain until this correction is committed, reviewed through its own lifecycle, and present in the intended runtime.
 
+The implementation was committed and pushed on the main-based source branch at
+`a70e3bd253aa8e668a6281c035e9d14c80a67781`; it was **not merged to main**.
+For QA, the same change was reconciled separately onto `origin/qa`
+`16b38d975bb0682299a6940629dbbb2b9bb28bc1` and pushed as
+`codex/ppp-query-cache-ttl-qa-20261105` at
+`b912a7946dd0c4feb649329b9d3db4600d866cff`. No PR, merge, or runtime
+promotion has occurred.
+
 ## Local validation
 
 - Focused cache/engine tests: 31 passed.
 - Full Query Engine suite: 215 passed when the installed HTTP library is imported before test stubs. The ordinary invocation has a pre-existing test-import-order issue causing four unrelated failures; those tests pass separately.
+- QA-reconciled Query Engine suite: 194 passed with the same HTTP-library import ordering.
 - Default behavior: positive runtime TTL remains unchanged when no artifact policy exists.
 - PPP-style policy: `ttl_seconds: 0` writes no Redis expiry; `prewarm_swap` publishes prepared entries with a scoped Redis transaction and returns that receipt.
 - No live service or database was changed or queried.
