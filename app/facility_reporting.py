@@ -80,6 +80,81 @@ SOURCES = [
 ]
 
 
+def attach_copied_facility_access(payload, access_payload):
+    """Enrich a copied Facilities snapshot from its matching copied access rows.
+
+    Dev review uses one inert Production report-output snapshot.  Joining that
+    snapshot to live Dev users would mix environments, so the copied user
+    grants are intersected only with the current structural role/entity map.
+    """
+    rows = payload.get('rows') if isinstance(payload, dict) else None
+    access_rows = access_payload.get('rows') if isinstance(access_payload, dict) else None
+    sources = payload.setdefault('sources', []) if isinstance(payload, dict) else []
+    try:
+        role_scope = _read(get_data_conn, 'public.srp_qbo_pnl_role_facility_scope', """
+          SELECT scope_role_key, entity_code
+          FROM public.srp_qbo_pnl_role_facility_scope
+          WHERE active
+          ORDER BY scope_role_key, entity_code
+        """)
+    except Exception:
+        role_scope = None
+    status = 'available' if role_scope is not None and isinstance(rows, list) and isinstance(access_rows, list) else 'unavailable'
+    sources[:] = [source for source in sources if source.get('source') not in {'pnl_role_scope', 'pnl_user_roles'}]
+    sources.extend([
+        {'source': 'pnl_role_scope', 'status': 'unavailable' if role_scope is None else 'available'},
+        {'source': 'pnl_user_roles', 'status': status},
+    ])
+    if status != 'available':
+        for row in rows or []:
+            row['user_access_status'] = 'unavailable'
+            row['user_access'] = []
+        return payload
+
+    role_entities = defaultdict(set)
+    for role, entity in role_scope:
+        role_entities[str(role)].add(str(entity))
+    scoped_users = defaultdict(dict)
+    for subject in access_rows:
+        if not subject.get('active'):
+            continue
+        username = str(subject.get('username') or '').strip()
+        display_name = str(subject.get('display_name') or username).strip()
+        if not username:
+            continue
+        for match in subject.get('matches') or []:
+            if (match.get('artifact_key') != 'practice-owner-profit-loss-report'
+                    or not match.get('artifact_active')
+                    or not (match.get('can_view') or match.get('can_run'))):
+                continue
+            for detail in match.get('details') or []:
+                role = str(detail.get('role') or '')
+                basis = ('Via group: ' + str(detail.get('group'))
+                         if detail.get('source') == 'group' and detail.get('group')
+                         else 'Direct assignment')
+                for entity in role_entities.get(role, set()):
+                    key = username.casefold()
+                    user = scoped_users[entity].setdefault(key, {
+                        'display_name': display_name,
+                        'username': username,
+                        'artifact_key': 'practice-owner-profit-loss-report',
+                        'available_from_home': False,
+                        'access_bases': [],
+                    })
+                    if basis not in user['access_bases']:
+                        user['access_bases'].append(basis)
+    for row in rows:
+        users = {}
+        for entity in row.get('entity_codes') or []:
+            users.update(scoped_users.get(str(entity), {}))
+        row['user_access_status'] = 'available'
+        row['user_access'] = sorted(
+            users.values(),
+            key=lambda user: (str(user['display_name']).casefold(), str(user['username']).casefold()),
+        )
+    return payload
+
+
 def business_statuses(row):
     """Describe actual configured inclusion; approval stays independent."""
     configuration = row['weekly']['configuration']
