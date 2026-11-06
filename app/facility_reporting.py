@@ -70,6 +70,12 @@ SOURCES = [
       SELECT entity_code, bool_or(send_enabled AND ready_for_release AND nullif(btrim(recipient_email),'') IS NOT NULL)
       FROM public.srp_pnl_owner_delivery_recipient_source GROUP BY entity_code ORDER BY entity_code
     """),
+    ('pnl_role_scope', 'public.srp_qbo_pnl_role_facility_scope', """
+      SELECT scope_role_key, entity_code
+      FROM public.srp_qbo_pnl_role_facility_scope
+      WHERE active
+      ORDER BY scope_role_key, entity_code
+    """),
     ('facility_approval', 'public.srp_report_facility_approval', "SELECT facility_key, facility_name, practice_status, weekly_included, monthly_included, pnl_included, approval_source, approver, approval_date, maintenance_owner, approval_version, maintenance_process FROM public.srp_report_facility_approval WHERE client_key='srp' AND active AND (effective_from IS NULL OR effective_from<=CURRENT_DATE) AND (effective_until IS NULL OR effective_until>=CURRENT_DATE) ORDER BY facility_key"),
 ]
 
@@ -237,6 +243,18 @@ def build_inventory(data):
     claims = {str(x[0]).strip() for x in data.get('claims') or []}
     registry = {key: (active, count) for key, active, count in data.get('recipient_registry') or []}
     pnl_recipients = {entity:bool(ready) for entity,ready in data.get('pnl_recipients') or []}
+    scoped_users = defaultdict(dict)
+    role_entities = defaultdict(set)
+    for role, entity in data.get('pnl_role_scope') or []:
+        role_entities[role].add(entity)
+    for name, username, role, source, group in data.get('pnl_user_roles') or []:
+        basis = 'Via group: ' + group if source == 'group' and group else 'Direct assignment'
+        for entity in role_entities.get(role, set()):
+            key = str(username).strip().casefold()
+            user = scoped_users[entity].setdefault(key, dict(display_name=name, username=username,
+                artifact_key='practice-owner-profit-loss-report', available_from_home=False, access_bases=[]))
+            if basis not in user['access_bases']:
+                user['access_bases'].append(basis)
     for key, row in rows.items():
         ids = set(row['facility_ids'])
         if data.get('appointments') is None or data.get('claims') is None or (not ids and data.get('facilities') is None):
@@ -263,6 +281,11 @@ def build_inventory(data):
             'available' if pnl_data & set(row['entity_codes']) else 'entity_only' if 'pnl_entities' in row['sources'] else 'not_present',
             recipient_ready=None if data.get('pnl_recipients') is None else any(pnl_recipients.get(entity,False) for entity in row['entity_codes']),
             scope='unavailable' if data.get('pnl_scope') is None else 'configured' if any(x['active'] for x in row['pnl_scope']) else 'disabled' if row['pnl_scope'] else 'not_configured')
+        row['user_access_status'] = ('unavailable' if data.get('pnl_role_scope') is None or data.get('pnl_user_roles') is None else 'available')
+        users = {}
+        for entity in row['entity_codes']:
+            users.update(scoped_users.get(entity, {}))
+        row['user_access'] = sorted(users.values(), key=lambda user: (str(user['display_name']).casefold(), str(user['username']).casefold()))
         for family in ('weekly', 'monthly'):
             state = row[family]['configuration']
             if state != 'configured':
@@ -318,6 +341,26 @@ def get_facility_report(*, search='', status='', offset=0):
     except Exception:
         data['recipient_registry'] = None
     sources.append(dict(source='recipient_registry',status='unavailable' if data['recipient_registry'] is None else 'available'))
+    try:
+        data['pnl_user_roles'] = _read(get_metadata_conn, 'analytics_reporting.client_grants', """
+          SELECT DISTINCT u.display_name, u.email, g.role_key, g.source, g.group_key
+          FROM analytics_reporting.authorized_user_audiences u
+          JOIN analytics_reporting.client_grants g
+            ON g.client_key=u.client_key AND g.user_id=u.user_id
+          WHERE u.client_key='srp' AND u.admin_role_key=%(admin)s
+            AND u.audience_key='srp' AND u.active
+            AND EXISTS (
+              SELECT 1 FROM analytics_reporting.artifact_access_edges e
+              WHERE e.client_key=u.client_key AND e.admin_role_key=u.admin_role_key
+                AND e.user_id=u.user_id
+                AND e.artifact_key='practice-owner-profit-loss-report'
+                AND e.artifact_active AND (e.assigned_view OR e.assigned_run)
+            )
+          ORDER BY u.display_name, u.email, g.role_key
+        """, {'admin': config.admin_role})
+    except Exception:
+        data['pnl_user_roles'] = None
+    sources.append(dict(source='pnl_user_roles',status='unavailable' if data['pnl_user_roles'] is None else 'available'))
     if data.get('facilities') is None:
         raise RuntimeError('Facility inventory sources unavailable')
     rows = [row for row in build_inventory(data) if 'facilities' in row['sources']]
