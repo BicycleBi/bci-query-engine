@@ -17,3 +17,11 @@ Runtime recipe: `deployment/promotions/dev-srp-referral-payload-cache-runtime.ym
 Source regression: cache persistence/atomic replacement/older-generation rejection, Redis failure, exact rows, absent/shared policy, cache-key isolation, zero SQL reads after rendered-cache expiry, service-token enforcement and non-exposing errors. Existing cache/auth regressions remain required. Test process preloads actual requests/psycopg before running older cache tests because those tests install module stubs when absent; this is test-harness isolation, not a runtime change.
 
 Operational ownership and exact release set live in SRP `docs/handoffs/srp-referral-persistent-cache-2026-11-06.md`. No report/template/QC logic is changed. No live payload or client values are recorded here. Retain this clean worktree through Dev validation and source handoff; cleanup review after acceptance and remote preservation.
+
+## Validated SRP Dev rollout
+
+Exact runtime payload `241df5c5535fac2ba050c37db6f93aa884c329f5` passed the installed legacy runtime plan/check form (no `--request-id` supported). Governed release `dev-20261106T125504Z-688a92ed`, runtime `service-runtime-srp-dev-query-engine-20261106125509-241df5c5535f`, validated at Dev generation 1718. Runtime environment-preservation guard and Compose/health passed. No policy/boundary activation.
+
+SRP opt-in/chain metadata validated at generation 1719; isolated consumers at generation 1720. The actual cache entry has TTL -1 and matches current canonical presentation rows and rendered HTML exactly; template remains unchanged. The two independent chain branches completed. Referral's absent QC binding remains explicit `not_configured` in chain metadata; no QC PASS, test, notice or result was invented. Source loads, recipients, QA/Production and global Redis/TTL configuration were not changed.
+
+Accepted service source remains the exact runtime pin above; later handoff-only commits are source memory, not a replacement payload acceptance. SRP owns the cross-repo inventory and final evidence. Retain this clean worktree for review/shared-cache follow-up, owner this chat; reassess removal after feedback and remote preservation. The unrelated root checkout conflicts remain untouched.
