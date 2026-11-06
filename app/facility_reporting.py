@@ -90,19 +90,15 @@ def attach_copied_facility_access(payload, access_payload):
     rows = payload.get('rows') if isinstance(payload, dict) else None
     access_rows = access_payload.get('rows') if isinstance(access_payload, dict) else None
     sources = payload.setdefault('sources', []) if isinstance(payload, dict) else []
-    try:
-        role_scope = _read(get_data_conn, 'public.srp_qbo_pnl_role_facility_scope', """
-          SELECT scope_role_key, entity_code
-          FROM public.srp_qbo_pnl_role_facility_scope
-          WHERE active
-          ORDER BY scope_role_key, entity_code
-        """)
-    except Exception:
-        role_scope = None
-    status = 'available' if role_scope is not None and isinstance(rows, list) and isinstance(access_rows, list) else 'unavailable'
+    copied_production = (
+        isinstance(payload, dict) and isinstance(access_payload, dict)
+        and payload.get('source_environment') == 'production'
+        and access_payload.get('source_environment') == 'production'
+    )
+    status = 'available' if copied_production and isinstance(rows, list) and isinstance(access_rows, list) else 'unavailable'
     sources[:] = [source for source in sources if source.get('source') not in {'pnl_role_scope', 'pnl_user_roles'}]
     sources.extend([
-        {'source': 'pnl_role_scope', 'status': 'unavailable' if role_scope is None else 'available'},
+        {'source': 'pnl_role_scope', 'status': status},
         {'source': 'pnl_user_roles', 'status': status},
     ])
     if status != 'available':
@@ -111,9 +107,15 @@ def attach_copied_facility_access(payload, access_payload):
             row['user_access'] = []
         return payload
 
+    # The inert copy intentionally carries Production role keys.  Do not join
+    # them to Dev's differently namespaced live role table.  Production P&L
+    # roles use the established exact role/entity contract also consumed by
+    # the secured report: srp_production_pnl_<entity_code>.
     role_entities = defaultdict(set)
-    for role, entity in role_scope:
-        role_entities[str(role)].add(str(entity))
+    for row in rows:
+        for entity in row.get('entity_codes') or []:
+            entity = str(entity)
+            role_entities['srp_production_pnl_' + entity].add(entity)
     scoped_users = defaultdict(dict)
     for subject in access_rows:
         if not subject.get('active'):
