@@ -17,7 +17,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Qu
 from fastapi.responses import HTMLResponse, Response
 
 from .report_snapshot import get_copied_report
-from .facility_reporting import get_facility_report
+from .facility_reporting import attach_copied_facility_access, get_facility_report
 from .distribution_reporting import get_distribution_report
 from .analytics import get_analytics_reporting_config
 from .engine import (
@@ -677,7 +677,21 @@ def facility_summary(
     response.headers["Cache-Control"] = "no-store"
     try:
         copied = get_copied_report('facilities', search=search, status=status, offset=offset)
-        return copied if copied is not None else get_facility_report(search=search, status=status, offset=offset)
+        if copied is not None:
+            access = get_copied_report('access-users', offset=0)
+            if access is not None:
+                access_rows = list(access['rows'])
+                access_offset = access['limit']
+                while access.get('has_more'):
+                    if access_offset >= 5000:
+                        raise RuntimeError("Copied access snapshot exceeds reporting bound")
+                    page = get_copied_report('access-users', offset=access_offset)
+                    access_rows.extend(page['rows'])
+                    access = page
+                    access_offset += page['limit']
+                access = dict(access, rows=access_rows)
+            return attach_copied_facility_access(copied, access)
+        return get_facility_report(search=search, status=status, offset=offset)
     except ValueError:
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
