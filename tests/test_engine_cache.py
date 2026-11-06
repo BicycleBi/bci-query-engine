@@ -76,6 +76,8 @@ class FakeData:
         self.platform_corporate_roles = []
 
     def execute(self, sql, params=None):
+        if sql == 'SELECT to_regprocedure(%s)' and params[0].endswith('_payload_cache_policy()'):
+            return FakeResult(row=(None,))
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
@@ -786,3 +788,27 @@ def test_generic_analytics_roles_bind_to_transaction_without_srp_names(monkeypat
     assert data.platform_admin_roles == ["rfdev_admin"]
     assert data.platform_corporate_roles == ["rfdev_analytics"]
     assert data.authorized_roles == ['["rfdev_admin"]']
+
+
+def test_persistent_payload_survives_render_expiry_and_serves_without_sql(monkeypatch):
+    import fakeredis
+    from bci_redis_cache.cache import RedisCache
+    from app import payload_cache
+    _, data = _patch_connections(monkeypatch, data=FakeData(fail_on_execute=True,
+        freshness_timestamp='2026-11-06 12:00:00+00'))
+    cache=RedisCache(redis_client=fakeredis.FakeRedis(decode_responses=True))
+    configuration={'definition_hash':'synthetic'}
+    record={'freshness':'2026-11-06 12:00:00+00','generation_epoch':1793966400,
+            'definition_hash':'synthetic','rows':[{'day':'Mon'}]}
+    payload_cache.publish(cache,'srp','visit-counts','rpt.visit_counts',configuration,record)
+    monkeypatch.setattr(payload_cache,'policy',lambda *a:configuration)
+    monkeypatch.setattr(cache_module,'get_cache_settings',lambda:SimpleNamespace(
+        enabled=True,cache_rendered=True,ttl_seconds=3600))
+    monkeypatch.setattr(cache_module,'get_artifact_cache',lambda *a:cache)
+    first=engine.execute_artifact('srp','visit-counts',behavior='preview')
+    assert first['preview_html']=='<p>1</p>'
+    for name in cache.redis.scan_iter(match='*:rendered:*'):cache.redis.delete(name)
+    second=engine.execute_artifact('srp','visit-counts',behavior='preview')
+    assert first['preview_html']==second['preview_html']
+    assert data.calls==0
+    assert cache.redis.ttl(payload_cache.key(cache,'srp','visit-counts','rpt.visit_counts',configuration))==-1

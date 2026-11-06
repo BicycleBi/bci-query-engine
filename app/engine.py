@@ -1285,11 +1285,19 @@ def execute_artifact(
             data_query_ms: Optional[float] = None
             render_ms: Optional[float] = None
             data_freshness_timestamp: Optional[str] = None
+            from . import payload_cache
+            payload_configuration, cached_payload = None, None
+            cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
-            cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
+                    payload_configuration, cached_payload = payload_cache.lookup(
+                        data, cache, client_key, artifact_key, view_name)
+                    if refresh_cache:
+                        cached_payload = None
+                    elif cached_payload is not None:
+                        data_freshness_timestamp = cached_payload['freshness']
             if not cacheable_render:
                 cache_status = "bypass"
             elif not cache_settings.enabled or not cache_settings.cache_rendered:
@@ -1322,23 +1330,36 @@ def execute_artifact(
                 row_count = int(cached_render.get("row_count", 0))
             else:
                 data_query_started = perf_counter()
-                with get_data_conn() as data:
-                    _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                    if execution_query is not None:
-                        serialized_query = _serialized_artifact_query(execution_query)
-                        query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
-                        if isinstance(query_result, dict):
-                            data_rows = [query_result]
-                        elif isinstance(query_result, list) and all(
-                            isinstance(row, dict) for row in query_result
-                        ):
-                            data_rows = query_result
+                if cached_payload is not None:
+                    data_rows = cached_payload['rows']
+                else:
+                    with get_data_conn() as data:
+                        _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
+                        if execution_query is not None:
+                            serialized_query = _serialized_artifact_query(execution_query)
+                            query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
+                            if isinstance(query_result, dict):
+                                data_rows = [query_result]
+                            elif isinstance(query_result, list) and all(
+                                isinstance(row, dict) for row in query_result
+                            ):
+                                data_rows = query_result
+                            else:
+                                data_rows = [{"value": query_result}]
+                        elif payload_configuration is not None:
+                            record = payload_cache.select_current(
+                                data, client_key, artifact_key, view_name, payload_configuration)
+                            if cache is not None:
+                                try:
+                                    payload_cache.publish(cache, client_key, artifact_key,
+                                        view_name, payload_configuration, record)
+                                except Exception:
+                                    pass  # Existing SQL fallback remains available during Redis loss.
+                            data_rows = record['rows']
                         else:
-                            data_rows = [{"value": query_result}]
-                    else:
-                        cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                        cols = [d[0] for d in cur.description]
-                        data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                            cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
+                            cols = [d[0] for d in cur.description]
+                            data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
                 data_query_ms = (perf_counter() - data_query_started) * 1000
 
             if cached_render is None:

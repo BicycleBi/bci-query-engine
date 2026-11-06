@@ -746,6 +746,24 @@ def prewarm_artifact_data_cache(
     return ArtifactQueryCachePrewarmResponse(**result)
 
 
+@app.post("/internal/artifacts/{client_key}/{artifact_key}/payload-cache/prewarm")
+def prewarm_artifact_payload(
+    client_key: str, artifact_key: str,
+    body: dict[str, Any],
+    _service_identity: None = Depends(require_service_identity),
+):
+    """Prepare final report data only; no QC, source load, render or delivery."""
+    from .payload_cache import prewarm
+    if set(body) - {'expected_freshness'} or (
+        body.get('expected_freshness') is not None and not isinstance(body['expected_freshness'], str)):
+        raise HTTPException(status_code=400, detail='Invalid payload prewarm request')
+    try:
+        return prewarm(client_key, artifact_key, body.get('expected_freshness'))
+    except Exception:
+        # Do not expose SQL, source values, cache contents or service credentials.
+        raise HTTPException(status_code=503, detail='payload_cache_prewarm_unavailable')
+
+
 @app.get("/artifacts/{client_key}/{artifact_key}/assets/{asset_path:path}")
 def get_artifact_static_asset(
     client_key: str,
