@@ -935,7 +935,7 @@ def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int)
         policy = json.loads(policy)
     if not isinstance(policy, dict):
         raise ValueError("Artifact query cache policy must be a JSON object")
-    if set(policy) - {"refresh_mode", "ttl_seconds", "bind_freshness"}:
+    if set(policy) - {"refresh_mode", "ttl_seconds", "bind_freshness", "set_filter_keys"}:
         raise ValueError("Artifact query cache policy contains unsupported fields")
     refresh_mode = str(policy.get("refresh_mode") or "").strip().lower()
     ttl_seconds = policy.get("ttl_seconds")
@@ -948,8 +948,22 @@ def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int)
     bind_freshness = policy.get("bind_freshness", False)
     if not isinstance(bind_freshness, bool) or (bind_freshness and refresh_mode != "prewarm_swap"):
         raise ValueError("Freshness binding requires prewarm-swap query caching")
+    set_filter_keys = policy.get("set_filter_keys", [])
+    if not isinstance(set_filter_keys, list) or not all(
+        isinstance(key, str) and key for key in set_filter_keys
+    ):
+        raise ValueError("Artifact query cache set filter keys must be a list of strings")
     return {"refresh_mode": refresh_mode, "ttl_seconds": ttl_seconds,
-            "bind_freshness": bind_freshness}
+            "bind_freshness": bind_freshness, "set_filter_keys": set_filter_keys}
+
+
+def _canonical_cache_query(query, policy):
+    result = query.copy()
+    for key in policy.get("set_filter_keys", ()):
+        values = query.get(key)
+        if isinstance(values, list) and all(isinstance(value, str) for value in values):
+            result[key] = sorted(set(values))
+    return result
 
 
 def _query_cache_type(generation: Optional[str]) -> str:
@@ -1076,7 +1090,7 @@ def execute_artifact_query(
         if bind_freshness and (freshness is None or generation is None):
             cache = None
         cache_params = _artifact_query_cache_params(
-            query=query,
+            query=_canonical_cache_query(query, policy),
             freshness=freshness,
             cache_scope=cache_scope,
             authenticated_subject=authenticated_subject,
@@ -1172,7 +1186,7 @@ def prewarm_artifact_query_cache(
                 raise ValueError("Artifact query cache prewarm accepts only shared query contracts")
             result = _execute_artifact_query_contract(data, view_name, serialized_query)
             cache_params = _artifact_query_cache_params(
-                query=query,
+                query=_canonical_cache_query(query, policy),
                 freshness=freshness,
                 cache_scope="shared",
             )
@@ -1333,7 +1347,10 @@ def execute_artifact(
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
                     payload_configuration, cached_payload = payload_cache.lookup(
-                        data, cache, client_key, artifact_key, view_name)
+                        data, cache, client_key, artifact_key, view_name,
+                        current_freshness=data_freshness_timestamp)
+                    if (payload_configuration or {}).get("require_current") and data_freshness_timestamp is None:
+                        payload_configuration, cache = None, None
                     if refresh_cache:
                         cached_payload = None
                     elif cached_payload is not None:
@@ -1387,8 +1404,12 @@ def execute_artifact(
                             else:
                                 data_rows = [{"value": query_result}]
                         elif payload_configuration is not None:
+                            require_current = payload_configuration.get("require_current", False)
                             record = payload_cache.select_current(
-                                data, client_key, artifact_key, view_name, payload_configuration)
+                                data, client_key, artifact_key, view_name, payload_configuration,
+                                allow_unpublished=require_current)
+                            if require_current and record['freshness'] != data_freshness_timestamp:
+                                cache = None
                             if cache is not None:
                                 try:
                                     payload_cache.publish(cache, client_key, artifact_key,

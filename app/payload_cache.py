@@ -12,9 +12,15 @@ def policy(data, view_name):
     row=data.execute(f'SELECT {name}(), md5(pg_get_viewdef(%s::regclass,true))',(view_name,)).fetchone()
     value=row[0]
     if isinstance(value,str):value=json.loads(value)
-    if value != {'mode':'load_bound','scope':'shared'}:
+    if not isinstance(value,dict) or set(value)-{'mode','scope','require_current'} or (
+        value.get('mode')!='load_bound' or value.get('scope')!='shared'
+        or not isinstance(value.get('require_current',False),bool)
+    ):
         raise ValueError('Unsupported artifact payload cache policy')
-    return {'definition_hash':row[1]}
+    configuration = {'definition_hash':row[1]}
+    if value.get('require_current'):
+        configuration['require_current'] = True
+    return configuration
 
 
 def key(cache, client_key, artifact_key, view_name, configuration):
@@ -22,7 +28,7 @@ def key(cache, client_key, artifact_key, view_name, configuration):
         'version':1,'view_name':view_name,'definition_hash':configuration['definition_hash']})
 
 
-def lookup(data,cache,client_key,artifact_key,view_name):
+def lookup(data,cache,client_key,artifact_key,view_name,*,current_freshness=None):
     configuration=policy(data,view_name)
     if configuration is None:return None,None
     try:
@@ -35,20 +41,26 @@ def lookup(data,cache,client_key,artifact_key,view_name):
                 and all(isinstance(row,dict) for row in record['rows'])
                 and record.get('definition_hash')==configuration['definition_hash']
                 and datetime.fromisoformat(record['freshness']).tzinfo is not None
-                and type(record['generation_epoch']) in (float,int))
+                and type(record['generation_epoch']) in (float,int)
+                and (not configuration.get('require_current') or (
+                    current_freshness is not None and
+                    datetime.fromisoformat(record['freshness']) == datetime.fromisoformat(current_freshness)
+                )))
         except (KeyError,TypeError,ValueError):
             valid=False
         if not valid:record=None
     return configuration,record
 
 
-def select_current(data,client_key,artifact_key,view_name,configuration):
+def select_current(data,client_key,artifact_key,view_name,configuration,*,allow_unpublished=False):
     from .engine import _safe_view_name
     view_name=_safe_view_name(view_name)
     row=data.execute(
         f"SELECT public.bci_artifact_cache_freshness(%s,%s)::text, "
         f"COALESCE(jsonb_agg(to_jsonb(p)),'[]'::jsonb) FROM {view_name} p",
         (client_key,artifact_key)).fetchone()
+    if row and row[0] is None and allow_unpublished:
+        return {'freshness':None,'rows':row[1]}
     if not row or row[0] is None:
         raise ValueError('Load-bound payload requires a canonical generation')
     stamp=datetime.fromisoformat(str(row[0]))

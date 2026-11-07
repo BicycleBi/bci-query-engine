@@ -881,3 +881,13 @@ def test_bound_query_miss_does_not_write_a_live_fallback_into_redis(monkeypatch,
     result = engine.execute_artifact_query("srp", "rcm-report", query={"operation": "snapshot"})
     assert result == data.result
     assert fake_cache.set_calls == []
+
+
+def test_opted_in_set_filters_share_keys_without_changing_query_input():
+    browser = {"operation": "facilityComparison", "payers": ["z", "a"], "order": ["z", "a"]}
+    worker = {"operation": "facilityComparison", "payers": ["a", "z", "a"], "order": ["z", "a"]}
+    policy = {"set_filter_keys": ["payers"]}
+    assert engine._canonical_cache_query(browser, policy) == engine._canonical_cache_query(worker, policy)
+    assert engine._canonical_cache_query(browser, {}) == browser
+    assert browser["payers"] == ["z", "a"]
+    assert engine._canonical_cache_query(browser, policy)["order"] == ["z", "a"]

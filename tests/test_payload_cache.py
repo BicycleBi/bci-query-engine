@@ -98,3 +98,18 @@ def test_corrupt_entry_can_be_rehydrated(monkeypatch):
     assert payload_cache.lookup(MagicMock(),cache,'client','report','public.synthetic')[1] is None
     assert payload_cache.publish(cache,'client','report','public.synthetic',configuration,record())
     assert cache.get(cache_key)==record()
+
+
+def test_current_payload_policy_rejects_stale_or_unpublished_context(monkeypatch):
+    cache=RedisCache(redis_client=fakeredis.FakeRedis(decode_responses=True))
+    configuration={'definition_hash':'definition','require_current':True}
+    payload_cache.publish(cache,'client','report','public.synthetic',configuration,record())
+    monkeypatch.setattr(payload_cache,'policy',lambda *args:configuration)
+    data=MagicMock()
+    lookup=lambda stamp:payload_cache.lookup(
+        data,cache,'client','report','public.synthetic',current_freshness=stamp
+    )[1]
+    assert lookup(record()['freshness']) == record()
+    assert lookup(record(2)['freshness']) is None
+    assert lookup(None) is None
+    data.execute.assert_not_called()
