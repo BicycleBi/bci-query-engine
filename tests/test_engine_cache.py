@@ -812,3 +812,72 @@ def test_persistent_payload_survives_render_expiry_and_serves_without_sql(monkey
     assert first['preview_html']==second['preview_html']
     assert data.calls==0
     assert cache.redis.ttl(payload_cache.key(cache,'srp','visit-counts','rpt.visit_counts',configuration))==-1
+
+
+@pytest.mark.parametrize("outcome", ["current", "wrong-request", "changed-source", "changed-pointer"])
+def test_bound_prewarm_pins_source_and_never_replaces_a_newer_pointer(monkeypatch, outcome):
+    from datetime import datetime
+
+    class BoundData(FakeQueryData):
+        def execute(self, sql, params=None):
+            if sql == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ":
+                self.pinned = True
+                return FakeResult()
+            return super().execute(sql, params)
+
+    class BoundCache(FakeCache):
+        def activate_query_generation_if_current(self, client, artifact, candidate, previous):
+            if outcome == "changed-pointer":
+                self.generation = "newer"
+            if self.generation != previous:
+                return False
+            self.activate_query_generation(client, artifact, candidate)
+            return True
+
+    stamp = "2026-11-07 11:00:00+00"
+    data = BoundData(cache_scope="shared", freshness_timestamp=stamp, cache_policy={
+        "refresh_mode": "prewarm_swap", "ttl_seconds": 0, "bind_freshness": True,
+    })
+    data.pinned = False
+    _patch_connections(monkeypatch, data=data)
+    checks = iter([stamp, "newer" if outcome == "changed-source" else stamp])
+    monkeypatch.setattr(engine, "_artifact_cache_freshness_timestamp", lambda *_: next(checks))
+    fake_cache = BoundCache(payload=None)
+    fake_cache.generation = "previous"
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=True))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.prewarm_artifact_query_cache(
+        "srp", "rcm-report", queries=[{"operation": "snapshot"}],
+        expected_freshness=datetime.fromisoformat(
+            "2026-11-06T11:00:00+00:00" if outcome == "wrong-request" else stamp
+        ),
+    )
+
+    assert data.pinned
+    assert result["status"] == ("prewarmed" if outcome == "current" else "superseded")
+    if outcome == "current":
+        assert len(fake_cache.set_calls) == 1
+        key, _, ttl = fake_cache.set_calls[0]
+        assert stamp in key and ttl is None
+        assert fake_cache.activated_generations == [fake_cache.generation]
+    else:
+        assert fake_cache.activated_generations == []
+        assert fake_cache.generation == ("newer" if outcome == "changed-pointer" else "previous")
+        assert len(fake_cache.set_calls) == (1 if outcome == "changed-pointer" else 0)
+        assert len(fake_cache.invalidated_patterns) == (1 if outcome == "changed-pointer" else 0)
+
+
+@pytest.mark.parametrize("freshness", ["2026-11-07 11:00:00+00", None])
+def test_bound_query_miss_does_not_write_a_live_fallback_into_redis(monkeypatch, freshness):
+    data = FakeQueryData(cache_scope="shared", freshness_timestamp=freshness, cache_policy={
+        "refresh_mode": "prewarm_swap", "ttl_seconds": 0, "bind_freshness": True,
+    })
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    fake_cache.generation = "existing"
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=True))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+    result = engine.execute_artifact_query("srp", "rcm-report", query={"operation": "snapshot"})
+    assert result == data.result
+    assert fake_cache.set_calls == []

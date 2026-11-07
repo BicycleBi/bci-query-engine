@@ -37,3 +37,14 @@ def test_generation_activation_returns_prior_pointer():
     assert cache.activate_query_generation('srp', 'ppp', 'generation-1') is None
     assert cache.activate_query_generation('srp', 'ppp', 'generation-2') == 'generation-1'
     assert cache.get_query_generation('srp', 'ppp') == 'generation-2'
+
+
+def test_query_generation_compare_and_swap_preserves_a_newer_pointer():
+    from fakeredis import FakeRedis
+    from bci_redis_cache.cache import RedisCache
+
+    cache = RedisCache(redis_client=FakeRedis(decode_responses=True))
+    assert cache.activate_query_generation_if_current("srp", "rcm-report", "first", None)
+    assert cache.activate_query_generation_if_current("srp", "rcm-report", "second", "first")
+    assert not cache.activate_query_generation_if_current("srp", "rcm-report", "late", "first")
+    assert cache.get_query_generation("srp", "rcm-report") == "second"

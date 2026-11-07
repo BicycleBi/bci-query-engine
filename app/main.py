@@ -740,6 +740,7 @@ def prewarm_artifact_data_cache(
             client_key,
             artifact_key,
             queries=request.queries,
+            expected_freshness=request.expected_freshness,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

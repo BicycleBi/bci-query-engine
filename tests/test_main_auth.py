@@ -995,6 +995,15 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
         "refresh_mode": "ttl",
     }
     assert captured["queries"] == queries
+    assert captured["expected_freshness"] is None
+
+    response = client.post(
+        "/internal/artifacts/srp/rcm-report/query-cache/prewarm",
+        headers={"Authorization": "Bearer test-service-token"},
+        json={"queries": queries, "expected_freshness": "2026-11-07T11:00:00Z"},
+    )
+    assert response.status_code == 200
+    assert captured["expected_freshness"].isoformat() == "2026-11-07T11:00:00+00:00"
 
 
 def test_artifact_asset_route_is_authenticated_and_immutable(monkeypatch):

@@ -935,7 +935,7 @@ def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int)
         policy = json.loads(policy)
     if not isinstance(policy, dict):
         raise ValueError("Artifact query cache policy must be a JSON object")
-    if set(policy) - {"refresh_mode", "ttl_seconds"}:
+    if set(policy) - {"refresh_mode", "ttl_seconds", "bind_freshness"}:
         raise ValueError("Artifact query cache policy contains unsupported fields")
     refresh_mode = str(policy.get("refresh_mode") or "").strip().lower()
     ttl_seconds = policy.get("ttl_seconds")
@@ -945,7 +945,11 @@ def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int)
         raise ValueError("Artifact query cache TTL must be a non-negative integer")
     if refresh_mode == "prewarm_swap" and ttl_seconds != 0:
         raise ValueError("Prewarm-swap query caches must use a zero (persistent) TTL")
-    return {"refresh_mode": refresh_mode, "ttl_seconds": ttl_seconds}
+    bind_freshness = policy.get("bind_freshness", False)
+    if not isinstance(bind_freshness, bool) or (bind_freshness and refresh_mode != "prewarm_swap"):
+        raise ValueError("Freshness binding requires prewarm-swap query caching")
+    return {"refresh_mode": refresh_mode, "ttl_seconds": ttl_seconds,
+            "bind_freshness": bind_freshness}
 
 
 def _query_cache_type(generation: Optional[str]) -> str:
@@ -1057,6 +1061,7 @@ def execute_artifact_query(
         policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
+        bind_freshness = policy.get("bind_freshness", False)
         generation = None
         if cache and policy["refresh_mode"] == "prewarm_swap":
             try:
@@ -1065,9 +1070,11 @@ def execute_artifact_query(
                 cache = None
         freshness = (
             None
-            if policy["refresh_mode"] == "prewarm_swap"
+            if policy["refresh_mode"] == "prewarm_swap" and not bind_freshness
             else _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         )
+        if bind_freshness and (freshness is None or generation is None):
+            cache = None
         cache_params = _artifact_query_cache_params(
             query=query,
             freshness=freshness,
@@ -1096,7 +1103,7 @@ def execute_artifact_query(
                 ) from exc
             raise
 
-        if cache and cache_key:
+        if cache and cache_key and not bind_freshness:
             try:
                 ttl_seconds = policy["ttl_seconds"] or None
                 cache.set(cache_key, result, ttl_seconds=ttl_seconds)
@@ -1110,6 +1117,7 @@ def prewarm_artifact_query_cache(
     artifact_key: str,
     *,
     queries: list[dict[str, Any]],
+    expected_freshness: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Rebuild the exact shared Redis entries declared by an artifact contract."""
     if not queries or len(queries) > 16:
@@ -1134,14 +1142,30 @@ def prewarm_artifact_query_cache(
 
     entries: list[tuple[str, Any]] = []
     with get_data_conn() as data:
+        if expected_freshness is not None:
+            data.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         _set_authorization_context(data, client_key, None, None)
         policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
+        bind_freshness = policy.get("bind_freshness", False)
+        if bind_freshness != (expected_freshness is not None):
+            raise ValueError("Expected freshness is required only for a bound query cache")
         generation = uuid.uuid4().hex if policy["refresh_mode"] == "prewarm_swap" else None
         freshness = (
             None
-            if policy["refresh_mode"] == "prewarm_swap"
+            if policy["refresh_mode"] == "prewarm_swap" and not bind_freshness
             else _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         )
+        if bind_freshness:
+            superseded = {
+                "client_key": client_key,
+                "artifact_key": artifact_key,
+                "status": "superseded",
+                "entry_count": 0,
+                "refresh_mode": policy["refresh_mode"],
+            }
+            if freshness is None or datetime.fromisoformat(freshness) != expected_freshness:
+                return superseded
+            previous_generation = cache.get_query_generation(client_key, artifact_key)
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
             if cache_scope != "shared":
@@ -1156,6 +1180,12 @@ def prewarm_artifact_query_cache(
                 client_key, artifact_key, _query_cache_type(generation), cache_params
             )
             entries.append((cache_key, result))
+
+    if bind_freshness:
+        with get_data_conn() as data:
+            current_freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        if current_freshness != freshness:
+            return superseded
 
     if policy["refresh_mode"] == "prewarm_swap":
         candidate_pattern = (
@@ -1173,9 +1203,19 @@ def prewarm_artifact_query_cache(
         # Do not delete a fully written candidate when activation has an
         # ambiguous network outcome: GETSET may have succeeded before its
         # response was lost. In either outcome a complete generation remains.
-        previous_generation = cache.activate_query_generation(
-            client_key, artifact_key, generation
-        )
+        if bind_freshness:
+            if not cache.activate_query_generation_if_current(
+                client_key, artifact_key, generation, previous_generation
+            ):
+                try:
+                    cache.invalidate_pattern(candidate_pattern)
+                except Exception:
+                    pass
+                return superseded
+        else:
+            previous_generation = cache.activate_query_generation(
+                client_key, artifact_key, generation
+            )
         # Cleanup is deliberately after the single-key activation boundary.
         # A cleanup failure wastes space but cannot make the active generation stale.
         try:

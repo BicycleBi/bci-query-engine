@@ -105,6 +105,25 @@ class RedisCache:
             generation,
         )
 
+    def activate_query_generation_if_current(
+        self,
+        client_key: str,
+        artifact_key: str,
+        generation: str,
+        previous_generation: Optional[str],
+    ) -> bool:
+        """Swap a fully written candidate only if no other build activated."""
+        script = """
+        local current = redis.call('GET', KEYS[1]) or ''
+        if current ~= ARGV[1] then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2])
+        return 1
+        """
+        return bool(self.redis.eval(
+            script, 1, self._query_generation_key(client_key, artifact_key),
+            previous_generation or "", generation,
+        ))
+
     def invalidate_pattern(self, pattern: str) -> int:
         removed = 0
         for key in self.redis.scan_iter(match=pattern):
