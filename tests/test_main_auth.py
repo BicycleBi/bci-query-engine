@@ -995,6 +995,15 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
         "refresh_mode": "ttl",
     }
     assert captured["queries"] == queries
+    assert captured["expected_freshness"] is None
+
+    response = client.post(
+        "/internal/artifacts/srp/rcm-report/query-cache/prewarm",
+        headers={"Authorization": "Bearer test-service-token"},
+        json={"queries": queries, "expected_freshness": "2026-11-07T11:00:00Z"},
+    )
+    assert response.status_code == 200
+    assert captured["expected_freshness"].isoformat() == "2026-11-07T11:00:00+00:00"
 
 
 def test_artifact_asset_route_is_authenticated_and_immutable(monkeypatch):
@@ -1244,3 +1253,36 @@ def test_srp_facility_role_cannot_open_analytics_and_admin_can_open_internal_lib
     assert client.get("/artifacts/srp/usage-monitoring-dashboard", headers=_auth_headers(token(["facility_owner"], "owner"))).status_code == 403
     assert client.get("/artifacts/srp/weekly-qc-report", headers=_auth_headers(token(["srpqa_admin"], "admin"))).status_code == 200
     assert client.get("/artifacts/srp/usage-monitoring-dashboard?report=usage", headers=_auth_headers(token(["srpqa_admin"], "admin"))).status_code == 200
+
+
+def test_payload_prewarm_requires_service_identity(monkeypatch):
+    main=_load_main(monkeypatch)
+    client=TestClient(main.app)
+    assert client.post('/internal/artifacts/srp/referral-source-report/payload-cache/prewarm',json={}).status_code==401
+
+
+def test_payload_prewarm_returns_metadata_and_rejects_extra_fields(monkeypatch):
+    from app import payload_cache
+    main=_load_main(monkeypatch);client=TestClient(main.app)
+    calls=[]
+    def fake(client_key,artifact_key,expected):
+        calls.append((client_key,artifact_key,expected))
+        return {'status':'prewarmed','freshness':'synthetic','entry_count':1,'ttl_seconds':0}
+    monkeypatch.setattr(payload_cache,'prewarm',fake)
+    url='/internal/artifacts/srp/referral-source-report/payload-cache/prewarm'
+    headers={'Authorization':'Bearer test-service-token'}
+    assert client.post(url,headers=headers,json={'qc':'pass'}).status_code==400
+    response=client.post(url,headers=headers,json={'expected_freshness':'synthetic'})
+    assert response.status_code==200 and response.json()['ttl_seconds']==0
+    assert calls==[('srp','referral-source-report','synthetic')]
+
+
+def test_payload_prewarm_error_is_non_exposing(monkeypatch):
+    from app import payload_cache
+    main=_load_main(monkeypatch);client=TestClient(main.app)
+    def failure(*a,**k):raise ValueError('synthetic secret SQL data')
+    monkeypatch.setattr(payload_cache,'prewarm',failure)
+    response=client.post('/internal/artifacts/srp/referral-source-report/payload-cache/prewarm',
+        headers={'Authorization':'Bearer test-service-token'},json={})
+    assert response.status_code==503
+    assert response.json()=={'detail':'payload_cache_prewarm_unavailable'}
