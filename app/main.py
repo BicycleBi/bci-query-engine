@@ -4,6 +4,7 @@ main.py — FastAPI routes for the Query Engine.
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import time
@@ -19,6 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 from .report_snapshot import get_copied_report
 from .facility_reporting import attach_copied_facility_access, get_facility_report
 from .distribution_reporting import attach_report_configurations, get_distribution_report
+from .mailer import send as send_email
 from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
@@ -58,6 +60,7 @@ from .models import (
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
     ArtifactWriteResponse,
+    ChangeRequestEmailRequest,
     HealthResponse,
     DeliveryBatchRequest,
     DeliveryBatchResponse,
@@ -674,6 +677,43 @@ def facility_summary(
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
         raise HTTPException(503, "Facility reporting is unavailable") from None
+
+
+@app.post("/artifacts/{client_key}/{artifact_key}/change-request")
+def submit_change_request(
+    client_key: str,
+    artifact_key: str,
+    request: ChangeRequestEmailRequest,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Send one bounded, authenticated report change request to SRP support."""
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Change requests are unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    request_id = str(uuid.uuid4())
+    requester = str(identity.get("email") or identity.get("display_name") or identity.get("sub") or "Authenticated SRP user")
+    body = (
+        f"<h2>{html.escape(request.subject)}</h2>"
+        f"<p><strong>Section:</strong> {html.escape(request.section)}<br>"
+        f"<strong>Record:</strong> {html.escape(request.record)}<br>"
+        f"<strong>Request type:</strong> {html.escape(request.request_type)}<br>"
+        f"<strong>Requested by:</strong> {html.escape(requester)}<br>"
+        f"<strong>Request ID:</strong> {html.escape(request_id)}</p>"
+        f"<p>{html.escape(request.details).replace(chr(10), '<br>')}</p>"
+    )
+    try:
+        delivery = send_email(
+            request.subject,
+            body,
+            ["srp@bicyclebi.com"],
+            client_key="srp",
+            artifact_key="client-access-distribution-report",
+            request_id=request_id,
+        )
+    except Exception:
+        raise HTTPException(503, "The change request could not be sent. Open it in email instead.") from None
+    return {"status": "accepted", "request_id": request_id, "delivery_id": delivery.get("delivery_id")}
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")

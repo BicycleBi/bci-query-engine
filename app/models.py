@@ -116,6 +116,24 @@ class ArtifactWriteResponse(BaseModel):
     reference_count: int
 
 
+class ChangeRequestEmailRequest(BaseModel):
+    section: str = Field(min_length=1, max_length=80)
+    record: str = Field(min_length=1, max_length=240)
+    request_type: str = Field(min_length=1, max_length=80)
+    subject: str = Field(min_length=1, max_length=240)
+    details: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("section", "record", "request_type", "subject", "details")
+    @classmethod
+    def normalize_change_request_text(cls, value: str, info) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} cannot be blank")
+        if info.field_name == "subject" and ("\r" in normalized or "\n" in normalized):
+            raise ValueError("subject must be one line")
+        return normalized
+
+
 class DistributionGroupSummary(BaseModel):
     group_key: str
     display_name: str
