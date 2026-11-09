@@ -94,6 +94,15 @@ Dev runtime evidence: exact pushed source `0efebf203f77d96e1e2a39d259492f20f5e25
 
 Post-release acceptance found that Dev's one-time Production Facilities snapshot correctly bypasses the live getter, but therefore also bypassed the first live-only user projection. The corrective source enriches only that copied Facilities payload with the matching copied Production access-user payload. It intersects copied Production access roles with the exact maintained role-to-entity keys carried by the Facilities snapshot; it deliberately does not derive a role name from an entity code or join Production keys to Dev's differently namespaced live role table. It never joins Production snapshot users to Dev users, never grants access and never changes the Production live path, which continues to use the actual role-scope relation. All copied access pages are bounded to 5,000 rows; missing or mixed-environment snapshot evidence remains unavailable rather than inferred.
 
+The maintained-role successor `8f8b7dfc019fbbe2b432f556afdc21a680b02046`
+passed all 23 existing facility-reporting tests and governed Dev
+plan/check/apply/validate. Release `dev-20261109T141115Z-82d9527b` completed as
+generation 1836 with only the Query Engine service rebuilt and recreated.
+After the matching governed snapshot copy, aggregate-only live acceptance
+confirmed two mapped users for the corrected Buda facility. No user identity,
+grant, recipient or report payload was printed; no access or delivery state was
+mutated. QA and Production were unchanged.
+
 Final Dev runtime evidence: exact source `c21e2c3f28d856dbc5497b32110846c553712171` passed native plan/check, runtime-environment preservation, single-service apply and health validation as release `dev-20261106T100313Z-093dc75f`, generation 1706. Aggregate-only acceptance confirmed the Production snapshot source, 26 facilities, 15 facilities with verified scoped users and 63 facility/user mappings; unauthenticated access remained HTTP 401 and no user, facility or recipient rows were printed. The paired report template was already validated at generation 1704.
 
 ## Facility report configuration projection — 9 November 2026
