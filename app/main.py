@@ -555,6 +555,11 @@ def usage_summary(
     client_key: str,
     artifact_key: str,
     days: int = 30,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    audience: str = "all",
+    artifact_search: str = "",
+    user_search: str = "",
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Return bounded monitoring aggregates for one authorized client."""
@@ -563,9 +568,27 @@ def usage_summary(
         raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
-    require_analytics_reporting_access(identity, client_key, "usage")
+    is_admin = require_analytics_reporting_access(identity, client_key, "usage")
+    config = get_analytics_reporting_config(client_key)
+    if audience not in config.audiences or len(artifact_search) > 100 or len(user_search) > 100:
+        raise HTTPException(400, "Invalid usage filter")
+    effective_audience = audience if is_admin or audience == "all" else client_key
+    from datetime import date
+    try:
+        first = date.fromisoformat(start_date) if start_date is not None else None
+        last = date.fromisoformat(end_date) if end_date is not None else None
+        if (first is None) != (last is None) or (first is not None and
+                (first > last or (last - first).days >= 90 or last > datetime.now(timezone.utc).date())):
+            raise ValueError("date bounds")
+    except ValueError:
+        raise HTTPException(400, "Use both YYYY-MM-DD dates, ordered within 90 UTC days and not in the future") from None
     response.headers["Cache-Control"] = "no-store"
-    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
+    options = {}
+    if first is not None:
+        options.update(start_date=first, end_date=last)
+    if effective_audience != "all" or artifact_search or user_search:
+        options.update(audience=effective_audience, artifact_search=artifact_search, user_search=user_search)
+    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days, **options))
 
 
 @app.get("/artifacts/{client_key}/{artifact_key}/access-summary")

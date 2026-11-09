@@ -115,3 +115,68 @@ def test_usage_summary_contract_excludes_sensitive_identifiers():
     source = importlib.import_module("inspect").getsource(monitoring.get_usage_summary)
     for forbidden in ("email", "request_id", "session_id", "response_body", "request_body"):
         assert f'"{forbidden}"' not in source
+
+
+def test_usage_custom_filters_are_bounded_and_forwarded(monkeypatch):
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY','rf')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE','rfdev_admin')
+    main=_load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *args:True)
+    seen=[]
+    monkeypatch.setattr(main,'get_usage_summary',lambda **kw:seen.append(kw) or _summary(kw['client_key'],kw['days']))
+    client=TestClient(main.app);base='/artifacts/rf/usage-monitoring-dashboard/usage-summary'
+    ok=client.get(base+'?start_date=2026-10-01&end_date=2026-10-31&audience=bicycle&artifact_search=Example&user_search=Reviewer',headers=_auth_headers(_token()))
+    assert ok.status_code==200
+    assert str(seen[-1]['start_date'])=='2026-10-01'
+    assert seen[-1]['audience']=='bicycle' and seen[-1]['artifact_search']=='Example'
+    for query in ['start_date=2026-10-01','start_date=2026-10-02&end_date=2026-10-01','start_date=2026-01-01&end_date=2026-10-01','start_date=not-a-date&end_date=2026-10-01','audience=srp','user_search='+'x'*101]:
+        assert client.get(base+'?'+query,headers=_auth_headers(_token())).status_code==400
+
+
+def test_usage_client_reporter_cannot_select_bicycle_audience(monkeypatch):
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY','rf')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE','rfdev_admin')
+    main=_load_main(monkeypatch)
+    monkeypatch.setattr(main,'require_analytics_reporting_access',lambda *args:False)
+    seen=[]
+    monkeypatch.setattr(main,'get_usage_summary',lambda **kw:seen.append(kw) or _summary(kw['client_key'],kw['days']))
+    response=TestClient(main.app).get('/artifacts/rf/usage-monitoring-dashboard/usage-summary?audience=bicycle',headers=_auth_headers(_token()))
+    assert response.status_code==200 and seen[0]['audience']=='rf'
+    # Preserve the established default for all existing clients/reporters.
+    response=TestClient(main.app).get('/artifacts/rf/usage-monitoring-dashboard/usage-summary',headers=_auth_headers(_token()))
+    assert response.status_code==200 and 'audience' not in seen[-1]
+
+
+def test_usage_filters_apply_in_sql_before_group_limits(monkeypatch):
+    from contextlib import contextmanager
+    from datetime import date, datetime, timezone
+    from app import monitoring
+    monkeypatch.setenv('ANALYTICS_REPORTING_CLIENT_KEY','rf')
+    monkeypatch.setenv('ANALYTICS_BICYCLE_ADMIN_ROLE','rfdev_admin')
+    queries=[]
+    class Cursor:
+        def __init__(self,sql):self.sql=sql
+        def fetchone(self):
+            if 'to_regclass' in self.sql:return ('monitoring.request_spans','monitoring.events')
+            return (0,0,0,0,None,None,0,0,0,0)
+        def fetchall(self):return []
+    class Connection:
+        def execute(self,sql,params=None):queries.append((sql,params));return Cursor(sql)
+    @contextmanager
+    def conn():yield Connection()
+    monkeypatch.setattr(monitoring,'get_metadata_conn',conn)
+    result=monitoring.get_usage_summary(client_key='rf',days=30,start_date=date(2026,10,1),end_date=date(2026,10,31),audience='bicycle',artifact_search="a' OR 1=1 --",user_search='Reviewer')
+    assert result['period_start']==datetime(2026,10,1,tzinfo=timezone.utc)
+    assert result['period_end']==datetime(2026,11,1,tzinfo=timezone.utc)
+    aggregate_queries=[q for q in queries if q[1] is not None]
+    assert len(aggregate_queries)==5
+    for sql,params in aggregate_queries:
+        assert "a' OR 1=1 --" not in sql
+        assert "a' or 1=1 --" in params
+        assert sql.count('%s')==len(params)
+        from pglast import parse_sql
+        parse_sql(sql.replace('%s', 'NULL'))
+        assert 'usage_spans AS' in sql and 'usage_events AS' in sql
+        assert "u.client_key = %s" in sql and 'u.admin_role_key = %s' in sql
+        assert 'EXISTS (' in sql
+    assert result['applied_filters']['audience']=='bicycle'
