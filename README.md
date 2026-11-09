@@ -355,6 +355,15 @@ returns only cache status and entry counts; it never returns artifact rows.
 The load must fail if the declared cache entries cannot be rebuilt, so a
 successful load is also evidence that the next dashboard request is warm.
 
+Load-bound artifacts may additionally define `{view_name}_query_cache_policy()`
+and return `{"refresh_mode":"prewarm_swap","ttl_seconds":0}`. Query Engine
+writes every declared request into a new persistent generation before changing
+the artifact's active-generation pointer. A failed query, Redis write, or
+prewarm request leaves the prior generation active. After a successful swap,
+requests that were not prewarmed rebuild lazily inside the new generation; the
+previous generation is then cleanup-only and is never an availability
+dependency.
+
 ## Artifact static assets
 
 Database-hosted web artifacts may publish immutable package-owned assets at:

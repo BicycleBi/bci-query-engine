@@ -972,6 +972,7 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
             "artifact_key": artifact_key,
             "status": "prewarmed",
             "entry_count": len(kwargs["queries"]),
+            "refresh_mode": "ttl",
         }
 
     monkeypatch.setattr(main, "prewarm_artifact_query_cache", fake_prewarm)
@@ -991,6 +992,7 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
         "artifact_key": "lot-summary",
         "status": "prewarmed",
         "entry_count": 2,
+        "refresh_mode": "ttl",
     }
     assert captured["queries"] == queries
 
