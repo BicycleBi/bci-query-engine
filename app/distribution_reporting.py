@@ -36,6 +36,60 @@ REPORT_ARTIFACT_KEYS = {
 }
 
 
+def _report_catalog() -> list[dict]:
+    """Return current report labels and access modes from the artifact registry."""
+    artifact_keys = sorted(set(REPORT_ARTIFACT_KEYS.values()))
+    try:
+        rows = _read(get_metadata_conn, 'app.artifacts', """
+          SELECT artifact_key, display_name, delivery_mode, active
+          FROM app.artifacts
+          WHERE client_key='srp' AND artifact_key = ANY(%s)
+          ORDER BY display_name, artifact_key
+        """, (artifact_keys,))
+    except Exception:
+        rows = None
+    registered = {
+        artifact_key: {
+            'display_name': display_name or artifact_key,
+            'delivery_mode': delivery_mode,
+            'active': bool(active),
+        }
+        for artifact_key, display_name, delivery_mode, active in rows or []
+    }
+    return [
+        {
+            'family': family,
+            'artifact_key': artifact_key,
+            'display_name': registered.get(artifact_key, {}).get('display_name', artifact_key),
+            'front_end': registered.get(artifact_key, {}).get('delivery_mode') in {'web', 'both'},
+            'artifact_active': registered.get(artifact_key, {}).get('active'),
+            'registry_status': 'unavailable' if rows is None else 'available' if artifact_key in registered else 'not_registered',
+        }
+        for family, artifact_key in REPORT_ARTIFACT_KEYS.items()
+    ]
+
+
+def _facility_report_status(row: dict, family: str) -> str:
+    statuses = row.get('report_statuses') or {}
+    if family == 'weekly_practice_report':
+        return statuses.get('weekly', 'not_verified')
+    if family == 'monthly_practice_report':
+        return statuses.get('monthly', 'not_verified')
+    if family == 'weekly_dashboard':
+        return statuses.get('weekly_dashboard') or statuses.get('weekly', 'not_verified')
+    if family == 'practice_performance_pulse':
+        return statuses.get(family) or ('included' if row.get('operational_data') in {'available', 'partial'} else 'not_available')
+    if family in {'rcm_report', 'provider_compensations'}:
+        return statuses.get(family) or ('included' if 'claims' in (row.get('sources') or []) else 'not_available')
+    if family == 'encounters_without_claims':
+        return statuses.get(family) or ('included' if 'appointments' in (row.get('sources') or []) else 'not_available')
+    if family == 'facility_pnl':
+        return statuses.get('pnl', 'not_verified')
+    if family == 'management_pnl':
+        return statuses.get('management_pnl', 'not_verified')
+    return 'not_verified'
+
+
 def _read(factory, relation: str, query: str, params=None):
     # Relation and query are fixed source definitions, never caller input.
     with factory() as conn:
@@ -108,8 +162,9 @@ def get_report_configurations() -> dict:
 def attach_report_configurations(payload: dict, *, facilities: bool = False) -> dict:
     """Enrich an existing bounded report response with configuration metadata."""
     configurations = get_report_configurations()
+    catalog = _report_catalog()
     payload['report_configurations'] = configurations
-    payload['report_artifact_keys'] = REPORT_ARTIFACT_KEYS
+    payload['report_catalog'] = catalog
     if facilities:
         for row in payload.get('rows') or []:
             pnl = row.get('pnl') or {}
@@ -121,6 +176,10 @@ def attach_report_configurations(payload: dict, *, facilities: bool = False) -> 
                 'not_verified' if source == 'unavailable' else
                 'not_available'
             )
+            row['reports'] = [
+                dict(item, status=_facility_report_status(row, item['family']))
+                for item in catalog
+            ]
     else:
         for row in payload.get('rows') or []:
             row['report_family'] = _distribution_family(row.get('artifact_key'))
@@ -129,6 +188,10 @@ def attach_report_configurations(payload: dict, *, facilities: bool = False) -> 
     sources.append({
         'source': 'load_setup_configuration',
         'status': 'available' if any(item['status'] == 'available' for item in configurations.values()) else 'unavailable',
+    })
+    sources.append({
+        'source': 'artifact_registry',
+        'status': 'available' if any(item['registry_status'] == 'available' for item in catalog) else 'unavailable',
     })
     return payload
 
