@@ -11,6 +11,20 @@ MAX_SOURCE_ROWS = 5000
 PAGE_SIZE = 50
 RESULTS = {'not_confirmed', 'matches', 'missing', 'extra', 'scope_mismatch', 'source_unavailable'}
 
+REPORT_CONFIGURATION_LOAD_KEYS = {
+    'weekly_practice_report': 'srp-scheduled-reports-daily-batch',
+    'monthly_practice_report': 'monthly-practice-report',
+    'facility_pnl': 'srp-quickbooks-pnl-source-sync',
+    'management_pnl': 'srp-quickbooks-pnl-source-sync',
+}
+
+REPORT_ARTIFACT_KEYS = {
+    'weekly_practice_report': 'weekly-practice-report',
+    'monthly_practice_report': 'monthly-practice-report',
+    'facility_pnl': 'practice-owner-profit-loss-report',
+    'management_pnl': 'quickbooks-profit-loss-report',
+}
+
 
 def _read(factory, relation: str, query: str, params=None):
     # Relation and query are fixed source definitions, never caller input.
@@ -28,6 +42,85 @@ def _read(factory, relation: str, query: str, params=None):
 def _slug(value: str) -> str:
     normalized = re.sub(r'[^a-z0-9]+', '_', value.lower()).strip('_') or 'slice'
     return normalized[:28].strip('_') + '_' + hashlib.sha1(value.encode()).hexdigest()[:8]
+
+
+def _distribution_family(artifact_key: str) -> str | None:
+    key = str(artifact_key or '')
+    if key.startswith('srp-weekly-practice-report-'):
+        return 'weekly_practice_report'
+    if key.startswith('srp-monthly-practice-report-'):
+        return 'monthly_practice_report'
+    if key == 'quickbooks-profit-loss-report':
+        return 'management_pnl'
+    if key == 'practice-owner-profit-loss-report' or key.startswith('pnl-owner-email-'):
+        return 'facility_pnl'
+    return None
+
+
+def get_report_configurations() -> dict:
+    """Return observed Production report workflow schedules from Load Setup metadata."""
+    load_keys = sorted(set(REPORT_CONFIGURATION_LOAD_KEYS.values()))
+    try:
+        rows = _read(get_data_conn, 'load_setup.trigger', """
+          SELECT l.definition->>'load_key', t.definition->>'trigger_id',
+                 t.definition->>'schedule', t.definition->>'timezone',
+                 COALESCE((t.definition->>'enabled')::boolean, false),
+                 COALESCE((t.definition->>'timer_active')::boolean, false)
+          FROM load_setup.trigger t
+          JOIN load_setup.load l USING (load_id)
+          WHERE l.client_key='srp' AND l.environment='production'
+            AND l.definition->>'load_key' = ANY(%s)
+          ORDER BY l.definition->>'load_key', t.definition->>'trigger_id'
+        """, (load_keys,))
+    except Exception:
+        rows = None
+    by_load = {}
+    for load_key, trigger_id, schedule, timezone_name, enabled, timer_active in rows or []:
+        by_load.setdefault(load_key, []).append({
+            'trigger_id': trigger_id,
+            'schedule': schedule,
+            'timezone': timezone_name,
+            'enabled': bool(enabled),
+            'timer_active': bool(timer_active),
+            'source': 'load_setup.trigger',
+        })
+    return {
+        family: {
+            'load_key': load_key,
+            'status': 'unavailable' if rows is None else 'available' if by_load.get(load_key) else 'not_scheduled',
+            'schedules': by_load.get(load_key, []),
+            'time_meaning': 'configured_workflow_start',
+        }
+        for family, load_key in REPORT_CONFIGURATION_LOAD_KEYS.items()
+    }
+
+
+def attach_report_configurations(payload: dict, *, facilities: bool = False) -> dict:
+    """Enrich an existing bounded report response with configuration metadata."""
+    configurations = get_report_configurations()
+    payload['report_configurations'] = configurations
+    payload['report_artifact_keys'] = REPORT_ARTIFACT_KEYS
+    if facilities:
+        for row in payload.get('rows') or []:
+            pnl = row.get('pnl') or {}
+            statuses = row.setdefault('report_statuses', {})
+            source = pnl.get('source')
+            statuses['management_pnl'] = (
+                'included' if source == 'available' else
+                'no_report_data' if source == 'entity_only' else
+                'not_verified' if source == 'unavailable' else
+                'not_available'
+            )
+    else:
+        for row in payload.get('rows') or []:
+            row['report_family'] = _distribution_family(row.get('artifact_key'))
+    sources = payload.setdefault('sources', [])
+    sources[:] = [source for source in sources if source.get('source') != 'load_setup_configuration']
+    sources.append({
+        'source': 'load_setup_configuration',
+        'status': 'available' if any(item['status'] == 'available' for item in configurations.values()) else 'unavailable',
+    })
+    return payload
 
 
 def compare_assignment(configured: dict | None, approved: dict | None) -> str:

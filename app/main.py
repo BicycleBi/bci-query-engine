@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from .report_snapshot import get_copied_report
 from .facility_reporting import attach_copied_facility_access, get_facility_report
-from .distribution_reporting import get_distribution_report
+from .distribution_reporting import attach_report_configurations, get_distribution_report
 from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
@@ -657,7 +657,8 @@ def distribution_summary(
     response.headers["Cache-Control"] = "no-store"
     try:
         copied = get_copied_report('distributions', search=search, facility=facility, result=result, offset=offset)
-        return copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        result_payload = copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        return attach_report_configurations(result_payload)
     except ValueError:
         raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
     except Exception:
@@ -690,8 +691,8 @@ def facility_summary(
                     access = page
                     access_offset += page['limit']
                 access = dict(access, rows=access_rows)
-            return attach_copied_facility_access(copied, access)
-        return get_facility_report(search=search, status=status, offset=offset)
+            return attach_report_configurations(attach_copied_facility_access(copied, access), facilities=True)
+        return attach_report_configurations(get_facility_report(search=search, status=status, offset=offset), facilities=True)
     except ValueError:
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
