@@ -427,6 +427,7 @@ class UsageLoginSummary(BaseModel):
 
 
 class UsageSummaryResponse(BaseModel):
+    applied_filters: dict[str, str] = Field(default_factory=dict)
     monitoring_available: bool = True
     client_key: str
     days: int

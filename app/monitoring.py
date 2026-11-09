@@ -6,7 +6,7 @@ must never be passed to this module.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as date_time, timedelta, timezone
 import json
 import logging
 import os
@@ -43,11 +43,23 @@ def _rounded_ms(value: Any) -> Optional[float]:
     return round(float(value), 1) if value is not None else None
 
 
-def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
+def get_usage_summary(*, client_key: str, days: int, start_date: date | None = None, end_date: date | None = None, audience: str = "all", artifact_search: str = "", user_search: str = "") -> dict[str, Any]:
     """Return a bounded client-scoped reporting summary, never raw telemetry."""
     period_end = datetime.now(tz=timezone.utc)
     period_start = period_end - timedelta(days=days)
+    if (start_date is None) != (end_date is None):
+        raise ValueError("Both custom dates are required")
+    if start_date is not None:
+        if start_date > end_date or (end_date - start_date).days >= 90 or end_date > period_end.date():
+            raise ValueError("Custom period must be 1 to 90 UTC calendar days, ending no later than today")
+        period_start = datetime.combine(start_date, date_time.min, timezone.utc)
+        period_end = datetime.combine(end_date + timedelta(days=1), date_time.min, timezone.utc)
+    if days not in {7, 30, 90} or audience not in {"all", client_key, "bicycle"} or len(artifact_search) > 100 or len(user_search) > 100:
+        raise ValueError("Invalid usage filter bounds")
     parameters = (client_key, period_start, period_end)
+    # Only this reporting read is extended. Telemetry writers are unchanged.
+    artifact_search, user_search = artifact_search.strip().lower(), user_search.strip().lower()
+    filtered = audience != "all" or bool(artifact_search or user_search)
 
     with get_metadata_conn() as meta:
         meta.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -62,6 +74,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 "period_start": period_start,
                 "period_end": period_end,
                 "monitoring_available": False,
+                "applied_filters": {"audience": audience, "artifact_search": artifact_search, "user_search": user_search},
                 "totals": {},
                 "daily": [],
                 "artifacts": [],
@@ -69,7 +82,31 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
                 "login_outcomes": [],
             }
 
-        totals_row = meta.execute(
+        def execute_summary(query, params):
+            if not filtered:
+                return meta.execute(query, params)
+            from .analytics import get_analytics_reporting_config
+            config = get_analytics_reporting_config(client_key)
+            # EXISTS avoids duplicating telemetry where multiple memberships match.
+            audience_clause = """(%s = 'all' OR EXISTS (
+                SELECT 1 FROM analytics_reporting.authorized_user_audiences u
+                WHERE u.client_key = %s AND u.admin_role_key = %s
+                  AND u.audience_key = %s
+                  AND (u.user_id::text = r.user_id OR
+                    (NULLIF(r.username, '') IS NOT NULL AND lower(u.email) = lower(r.username)))
+            ))"""
+            user_clause = "(%s = '' OR strpos(lower(coalesce(nullif(r.display_name, ''), nullif(r.username, ''), 'Unknown user') || ' ' || coalesce(r.username, '')), %s) > 0)"
+            common = (client_key, period_start, period_end, audience, client_key, config.admin_role, audience, user_search, user_search)
+            spans = "SELECT r.* FROM monitoring.request_spans r WHERE r.client_key = %s AND r.started_at >= %s AND r.started_at < %s AND " + audience_clause + " AND " + user_clause + " AND (%s = '' OR strpos(lower(coalesce(r.artifact_key, '')), %s) > 0 OR EXISTS (SELECT 1 FROM app.artifacts a WHERE a.client_key = r.client_key AND a.artifact_key = r.artifact_key AND strpos(lower(coalesce(a.display_name, '')), %s) > 0))"
+            events = "SELECT r.* FROM monitoring.events r WHERE r.client_key = %s AND r.occurred_at >= %s AND r.occurred_at < %s AND " + audience_clause + " AND " + user_clause + " AND (%s = '' OR r.event_type IN ('login_started','login_completed','login_denied','auth_denied') OR strpos(lower(coalesce(r.artifact_key, '')), %s) > 0 OR EXISTS (SELECT 1 FROM app.artifacts a WHERE a.client_key = r.client_key AND a.artifact_key = r.artifact_key AND strpos(lower(coalesce(a.display_name, '')), %s) > 0))"
+            # Artifact filters affect request/interaction measures, not authentication outcomes.
+            prefix = "WITH usage_spans AS (" + spans + "), usage_events AS (" + events + ")"
+            query = query.replace("FROM monitoring.request_spans", "FROM usage_spans").replace("FROM monitoring.events", "FROM usage_events")
+            stripped = query.lstrip()
+            query = prefix + (", " + stripped[5:] if stripped.startswith("WITH ") else " " + query)
+            return meta.execute(query, common + (artifact_search,) * 3 + common + (artifact_search,) * 3 + params)
+
+        totals_row = execute_summary(
             """
             WITH request_totals AS (
                 SELECT
@@ -109,7 +146,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             parameters + parameters,
         ).fetchone()
 
-        daily_rows = meta.execute(
+        daily_rows = execute_summary(
             """
             SELECT
                 started_at::date,
@@ -129,7 +166,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             parameters,
         ).fetchall()
 
-        artifact_rows = meta.execute(
+        artifact_rows = execute_summary(
             """
             SELECT
                 s.artifact_key,
@@ -157,7 +194,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             parameters,
         ).fetchall()
 
-        user_rows = meta.execute(
+        user_rows = execute_summary(
             """
             SELECT
                 COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), 'Unknown user'),
@@ -182,7 +219,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
             parameters,
         ).fetchall()
 
-        login_rows = meta.execute(
+        login_rows = execute_summary(
             """
             SELECT
                 CASE
@@ -206,6 +243,7 @@ def get_usage_summary(*, client_key: str, days: int) -> dict[str, Any]:
 
     totals_row = totals_row or (0, 0, 0, 0, None, None, 0, 0, 0, 0)
     return {
+        "applied_filters": {"audience": audience, "artifact_search": artifact_search, "user_search": user_search},
         "client_key": client_key,
         "days": days,
         "period_start": period_start,
