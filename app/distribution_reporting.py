@@ -14,6 +14,11 @@ RESULTS = {'not_confirmed', 'matches', 'missing', 'extra', 'scope_mismatch', 'so
 REPORT_CONFIGURATION_LOAD_KEYS = {
     'weekly_practice_report': 'srp-scheduled-reports-daily-batch',
     'monthly_practice_report': 'monthly-practice-report',
+    'weekly_dashboard': 'srp-scheduled-reports-daily-batch',
+    'practice_performance_pulse': 'srp-scheduled-reports-daily-batch',
+    'rcm_report': 'srp-scheduled-reports-daily-batch',
+    'encounters_without_claims': 'srp-scheduled-reports-daily-batch',
+    'provider_compensations': 'srp-scheduled-reports-daily-batch',
     'facility_pnl': 'srp-quickbooks-pnl-source-sync',
     'management_pnl': 'srp-quickbooks-pnl-source-sync',
 }
@@ -21,6 +26,11 @@ REPORT_CONFIGURATION_LOAD_KEYS = {
 REPORT_ARTIFACT_KEYS = {
     'weekly_practice_report': 'weekly-practice-report',
     'monthly_practice_report': 'monthly-practice-report',
+    'weekly_dashboard': 'weekly-dashboard',
+    'practice_performance_pulse': 'practice-performance-pulse',
+    'rcm_report': 'rcm-report',
+    'encounters_without_claims': 'ewc-monitoring-qc',
+    'provider_compensations': 'provider-compensations',
     'facility_pnl': 'practice-owner-profit-loss-report',
     'management_pnl': 'quickbooks-profit-loss-report',
 }
