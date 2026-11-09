@@ -715,7 +715,8 @@ def submit_change_request(
         raise HTTPException(404, "Change requests are unavailable for this artifact")
     require_analytics_reporting_access(identity, client_key, "access")
     request_id = str(uuid.uuid4())
-    requester = str(identity.get("email") or identity.get("display_name") or identity.get("sub") or "Authenticated SRP user")
+    requester_email = str(identity.get("email") or "").strip()
+    requester = requester_email or str(identity.get("display_name") or identity.get("sub") or "Authenticated SRP user")
     body = (
         f"<h2>{html.escape(request.subject)}</h2>"
         f"<p><strong>Section:</strong> {html.escape(request.section)}<br>"
@@ -730,6 +731,7 @@ def submit_change_request(
             request.subject,
             body,
             ["srp@bicyclebi.com"],
+            cc=[requester_email] if requester_email else [],
             client_key="srp",
             artifact_key="client-access-distribution-report",
             request_id=request_id,
