@@ -3,6 +3,7 @@ models.py — Pydantic request/response models for the Query Engine API.
 """
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any, Optional
 
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
@@ -119,11 +120,11 @@ class ArtifactWriteResponse(BaseModel):
 class ChangeRequestEmailRequest(BaseModel):
     section: str = Field(min_length=1, max_length=80)
     record: str = Field(min_length=1, max_length=240)
-    request_type: str = Field(min_length=1, max_length=80)
     subject: str = Field(min_length=1, max_length=240)
     details: str = Field(min_length=1, max_length=4000)
+    cc: list[str] = Field(default_factory=list, max_length=10)
 
-    @field_validator("section", "record", "request_type", "subject", "details")
+    @field_validator("section", "record", "subject", "details")
     @classmethod
     def normalize_change_request_text(cls, value: str, info) -> str:
         normalized = value.strip()
@@ -131,6 +132,21 @@ class ChangeRequestEmailRequest(BaseModel):
             raise ValueError(f"{info.field_name} cannot be blank")
         if info.field_name == "subject" and ("\r" in normalized or "\n" in normalized):
             raise ValueError("subject must be one line")
+        return normalized
+
+    @field_validator("cc")
+    @classmethod
+    def validate_change_request_cc(cls, values: list[str]) -> list[str]:
+        normalized = []
+        seen = set()
+        for value in values:
+            email = str(value or "").strip()
+            if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+                raise ValueError("cc contains an invalid email address")
+            key = email.casefold()
+            if key not in seen:
+                seen.add(key)
+                normalized.append(email)
         return normalized
 
 
