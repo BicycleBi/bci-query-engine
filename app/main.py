@@ -721,17 +721,20 @@ def submit_change_request(
         f"<h2>{html.escape(request.subject)}</h2>"
         f"<p><strong>Section:</strong> {html.escape(request.section)}<br>"
         f"<strong>Record:</strong> {html.escape(request.record)}<br>"
-        f"<strong>Request type:</strong> {html.escape(request.request_type)}<br>"
         f"<strong>Requested by:</strong> {html.escape(requester)}<br>"
         f"<strong>Request ID:</strong> {html.escape(request_id)}</p>"
         f"<p>{html.escape(request.details).replace(chr(10), '<br>')}</p>"
     )
+    cc = []
+    for address in ([requester_email] if requester_email else []) + request.cc:
+        if address.casefold() not in {item.casefold() for item in cc}:
+            cc.append(address)
     try:
         delivery = send_email(
             request.subject,
             body,
             ["srp@bicyclebi.com"],
-            cc=[requester_email] if requester_email else [],
+            cc=cc,
             client_key="srp",
             artifact_key="client-access-distribution-report",
             request_id=request_id,
