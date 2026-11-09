@@ -107,15 +107,14 @@ def attach_copied_facility_access(payload, access_payload):
             row['user_access'] = []
         return payload
 
-    # The inert copy intentionally carries Production role keys.  Do not join
-    # them to Dev's differently namespaced live role table.  Production P&L
-    # roles use the established exact role/entity contract also consumed by
-    # the secured report: srp_production_pnl_<entity_code>.
+    # The inert copy carries the maintained Production role/entity mapping.
+    # Do not join it to Dev's differently namespaced live role table or derive
+    # a role name from an entity code.
     role_entities = defaultdict(set)
     for row in rows:
-        for entity in row.get('entity_codes') or []:
-            entity = str(entity)
-            role_entities['srp_production_pnl_' + entity].add(entity)
+        entities = {str(entity) for entity in row.get('entity_codes') or []}
+        for role in row.get('pnl_role_keys') or []:
+            role_entities[str(role)].update(entities)
     scoped_users = defaultdict(dict)
     for subject in access_rows:
         if not subject.get('active'):
