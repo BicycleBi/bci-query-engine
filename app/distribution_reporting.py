@@ -1,0 +1,380 @@
+"""Read-only SRP distribution inventory. No sends, mutations or inferred approval."""
+from datetime import datetime, timezone
+import hashlib
+import re
+from typing import Any
+
+from .analytics import get_analytics_reporting_config
+from .db import get_data_conn, get_metadata_conn
+
+MAX_SOURCE_ROWS = 5000
+PAGE_SIZE = 50
+RESULTS = {'not_confirmed', 'matches', 'missing', 'extra', 'scope_mismatch', 'source_unavailable'}
+
+REPORT_CONFIGURATION_LOAD_KEYS = {
+    'weekly_practice_report': 'srp-scheduled-reports-daily-batch',
+    'monthly_practice_report': 'monthly-practice-report',
+    'weekly_dashboard': 'srp-scheduled-reports-daily-batch',
+    'practice_performance_pulse': 'srp-scheduled-reports-daily-batch',
+    'rcm_report': 'srp-scheduled-reports-daily-batch',
+    'encounters_without_claims': 'srp-scheduled-reports-daily-batch',
+    'provider_compensations': 'srp-scheduled-reports-daily-batch',
+    'facility_pnl': 'srp-quickbooks-pnl-source-sync',
+    'management_pnl': 'srp-quickbooks-pnl-source-sync',
+}
+
+REPORT_ARTIFACT_KEYS = {
+    'weekly_practice_report': 'weekly-practice-report',
+    'monthly_practice_report': 'monthly-practice-report',
+    'weekly_dashboard': 'weekly-dashboard',
+    'practice_performance_pulse': 'practice-performance-pulse',
+    'rcm_report': 'rcm-report',
+    'encounters_without_claims': 'ewc-monitoring-qc',
+    'provider_compensations': 'provider-compensations',
+    'facility_pnl': 'practice-owner-profit-loss-report',
+    'management_pnl': 'quickbooks-profit-loss-report',
+}
+
+
+def _report_catalog() -> list[dict]:
+    """Return current report labels and access modes from the artifact registry."""
+    artifact_keys = sorted(set(REPORT_ARTIFACT_KEYS.values()))
+    try:
+        rows = _read(get_metadata_conn, 'app.artifacts', """
+          SELECT artifact_key, display_name, delivery_mode, active
+          FROM app.artifacts
+          WHERE client_key='srp' AND artifact_key = ANY(%s)
+          ORDER BY display_name, artifact_key
+        """, (artifact_keys,))
+    except Exception:
+        rows = None
+    registered = {
+        artifact_key: {
+            'display_name': display_name or artifact_key,
+            'delivery_mode': delivery_mode,
+            'active': bool(active),
+        }
+        for artifact_key, display_name, delivery_mode, active in rows or []
+    }
+    return [
+        {
+            'family': family,
+            'artifact_key': artifact_key,
+            'display_name': registered.get(artifact_key, {}).get('display_name', artifact_key),
+            'front_end': registered.get(artifact_key, {}).get('delivery_mode') in {'web', 'both'},
+            'artifact_active': registered.get(artifact_key, {}).get('active'),
+            'registry_status': 'unavailable' if rows is None else 'available' if artifact_key in registered else 'not_registered',
+        }
+        for family, artifact_key in REPORT_ARTIFACT_KEYS.items()
+    ]
+
+
+def _facility_report_status(row: dict, family: str) -> str:
+    statuses = row.get('report_statuses') or {}
+    if family == 'weekly_practice_report':
+        return statuses.get('weekly', 'not_verified')
+    if family == 'monthly_practice_report':
+        return statuses.get('monthly', 'not_verified')
+    if family == 'weekly_dashboard':
+        return statuses.get('weekly_dashboard') or statuses.get('weekly', 'not_verified')
+    if family == 'practice_performance_pulse':
+        return statuses.get(family) or ('included' if row.get('operational_data') in {'available', 'partial'} else 'not_available')
+    if family in {'rcm_report', 'provider_compensations'}:
+        return statuses.get(family) or ('included' if 'claims' in (row.get('sources') or []) else 'not_available')
+    if family == 'encounters_without_claims':
+        return statuses.get(family) or ('included' if 'appointments' in (row.get('sources') or []) else 'not_available')
+    if family == 'facility_pnl':
+        return statuses.get('pnl', 'not_verified')
+    if family == 'management_pnl':
+        return statuses.get('management_pnl', 'not_verified')
+    return 'not_verified'
+
+
+def _read(factory, relation: str, query: str, params=None):
+    # Relation and query are fixed source definitions, never caller input.
+    with factory() as conn:
+        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        conn.execute("SET LOCAL statement_timeout = '10s'")
+        if not conn.execute('SELECT to_regclass(%s)', (relation,)).fetchone()[0]:
+            return None
+        rows = conn.execute(query + ' LIMIT 5001', params).fetchall()
+        if len(rows) > MAX_SOURCE_ROWS:
+            raise RuntimeError('Distribution source exceeds reporting bound')
+        return rows
+
+
+def _slug(value: str) -> str:
+    normalized = re.sub(r'[^a-z0-9]+', '_', value.lower()).strip('_') or 'slice'
+    return normalized[:28].strip('_') + '_' + hashlib.sha1(value.encode()).hexdigest()[:8]
+
+
+def _distribution_family(artifact_key: str) -> str | None:
+    key = str(artifact_key or '')
+    if key.startswith('srp-weekly-practice-report-'):
+        return 'weekly_practice_report'
+    if key.startswith('srp-monthly-practice-report-'):
+        return 'monthly_practice_report'
+    if key == 'quickbooks-profit-loss-report':
+        return 'management_pnl'
+    if key == 'practice-owner-profit-loss-report' or key.startswith('pnl-owner-email-'):
+        return 'facility_pnl'
+    return None
+
+
+def get_report_configurations() -> dict:
+    """Return observed Production report workflow schedules from Load Setup metadata."""
+    load_keys = sorted(set(REPORT_CONFIGURATION_LOAD_KEYS.values()))
+    try:
+        rows = _read(get_data_conn, 'load_setup.trigger', """
+          SELECT l.definition->>'load_key', t.definition->>'trigger_id',
+                 t.definition->>'schedule', t.definition->>'timezone',
+                 COALESCE((t.definition->>'enabled')::boolean, false),
+                 COALESCE((t.definition->>'timer_active')::boolean, false)
+          FROM load_setup.trigger t
+          JOIN load_setup.load l USING (load_id)
+          WHERE l.client_key='srp' AND l.environment='production'
+            AND l.definition->>'load_key' = ANY(%s)
+          ORDER BY l.definition->>'load_key', t.definition->>'trigger_id'
+        """, (load_keys,))
+    except Exception:
+        rows = None
+    by_load = {}
+    for load_key, trigger_id, schedule, timezone_name, enabled, timer_active in rows or []:
+        by_load.setdefault(load_key, []).append({
+            'trigger_id': trigger_id,
+            'schedule': schedule,
+            'timezone': timezone_name,
+            'enabled': bool(enabled),
+            'timer_active': bool(timer_active),
+            'source': 'load_setup.trigger',
+        })
+    return {
+        family: {
+            'load_key': load_key,
+            'status': 'unavailable' if rows is None else 'available' if by_load.get(load_key) else 'not_scheduled',
+            'schedules': by_load.get(load_key, []),
+            'time_meaning': 'configured_workflow_start',
+        }
+        for family, load_key in REPORT_CONFIGURATION_LOAD_KEYS.items()
+    }
+
+
+def attach_report_configurations(payload: dict, *, facilities: bool = False) -> dict:
+    """Enrich an existing bounded report response with configuration metadata."""
+    configurations = get_report_configurations()
+    catalog = _report_catalog()
+    payload['report_configurations'] = configurations
+    payload['report_catalog'] = catalog
+    if facilities:
+        for row in payload.get('rows') or []:
+            pnl = row.get('pnl') or {}
+            statuses = row.setdefault('report_statuses', {})
+            source = pnl.get('source')
+            statuses['management_pnl'] = (
+                'included' if source == 'available' else
+                'no_report_data' if source == 'entity_only' else
+                'not_verified' if source == 'unavailable' else
+                'not_available'
+            )
+            row['reports'] = [
+                dict(item, status=_facility_report_status(row, item['family']))
+                for item in catalog
+            ]
+    else:
+        for row in payload.get('rows') or []:
+            row['report_family'] = _distribution_family(row.get('artifact_key'))
+    sources = payload.setdefault('sources', [])
+    sources[:] = [source for source in sources if source.get('source') != 'load_setup_configuration']
+    sources.append({
+        'source': 'load_setup_configuration',
+        'status': 'available' if any(item['status'] == 'available' for item in configurations.values()) else 'unavailable',
+    })
+    sources.append({
+        'source': 'artifact_registry',
+        'status': 'available' if any(item['registry_status'] == 'available' for item in catalog) else 'unavailable',
+    })
+    return payload
+
+
+def compare_assignment(configured: dict | None, approved: dict | None) -> str:
+    """Missing approval is unknown. Never treat configured state as approval."""
+    if not approved or not approved.get('approval_source') or not approved.get('approver') or not approved.get('approval_date') or not approved.get('maintenance_owner'):
+        return 'not_confirmed'
+    if approved.get('excluded'):
+        return 'extra' if configured and configured.get('enabled') else 'matches'
+    if configured is None or not configured.get('enabled'):
+        return 'missing'
+    if not configured.get('facility_resolved'):
+        return 'not_confirmed'
+    if set(configured['facilities']) != set(approved['facilities']) or configured.get('delivery_type') != approved.get('delivery_type'):
+        return 'scope_mismatch'
+    return 'matches'
+
+
+def get_distribution_report(*, search: str = '', facility: str = '', result: str = '', offset: int = 0) -> dict:
+    if len(search) > 100 or len(facility) > 200 or result not in RESULTS | {''} or not 0 <= offset <= 100000:
+        raise ValueError('Invalid distribution reporting bounds')
+    config = get_analytics_reporting_config('srp')
+    params = {'client': 'srp', 'admin': config.admin_role}
+    # Registry is the configured email target, not approval and not proof of delivery.
+    registry = _read(get_metadata_conn, 'app.artifact_recipients', """
+        SELECT a.artifact_key, a.display_name, a.active, r.email, r.delivery_type, r.active
+        FROM app.artifacts a JOIN app.artifact_recipients r USING (artifact_id)
+        WHERE a.client_key = %(client)s AND a.delivery_mode IN ('email','both')
+          AND NOT EXISTS (
+            SELECT 1 FROM analytics_reporting.effective_assignments g
+            WHERE g.client_key = %(client)s AND g.active AND g.is_bicycle_admin
+              AND g.admin_role_key = %(admin)s AND lower(g.email) = lower(r.email))
+        ORDER BY a.artifact_key, lower(r.email), r.delivery_type
+    """, params)
+    if registry is None:
+        raise RuntimeError('Distribution registry unavailable')
+    excluded = _read(get_metadata_conn, 'analytics_reporting.effective_assignments', """
+        SELECT DISTINCT lower(email) FROM analytics_reporting.effective_assignments
+        WHERE client_key=%(client)s AND active AND is_bicycle_admin AND admin_role_key=%(admin)s
+        ORDER BY lower(email)
+    """, params)
+    if excluded is None:
+        raise RuntimeError('Distribution audience unavailable')
+    excluded_emails = {r[0].strip() for r in excluded if r[0]}
+    sources = [{'source': 'metadata_artifact_recipients', 'status': 'available'}]
+    scopes: dict[str, set[str]] = {}
+    mappings = []
+    # Missing optional sources remain visibly unavailable, never empty proof.
+    queries = [
+        ('weekly_mapping', 'public.srp_weekly_report_recipient_mapping', """
+          SELECT facility_name, recipient_email, recipient_type, send_enabled, ready_for_release
+          FROM public.srp_weekly_report_recipient_mapping ORDER BY facility_name, recipient_email
+        """),
+        ('pnl_scope', 'public.srp_pnl_owner_delivery_scope', """
+          SELECT artifact_key, entity_code, active
+          FROM public.srp_pnl_owner_delivery_scope ORDER BY artifact_key, entity_code
+        """),
+    ]
+    for name, relation, query in queries:
+        try:
+            data = _read(get_data_conn, relation, query)
+        except Exception:
+            data = None
+        sources.append({'source': name, 'status': 'available' if data is not None else 'unavailable'})
+        if data is None:
+            continue
+        if name == 'weekly_mapping':
+            for label, email, kind, enabled, ready in data:
+                if not label:
+                    continue
+                for family in ('weekly', 'monthly'):
+                    key = f'srp-{family}-practice-report-{_slug(label)}-email'
+                    scopes.setdefault(key, set()).add(label)
+                    mappings.append((key, label, str(email or '').strip().casefold(), bool(enabled and ready), kind, family + '_mapping'))
+        else:
+            for key, entity, active in data:
+                # Inactive scopes still explain configured recipients; do not discard them.
+                scopes.setdefault(key, set()).add(entity)
+    for name, relation, query in [
+        ('pnl_effective_recipients', 'public.srp_pnl_owner_delivery_recipient_source', """
+          SELECT artifact_key, entity_code, recipient_email, recipient_type, send_enabled, ready_for_release
+          FROM public.srp_pnl_owner_delivery_recipient_source ORDER BY artifact_key, recipient_email
+        """),
+        ('pnl_recipient_overrides', 'public.srp_pnl_owner_delivery_recipient_override', """
+          SELECT s.artifact_key, o.entity_code, o.recipient_email, o.recipient_type,
+                 o.send_enabled AND s.active, o.ready_for_release
+          FROM public.srp_pnl_owner_delivery_recipient_override o
+          JOIN public.srp_pnl_owner_delivery_scope s USING (entity_code)
+          ORDER BY s.artifact_key, o.recipient_email
+        """),
+    ]:
+        try:
+            data = _read(get_data_conn, relation, query)
+        except Exception:
+            data = None
+        sources.append({'source': name, 'status': 'available' if data is not None else 'unavailable'})
+        for artifact, entity, email, kind, enabled, ready in data or []:
+            scopes.setdefault(artifact, set()).add(entity)
+            mappings.append((artifact, entity, str(email or '').strip().casefold(), bool(enabled and ready), kind, name))
+    sources.extend([
+        {'source': 'monthly_source_activity_eligibility', 'status': 'not_assessed'},
+        {'source': 'consolidated_facility_scope', 'status': 'unverified'},
+        {'source': 'workflow_distribution_group_selection', 'status': 'unverified'},
+    ])
+    # Inert approval relation is populated only after explicit SRP confirmation.
+    try:
+        approvals = _read(get_data_conn, 'public.srp_report_distribution_approval', """
+          SELECT artifact_key, recipient_email, delivery_type, facility_keys, excluded,
+                 approval_source, approver, approval_date, maintenance_owner, approval_version
+          FROM public.srp_report_distribution_approval
+          WHERE client_key='srp' AND active AND (effective_from IS NULL OR effective_from <= CURRENT_DATE)
+            AND (effective_until IS NULL OR effective_until >= CURRENT_DATE)
+          ORDER BY artifact_key, lower(recipient_email), delivery_type
+        """)
+    except Exception:
+        approvals = None
+    approval_map = {}
+    for a in approvals or []:
+        key = (a[0], a[1].strip().casefold(), a[2])
+        if key in approval_map:
+            # Conflicting approvals cannot authorize a discrepancy verdict.
+            approval_map[key] = None
+            continue
+        approval_map[key] = dict(facilities=a[3], excluded=a[4], approval_source=a[5], approver=a[6], approval_date=a[7], maintenance_owner=a[8], approval_version=a[9], delivery_type=a[2])
+    rows = []
+    seen = set()
+    for artifact, name, artifact_active, email, delivery_type, recipient_active in registry:
+        if not email:
+            continue
+        key = (artifact, email.strip().casefold(), delivery_type)
+        if key[1] in excluded_emails:
+            continue
+        seen.add(key)
+        facilities = sorted(scopes.get(artifact, set()))
+        configured = dict(enabled=bool(artifact_active and recipient_active), facilities=facilities,
+                          facility_resolved=bool(facilities), delivery_type=delivery_type)
+        approved = approval_map.get(key)
+        mapping = [m for m in mappings if m[0] == artifact and m[2] == key[1]]
+        rows.append(dict(artifact_key=artifact, report_name=name, recipient_email=email,
+                         delivery_type=delivery_type, facilities=facilities,
+                         configuration_state='enabled' if configured['enabled'] else 'disabled',
+                         mapping_state=('enabled' if any(m[3] for m in mapping) else 'not_ready') if mapping else 'not_verified',
+                         facility_state='resolved' if facilities else 'unresolved',
+                         eligibility='not_assessed', approved=approved,
+                         result=compare_assignment(configured, approved), source='metadata_artifact_recipients'))
+    for key, approved in approval_map.items():
+        if key in seen or not approved or key[1] in excluded_emails:
+            continue
+        rows.append(dict(artifact_key=key[0], report_name=key[0], recipient_email=key[1], delivery_type=key[2],
+                         facilities=approved['facilities'], configuration_state='not_configured', mapping_state='not_verified',
+                         facility_state='resolved', eligibility='not_assessed', approved=approved,
+                         result=compare_assignment(None, approved), source='srp_approved_list'))
+    # Mapping sources are configured intent too, even before generated targets
+    # exist in Metadata. Show the registry gap without treating it as approval.
+    mapping_rows = {}
+    for artifact, label, email, enabled, kind, source in mappings:
+        key = (artifact, email, kind)
+        if not email or email in excluded_emails or key in seen:
+            continue
+        if key in mapping_rows:
+            mapping_rows[key]['facilities'] = sorted(set(mapping_rows[key]['facilities']) | {label})
+            continue
+        configured = dict(enabled=enabled, facilities=[label], facility_resolved=True, delivery_type=kind)
+        approved = approval_map.get(key)
+        mapping_rows[key] = dict(artifact_key=artifact, report_name=artifact, recipient_email=email,
+            delivery_type=kind, facilities=[label], configuration_state='enabled' if enabled else 'disabled_or_not_ready',
+            registry_state='not_configured', mapping_state='enabled' if enabled else 'not_ready',
+            facility_state='resolved', eligibility='not_assessed', approved=approved,
+            result=compare_assignment(configured, approved), source=source)
+    # Approved-only rows were added above; replace them with mapping evidence
+    # rather than counting a configured intent twice.
+    rows = [r for r in rows if (r['artifact_key'], r['recipient_email'].strip().casefold(), r['delivery_type']) not in mapping_rows]
+    for key, item in mapping_rows.items():
+        configured = dict(enabled=item['configuration_state']=='enabled', facilities=item['facilities'], facility_resolved=True, delivery_type=item['delivery_type'])
+        item['result'] = compare_assignment(configured, item['approved'])
+    rows.extend(mapping_rows.values())
+    query = search.strip().casefold()
+    rows = [r for r in rows if (not query or query in ' '.join([r['report_name'], r['artifact_key'], r['recipient_email'], *r['facilities']]).casefold())
+            and (not facility or facility in r['facilities']) and (not result or r['result'] == result)]
+    rows.sort(key=lambda r: (r['report_name'].casefold(), r['recipient_email'].casefold(), r['delivery_type']))
+    return dict(client_key='srp', audience='srp', as_of=datetime.now(timezone.utc),
+                rows=rows[offset:offset+PAGE_SIZE], total=len(rows), offset=offset, limit=PAGE_SIZE,
+                has_more=offset+PAGE_SIZE < len(rows), sources=sources,
+                approval_status='available' if approvals else 'not_confirmed',
+                coverage='partial', delivery_history_included=False)

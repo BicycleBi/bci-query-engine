@@ -4,6 +4,7 @@ main.py — FastAPI routes for the Query Engine.
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import time
@@ -16,6 +17,10 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
+from .report_snapshot import get_copied_report
+from .facility_reporting import attach_copied_facility_access, get_facility_report
+from .distribution_reporting import attach_report_configurations, get_distribution_report
+from .mailer import send as send_email
 from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
@@ -55,6 +60,7 @@ from .models import (
     ArtifactQueryCachePrewarmResponse,
     ArtifactWriteRequest,
     ArtifactWriteResponse,
+    ChangeRequestEmailRequest,
     HealthResponse,
     DeliveryBatchRequest,
     DeliveryBatchResponse,
@@ -78,7 +84,12 @@ from .monitoring import (
     start_gateway_listener,
     stop_gateway_listener,
 )
-from .usage_access import get_access_summary, get_access_matrix, require_analytics_reporting_access
+from .usage_access import (
+    get_access_summary,
+    get_access_matrix,
+    get_home_artifact_keys,
+    require_analytics_reporting_access,
+)
 
 _delivery_worker_started = False
 _data_load_action_worker_started = False
@@ -581,7 +592,7 @@ def access_summary(
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     require_client_access(identity, client_key)
-    if artifact_key != "usage-monitoring-dashboard":
+    if artifact_key != "usage-monitoring-dashboard" and not (client_key == "srp" and artifact_key == "client-access-distribution-report"):
         raise HTTPException(404, "Access summary is unavailable for this artifact")
     if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
         raise HTTPException(400, "Invalid reporting period, search, or offset")
@@ -593,15 +604,121 @@ def access_summary(
     is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "access")
     effective_audience = audience if is_bicycle_admin else client_key
     response.headers["Cache-Control"] = "no-store"
+    if artifact_key == "client-access-distribution-report" and (perspective not in {"users", "artifacts"} or effective_audience != "srp"):
+        raise HTTPException(400, "Invalid SRP report perspective or audience")
     try:
-        if perspective:
+        copied = None
+        if artifact_key == "client-access-distribution-report":
+            copied = get_copied_report('access-' + perspective, search=search, offset=offset)
+        if copied is not None:
+            result = copied
+        elif perspective:
             result = get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=effective_audience)
         else:
             result = get_access_summary(client_key=client_key, days=days, search=search, offset=offset, audience=effective_audience)
+        if artifact_key == "client-access-distribution-report":
+            result["home_artifact_keys"] = get_home_artifact_keys(client_key)
         result["allowed_audiences"] = ["all", client_key, "bicycle"] if is_bicycle_admin else [client_key]
         return result
     except Exception:
         raise HTTPException(503, "Access reporting is unavailable") from None
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/distribution-summary")
+def distribution_summary(
+    response: Response, client_key: str, artifact_key: str,
+    search: str = "", facility: str = "", result: str = "", offset: int = 0,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Distribution reporting is unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        copied = get_copied_report('distributions', search=search, facility=facility, result=result, offset=offset)
+        result_payload = copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        return attach_report_configurations(result_payload)
+    except ValueError:
+        raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
+    except Exception:
+        raise HTTPException(503, "Distribution reporting is unavailable") from None
+
+
+@app.get("/artifacts/{client_key}/{artifact_key}/facility-summary")
+def facility_summary(
+    response: Response, client_key: str, artifact_key: str,
+    search: str = "", status: str = "", offset: int = 0,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Facility reporting is unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        copied = get_copied_report('facilities', search=search, status=status, offset=offset)
+        if copied is not None:
+            access = get_copied_report('access-users', offset=0)
+            if access is not None:
+                access_rows = list(access['rows'])
+                access_offset = access['limit']
+                while access.get('has_more'):
+                    if access_offset >= 5000:
+                        raise RuntimeError("Copied access snapshot exceeds reporting bound")
+                    page = get_copied_report('access-users', offset=access_offset)
+                    access_rows.extend(page['rows'])
+                    access = page
+                    access_offset += page['limit']
+                access = dict(access, rows=access_rows)
+            return attach_report_configurations(attach_copied_facility_access(copied, access), facilities=True)
+        return attach_report_configurations(get_facility_report(search=search, status=status, offset=offset), facilities=True)
+    except ValueError:
+        raise HTTPException(400, "Invalid facility reporting bounds") from None
+    except Exception:
+        raise HTTPException(503, "Facility reporting is unavailable") from None
+
+
+@app.post("/artifacts/{client_key}/{artifact_key}/change-request")
+def submit_change_request(
+    client_key: str,
+    artifact_key: str,
+    request: ChangeRequestEmailRequest,
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Send one bounded, authenticated report change request to SRP support."""
+    require_client_access(identity, client_key)
+    if client_key != "srp" or artifact_key != "client-access-distribution-report":
+        raise HTTPException(404, "Change requests are unavailable for this artifact")
+    require_analytics_reporting_access(identity, client_key, "access")
+    request_id = str(uuid.uuid4())
+    requester_email = str(identity.get("email") or "").strip()
+    requester = requester_email or str(identity.get("display_name") or identity.get("sub") or "Authenticated SRP user")
+    body = (
+        f"<h2>{html.escape(request.subject)}</h2>"
+        f"<p><strong>Section:</strong> {html.escape(request.section)}<br>"
+        f"<strong>Record:</strong> {html.escape(request.record)}<br>"
+        f"<strong>Requested by:</strong> {html.escape(requester)}<br>"
+        f"<strong>Request ID:</strong> {html.escape(request_id)}</p>"
+        f"<p>{html.escape(request.details).replace(chr(10), '<br>')}</p>"
+    )
+    cc = []
+    for address in ([requester_email] if requester_email else []) + request.cc:
+        if address.casefold() not in {item.casefold() for item in cc}:
+            cc.append(address)
+    try:
+        delivery = send_email(
+            request.subject,
+            body,
+            ["srp@bicyclebi.com"],
+            cc=cc,
+            client_key="srp",
+            artifact_key="client-access-distribution-report",
+            request_id=request_id,
+        )
+    except Exception:
+        raise HTTPException(503, "The change request could not be sent. Open it in email instead.") from None
+    return {"status": "accepted", "request_id": request_id, "delivery_id": delivery.get("delivery_id")}
 
 
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
