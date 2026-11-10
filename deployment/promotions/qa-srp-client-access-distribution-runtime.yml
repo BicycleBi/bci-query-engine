@@ -1,0 +1,21 @@
+schema_version: 1
+client: srp
+environment: qa
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srpqa
+  compose_project: srpqa
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Serve the validated SRP Client Access and Distribution report APIs in QA
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
