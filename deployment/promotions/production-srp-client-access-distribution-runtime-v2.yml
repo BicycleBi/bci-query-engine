@@ -1,0 +1,22 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    release_id: service-runtime-srp-production-client-access-distribution-20261110-v2
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Serve the QA-validated SRP Client Access and Distribution report APIs in Production
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
