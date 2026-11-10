@@ -1,0 +1,72 @@
+{
+  "client": "srp",
+  "environment": "production",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/production-srp-client-access-distribution-runtime-v2.yml",
+        "role": "production-srp-client-access-distribution-runtime-v2",
+        "sha256": "36eff49d1f5792fefe17027fe7178adf4eb64ab109a6c76ce84064795309ac51"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "b163930d4f90fe38a4138f16f225cbf817f7fa57",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/main",
+      "schema_version": 4,
+      "source_commit": "a0411009468e429191a0a0678c6c6a900e7f7101",
+      "source_ref": "refs/heads/codex/srp-client-access-production-source-20261110",
+      "target_commit": "b163930d4f90fe38a4138f16f225cbf817f7fa57",
+      "target_ref": "refs/heads/main"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srp-production-client-access-distribution-runtime-20261110",
+    "client": "srp",
+    "dependencies": [],
+    "environment": "production",
+    "forbidden_units": [],
+    "generated_at": "2026-11-10T08:22:21Z",
+    "intent": "Serve the QA-validated Client Access and Distribution report APIs in SRP Production.",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srp-production-client-access-distribution-runtime-20261110",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "rollback": {
+      "method": "Rebuild and restore the previously validated SRP Production Query Engine source commit.",
+      "reference": "9a73bc1bdd907e1a5ef580cdd89d5461373df58b"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "a0411009468e429191a0a0678c6c6a900e7f7101",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Serve the QA-validated SRP Client Access and Distribution report APIs in Production",
+      "release_id": "service-runtime-srp-production-client-access-distribution-20261110-v2",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "a0411009468e429191a0a0678c6c6a900e7f7101",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote",
+  "targets": {
+    "compose_project": "bci-srp-production",
+    "stack_dir": "/home/shared/bci-clients/srp"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
