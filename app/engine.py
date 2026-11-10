@@ -876,37 +876,6 @@ def _delivery_recipients(
     return recipients
 
 
-_SRP_DELIVERY_BODY_VIEWS = {
-    "public.srp_weekly_delivery_body": "srp-weekly-practice-report-",
-    "public.srp_monthly_delivery_body": "srp-monthly-practice-report-",
-}
-
-
-def _srp_delivery_body_rows(data, view_name, artifact_key, recipients):
-    """Resolve exactly one body against the same envelope passed to the mailer."""
-    if len(recipients) != 1:
-        raise ValueError("A facility report requires exactly one configured recipient")
-    recipient, delivery_type = recipients[0]
-    prefix = _SRP_DELIVERY_BODY_VIEWS[view_name]
-    if not artifact_key.startswith(prefix) or not artifact_key.endswith("-email"):
-        raise ValueError("Facility delivery requires a registered email artifact")
-    requested_slug = artifact_key[len(prefix):-len("-email")]
-    rows = data.execute(
-        f"SELECT slice_key, body FROM {view_name}_for_recipient(%s, %s)",
-        (recipient, delivery_type),
-    ).fetchall()
-
-    def slice_slug(slice_key):
-        normalized = re.sub(r"[^a-z0-9]+", "_", slice_key.lower()).strip("_") or "slice"
-        digest = hashlib.sha1(slice_key.encode("utf-8")).hexdigest()[:8]
-        return f"{normalized[:28].strip('_')}_{digest}"
-
-    bodies = [body for slice_key, body in rows if slice_slug(slice_key) == requested_slug]
-    if len(bodies) != 1 or not isinstance(bodies[0], dict):
-        raise ValueError("Facility body does not match the configured recipient and artifact")
-    return bodies
-
-
 def _query_function_name(view_name: str) -> str:
     """Return the database-owned query contract associated with a render view."""
     return _safe_view_name(f"{_safe_view_name(view_name)}_query")
@@ -1359,15 +1328,6 @@ def execute_artifact(
             render_artifact_id = render_artifact["artifact_id"]
             render_template_id = render_artifact["template_id"]
 
-            scoped_delivery = client_key == "srp" and view_name in _SRP_DELIVERY_BODY_VIEWS
-            scoped_recipients = None
-            if scoped_delivery:
-                if (delivery_mode != "email" or behavior not in {"deliver", "dry-run"}
-                        or execution_query is not None or distribution_group_keys
-                        or delivery_mode_override == "internal_test" or output_formats):
-                    raise ValueError("Facility body requires the configured email envelope")
-                scoped_recipients = _delivery_recipients(meta, artifact_id, artifact_key)
-
             cache_settings = get_cache_settings()
             cacheable_render = (
                 behavior in {"display", "preview"}
@@ -1432,11 +1392,7 @@ def execute_artifact(
                 else:
                     with get_data_conn() as data:
                         _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                        if scoped_recipients is not None:
-                            data_rows = _srp_delivery_body_rows(
-                                data, view_name, artifact_key, scoped_recipients,
-                            )
-                        elif execution_query is not None:
+                        if execution_query is not None:
                             serialized_query = _serialized_artifact_query(execution_query)
                             query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
                             if isinstance(query_result, dict):
@@ -1545,9 +1501,7 @@ def execute_artifact(
             send_email = behavior == "deliver" and delivery_mode in ("email", "both")
             recipient_count = 0
             if send_email:
-                if scoped_recipients is not None:
-                    recipient_rows = scoped_recipients
-                elif delivery_mode_override == "internal_test":
+                if delivery_mode_override == "internal_test":
                     recipient_rows, subject, html = _internal_test_delivery_envelope(
                         subject,
                         html,
