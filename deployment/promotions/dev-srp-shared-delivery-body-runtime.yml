@@ -1,0 +1,18 @@
+schema_version: 1
+client: srp
+environment: dev
+source_repo: .
+source_commit: HEAD
+targets:
+  stack_dir: /home/shared/bci-clients/srpdev
+  compose_project: srpdev
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Bind each SRP Weekly and Monthly email body to its registered facility and resolved envelope.
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine

@@ -891,3 +891,53 @@ def test_opted_in_set_filters_share_keys_without_changing_query_input():
     assert engine._canonical_cache_query(browser, {}) == browser
     assert browser["payers"] == ["z", "a"]
     assert engine._canonical_cache_query(browser, policy)["order"] == ["z", "a"]
+
+
+@pytest.mark.parametrize("matching", [True, False])
+def test_srp_delivery_body_uses_final_recipient_for_render_and_send(monkeypatch, matching):
+    from app import mailer
+
+    key = "srp-weekly-practice-report-north_campus_" + engine.hashlib.sha1(
+        b"North Campus"
+    ).hexdigest()[:8] + "-email"
+    envelope = [("recipient@example.invalid", "to")]
+
+    class DeliveryData(FakeData):
+        def execute(self, sql, params=None):
+            if "_delivery_body_for_recipient" in sql:
+                assert params == envelope[0]
+                return FakeResult(rows=[
+                    ("North Campus" if matching else "South Campus", {"label": "Scoped body"}),
+                ])
+            return super().execute(sql, params)
+
+    meta, _ = _patch_connections(monkeypatch, data=DeliveryData())
+    artifact = dict(
+        artifact_id=ARTIFACT_ID, artifact_key=key, delivery_mode="email",
+        subject="Facility report", view_name="public.srp_weekly_delivery_body",
+        template_body="{{ rows[0].label }}", template_id=TEMPLATE_ID,
+    )
+    monkeypatch.setattr(engine, "_fetch_artifact", lambda *args, **kwargs: artifact)
+    envelopes = []
+    monkeypatch.setattr(engine, "_delivery_recipients", lambda *args: envelopes.append(True) or envelope)
+    original_execute = meta.execute
+    monkeypatch.setattr(meta, "execute", lambda sql, params=None: (
+        FakeResult() if "UPDATE log.artifact_runs" in sql else original_execute(sql, params)
+    ))
+    sends = []
+    monkeypatch.setattr(mailer, "send", lambda **message: sends.append(message) or {
+        "status": "accepted", "delivery_status": "submitted",
+    })
+    monkeypatch.setattr(engine, "_email_service_delivery_accepted", lambda result: True)
+
+    result = engine.execute_artifact("srp", key, behavior="deliver")
+
+    assert envelopes == [True]
+    if matching:
+        assert result["status"] == "success"
+        assert len(sends) == 1
+        assert sends[0]["to"] == [envelope[0][0]]
+        assert sends[0]["html"] == "Scoped body"
+    else:
+        assert result["status"] == "error"
+        assert sends == []
