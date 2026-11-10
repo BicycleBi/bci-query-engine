@@ -1,0 +1,134 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/distribution_reporting.py",
+        "role": "distribution-reporting",
+        "sha256": "fa48959559e165729cb8548f0147979dc08cf5665af885f6bc18981c4ee7047b"
+      },
+      {
+        "operation": "replace",
+        "path": "app/facility_reporting.py",
+        "role": "facility-reporting",
+        "sha256": "ebd15d23d4871d05d2d5f5e40bf35b5f2de68808bf5e817faad2df8e4fd9491a"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "a70b672ac98808e7eba42589c4218c52880f18ff2206fb7f324a1a86fb87fcab"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "99ad03c10fc06c53f2f5b680df876195d5a4bb22cc329fb742368945c45e7df9"
+      },
+      {
+        "operation": "replace",
+        "path": "app/report_snapshot.py",
+        "role": "report-snapshot",
+        "sha256": "9122903539f1be45f32d56bd464a923602cc055842f82d95860ae02d5e136762"
+      },
+      {
+        "operation": "replace",
+        "path": "app/usage_access.py",
+        "role": "usage-access",
+        "sha256": "282d7577f5f7a3a4df14bede0c14fd4d7121d9181d27b7e4ce7518f265998501"
+      },
+      {
+        "operation": "replace",
+        "path": "docs/srp-client-access-distribution-report-handoff.md",
+        "role": "srp-client-access-distribution-report-handoff",
+        "sha256": "4cc201daea61f1d76c98e86dab5c2119d007af6131c07311e42d907f420ae172"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_distribution_reporting.py",
+        "role": "test-distribution-reporting",
+        "sha256": "5106b0134e4c07f6fe4a84a91bbbe266af388b17895fca767990aa0293ca6e57"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_facility_reporting.py",
+        "role": "test-facility-reporting",
+        "sha256": "1d4cac1ad0157f28c94233d4a1b9bd0a251a8b111e1506304c890f754e9c319e"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_report_snapshot.py",
+        "role": "test-report-snapshot",
+        "sha256": "3a68e0f250e6ad6e21b517de1d4d468acaae67cab532254cd870002b954a36bb"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_usage_summary.py",
+        "role": "test-usage-summary",
+        "sha256": "71cb6e225942ab381c1b8e2de6152357514553aeef4a567677ddde792a6f7c33"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-client-access-distribution-runtime.yml",
+        "role": "qa-srp-client-access-distribution-runtime",
+        "sha256": "1480348c8d2f56a77ea45241e52202c77e6b3aca878f8bda7f96aa8820f3959b"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "14b3b2c45dc1b2008dd53d468b27be4cebf63fb8",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "56b2fe522f252d6f8eb3552d52530162c79e4b19",
+      "source_ref": "refs/heads/codex/srp-client-access-qa-source-20261110",
+      "target_commit": "14b3b2c45dc1b2008dd53d468b27be4cebf63fb8",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-client-access-distribution-runtime-20261110",
+    "client": "srp",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-11-10T08:01:37Z",
+    "intent": "Serve the reviewed Client Access and Distribution report APIs in SRP QA.",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srpqa-client-access-distribution-runtime-20261110",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "56b2fe522f252d6f8eb3552d52530162c79e4b19",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Serve the validated SRP Client Access and Distribution report APIs in QA",
+      "release_id": "service-runtime-srp-qa-client-access-distribution-20261110",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "56b2fe522f252d6f8eb3552d52530162c79e4b19",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
