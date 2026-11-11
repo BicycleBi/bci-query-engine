@@ -1,0 +1,128 @@
+{
+  "client": "srp",
+  "environment": "production",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "README.md",
+        "role": "README",
+        "sha256": "c1e9262aea9c7b4ead4cadccc85fe6e7cbc0349b6423d33e16dd0528d3625572"
+      },
+      {
+        "operation": "replace",
+        "path": "app/engine.py",
+        "role": "engine",
+        "sha256": "77c9cf80fdb7c52dfe31eda6a529006a686cf3f5a47e7dbcb2235af3d8abb0ee"
+      },
+      {
+        "operation": "replace",
+        "path": "app/main.py",
+        "role": "main",
+        "sha256": "13681b3e80f9f8376486c1831859802c2ec1b6f13278215f418e1391fa93e659"
+      },
+      {
+        "operation": "replace",
+        "path": "app/models.py",
+        "role": "models",
+        "sha256": "1ae4517724e03ec6bf58eed153a214bf7ab2b7f3d546e3c9bde66f028301b205"
+      },
+      {
+        "operation": "replace",
+        "path": "bci_redis_cache/cache.py",
+        "role": "cache",
+        "sha256": "467724e38a499262313e92c8a0c863e7f4f937cc9e8d911adef44dd9c45701a0"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/production-srp-ppp-load-bound-cache-runtime-20261111.yml",
+        "role": "production-srp-ppp-load-bound-cache-runtime-20261111",
+        "sha256": "16a0056f9790e74b6074423d5068f82b0fcf29a4035122d641b33d32130ed97f"
+      }
+    ],
+    "approver": "Jeanre Van Wyk",
+    "baseline_commit": "1ac48806b5ac7500ba0986ca13a1c943ee37446c",
+    "branch_provenance": {
+      "change_class": "release-content",
+      "expected_advance_ref": "refs/heads/main",
+      "schema_version": 4,
+      "source_commit": "e0ff3ff80293aadc76ff523288ac7bc29f68fd35",
+      "source_ref": "refs/heads/codex/ppp-production-cache-runtime-20261111",
+      "target_commit": "dbb7b6832052c61249466e439333978ac51c10da",
+      "target_ref": "refs/heads/main"
+    },
+    "change_class": "release-content",
+    "change_id": "srp-production-ppp-query-engine-cache-runtime-20261111",
+    "client": "srp",
+    "dependencies": [
+      {
+        "operation": "validate-only",
+        "path": "tests/test_engine_cache.py",
+        "reason": "declared protected package dependency",
+        "role": "test-engine-cache",
+        "sha256": "6f611aceac584ea75cb115137074d5f3b0965ec747c00f81a889c454aeeb37c0"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_main_auth.py",
+        "reason": "declared protected package dependency",
+        "role": "test-main-auth",
+        "sha256": "ed95d4a8fe5b6bcf2a7b8ca021e34019f17988908b414b9a67b2d29ed60c580d"
+      },
+      {
+        "operation": "validate-only",
+        "path": "tests/test_redis_cache_adapter.py",
+        "reason": "declared protected package dependency",
+        "role": "test-redis-cache-adapter",
+        "sha256": "70ad0ddf2b1f87de67b768edf15da9dab08caa434dc8dae2d603dbeba996d8c1"
+      }
+    ],
+    "environment": "production",
+    "forbidden_units": [],
+    "generated_at": "2026-11-11T08:30:24Z",
+    "intent": "Promote the Query Engine runtime that builds candidate PPP cache generations and swaps only after complete prewarm",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srp-production-ppp-query-engine-cache-runtime-20261111",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "rollback": {
+      "method": "Restore the prior validated Production Query Engine runtime through a separately checked runtime package",
+      "reference": "1ac48806b5ac7500ba0986ca13a1c943ee37446c"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "e0ff3ff80293aadc76ff523288ac7bc29f68fd35",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-production-ppp-cache-20261111"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Serve persistent generation-swapped Practice Performance Pulse query caches",
+      "release_id": "service-runtime-srp-production-ppp-load-bound-cache-20261111",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "e0ff3ff80293aadc76ff523288ac7bc29f68fd35",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-production-ppp-cache-20261111",
+  "targets": {
+    "compose_project": "bci-srp-production",
+    "stack_dir": "/home/shared/bci-clients/srp"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "redis",
+      "type": "service-health"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
