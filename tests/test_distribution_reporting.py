@@ -47,6 +47,46 @@ def test_unavailable_projection_is_not_an_empty_result(monkeypatch):
         reporting.get_distribution_report()
 
 
+def test_copied_delivery_is_related_to_canonical_report(monkeypatch):
+    def read(factory, relation, query, params=None):
+        if relation == "public.srp_client_access_facility_distribution":
+            return [("example-report", "example-report-north-email")]
+        if relation == "app.artifacts":
+            return [("example-report", "Example Report")]
+        raise AssertionError(relation)
+
+    monkeypatch.setattr(reporting, "_read", read)
+    payload = {"rows": [{"artifact_key": "example-report-north-email"}], "sources": []}
+    result = reporting.attach_distribution_catalog(payload)
+    assert result["rows"][0]["delivery_artifact_key"] == "example-report-north-email"
+    assert result["rows"][0]["report_artifact_key"] == "example-report"
+    assert result["report_catalog"] == [{
+        "family": "example-report",
+        "artifact_key": "example-report",
+        "display_name": "Example Report",
+    }]
+
+
+def test_copied_delivery_can_use_unique_report_label(monkeypatch):
+    def read(factory, relation, query, params=None):
+        if relation == "public.srp_client_access_facility_distribution":
+            return [("weekly-practice-report", "weekly-practice-report")]
+        if relation == "app.artifacts":
+            return [("weekly-practice-report", "Weekly Practice Report")]
+        raise AssertionError(relation)
+
+    monkeypatch.setattr(reporting, "_read", read)
+    payload = {
+        "rows": [{
+            "artifact_key": "historical-weekly-distribution-01-email",
+            "report_name": "Weekly Practice Report",
+        }],
+        "sources": [],
+    }
+    result = reporting.attach_distribution_catalog(payload)
+    assert result["rows"][0]["report_artifact_key"] == "weekly-practice-report"
+
+
 def test_schedule_configuration_uses_live_load_mapping(monkeypatch):
     monkeypatch.setattr(reporting, "_read", lambda *args, **kwargs: [
         ("example-report", "example-load", "example-trigger", "09:30:00", "America/New_York", True, True)
@@ -61,7 +101,10 @@ def test_report_preserves_authorization_and_no_store(monkeypatch):
     main = _load_main(monkeypatch)
     calls = []
     monkeypatch.setattr(main, "require_analytics_reporting_access", lambda *args: calls.append(args))
+    monkeypatch.setattr(main, "get_copied_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "get_distribution_report", lambda **kw: {"audience": "srp", "rows": []})
+    monkeypatch.setattr(main, "attach_distribution_catalog", lambda value: value)
+    monkeypatch.setattr(main, "attach_report_configurations", lambda value, **kwargs: value)
     client = TestClient(main.app)
     path = "/artifacts/srp/client-access-distribution-report/distribution-summary"
     assert client.get(path).status_code == 401

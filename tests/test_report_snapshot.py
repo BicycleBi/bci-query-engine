@@ -107,4 +107,12 @@ def test_legacy_configuration_sections_fall_back_to_live(monkeypatch):
     bind(monkeypatch,documents(rows,'facilities'))
     assert m.get_copied_report('facilities') is None
     bind(monkeypatch,documents([], 'distributions'))
-    assert m.get_copied_report('distributions') is None
+    assert m.get_copied_report('distributions')['rows'] == []
+
+
+def test_internal_snapshot_returns_complete_unpaged_section(monkeypatch):
+    rows=[dict(display_name=f'Example {i}',username=f'user{i}@example.invalid',active=True,matches=[]) for i in range(65)]
+    bind(monkeypatch,documents(rows))
+    data=m.get_copied_snapshot('access-users')
+    assert len(data['rows']) == 65
+    assert data['source_environment'] == 'production'

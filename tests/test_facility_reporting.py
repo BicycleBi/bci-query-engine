@@ -51,6 +51,69 @@ def test_disabled_or_unregistered_configuration_is_not_invented():
     assert all(row["reports"] == [] for row in rows)
 
 
+def test_copied_production_evidence_replaces_dev_placeholders():
+    catalog = {
+        "example-report": {
+            "artifact_key": "example-report",
+            "display_name": "Example Report",
+            "delivery_mode": "both",
+            "front_end": True,
+            "active": True,
+        }
+    }
+    live = {"rows": reporting._build_rows(configuration(), catalog, []), "sources": []}
+    access = {
+        "source_environment": "production",
+        "captured_at": "2026-11-11T00:00:00+00:00",
+        "rows": [{
+            "active": True,
+            "display_name": "Example User",
+            "username": "user@example.invalid",
+            "matches": [{
+                "artifact_key": "example-report",
+                "artifact_active": True,
+                "can_view": True,
+                "can_run": False,
+                "details": [{"role": "example_role", "source": "direct"}],
+            }],
+        }],
+    }
+    distributions = {
+        "source_environment": "production",
+        "rows": [{
+            "configuration_state": "enabled",
+            "report_artifact_key": "example-report",
+            "delivery_artifact_key": "example-report-north-email",
+            "recipient_email": "delivery@example.invalid",
+            "delivery_type": "to",
+            "facilities": ["Example North"],
+            "source": "production_snapshot",
+        }],
+    }
+    activity = {
+        "source_environment": "production",
+        "rows": [
+            {"facility_key": "ecw:1", "facility_name": "Example North", "operational_data": "available"},
+            {"facility_key": "ecw:2", "facility_name": "Example South", "operational_data": "no_data"},
+        ],
+    }
+    result = reporting.attach_copied_facility_evidence(
+        live,
+        access_payload=access,
+        distribution_payload=distributions,
+        activity_payload=activity,
+        home_artifacts={"example-report"},
+    )
+    north, south = result["rows"]
+    assert north["facility_status"] == "active"
+    assert south["facility_status"] == "inactive"
+    assert north["reports"][0]["distributions"][0]["recipient_email"] == "delivery@example.invalid"
+    assert north["reports"][0]["users"][0]["username"] == "user@example.invalid"
+    assert north["reports"][0]["users"][0]["available_from_home"] is True
+    assert "_access_roles" not in north["reports"][0]
+    assert "facility_id" not in north
+
+
 def test_report_bounds_search_and_status_rejection(monkeypatch):
     data = configuration()
     monkeypatch.setattr(reporting, "_load_configuration", lambda: (data, []))
@@ -81,6 +144,11 @@ def test_facility_route_preserves_existing_authorization_and_no_store(monkeypatc
     calls = []
     monkeypatch.setattr(main, "require_analytics_reporting_access", lambda *args: calls.append(args))
     monkeypatch.setattr(main, "get_facility_report", lambda **kw: {"client_key": "srp", "audience": "srp", "rows": []})
+    monkeypatch.setattr(main, "get_copied_snapshot", lambda *args: None)
+    monkeypatch.setattr(main, "attach_distribution_catalog", lambda value: value)
+    monkeypatch.setattr(main, "attach_copied_facility_evidence", lambda value, **kwargs: value)
+    monkeypatch.setattr(main, "attach_report_configurations", lambda value, **kwargs: value)
+    monkeypatch.setattr(main, "get_home_artifact_keys", lambda *args: [])
     client = TestClient(main.app)
     path = "/artifacts/srp/client-access-distribution-report/facility-summary"
     assert client.get(path).status_code == 401

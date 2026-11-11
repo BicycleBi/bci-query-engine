@@ -72,6 +72,71 @@ def get_report_configurations() -> dict:
     }
 
 
+def _distribution_catalog():
+    """Map maintained delivery artifacts to their canonical front-end reports."""
+    pairs = _read(get_data_conn, 'public.srp_client_access_facility_distribution', """
+        SELECT DISTINCT artifact_key, delivery_artifact_key
+        FROM public.srp_client_access_facility_distribution
+        WHERE NULLIF(btrim(artifact_key), '') IS NOT NULL
+          AND NULLIF(btrim(delivery_artifact_key), '') IS NOT NULL
+        ORDER BY artifact_key, delivery_artifact_key
+    """)
+    if pairs is None:
+        raise RuntimeError('Facility distribution configuration is unavailable')
+    artifact_keys = sorted({row[0] for row in pairs})
+    artifacts = _read(get_metadata_conn, 'app.artifacts', """
+        SELECT artifact_key, display_name
+        FROM app.artifacts
+        WHERE client_key='srp' AND artifact_key = ANY(%s) AND active
+        ORDER BY artifact_key
+    """, (artifact_keys,)) if artifact_keys else []
+    if artifacts is None:
+        raise RuntimeError('Artifact registry is unavailable')
+    names = {key: name or key for key, name in artifacts}
+    return pairs, names
+
+
+def _label_key(value):
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').casefold())
+
+
+def attach_distribution_catalog(payload: dict) -> dict:
+    """Relate copied Production delivery artifacts to current canonical reports."""
+    if not isinstance(payload, dict):
+        return payload
+    pairs, names = _distribution_catalog()
+    exact = {}
+    for artifact_key, delivery_key in pairs:
+        exact.setdefault(delivery_key, set()).add(artifact_key)
+    canonical_keys = set(names)
+    by_label = {}
+    for key, name in names.items():
+        by_label.setdefault(_label_key(name), set()).add(key)
+    used = set()
+    for row in payload.get('rows') or []:
+        delivery_key = str(row.get('delivery_artifact_key') or row.get('artifact_key') or '').strip()
+        matches = exact.get(delivery_key, set())
+        if not matches:
+            matches = {key for key in canonical_keys if key in delivery_key}
+        if not matches:
+            matches = by_label.get(_label_key(row.get('report_name')), set())
+        if len(matches) != 1:
+            continue
+        artifact_key = next(iter(matches))
+        row['delivery_artifact_key'] = delivery_key
+        row['report_artifact_key'] = artifact_key
+        row['report_family'] = artifact_key
+        used.add(artifact_key)
+    payload['report_catalog'] = [
+        {'family': key, 'artifact_key': key, 'display_name': names[key]}
+        for key in sorted(used, key=lambda item: (names[item].casefold(), item))
+    ]
+    sources = payload.setdefault('sources', [])
+    sources[:] = [source for source in sources if source.get('source') != 'distribution_report_catalog']
+    sources.append({'source': 'distribution_report_catalog', 'status': 'available'})
+    return payload
+
+
 def attach_report_configurations(payload: dict, *, facilities: bool = False) -> dict:
     """Enrich an existing bounded report response with configuration metadata."""
     configurations = get_report_configurations()

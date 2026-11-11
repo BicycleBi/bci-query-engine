@@ -23,16 +23,134 @@ def _read(factory, relation: str, query: str, params=None):
         return rows
 
 
-def attach_copied_facility_access(payload, access_payload):
-    """Preserve an inert copied Production snapshot without joining live Dev data."""
+def attach_copied_facility_evidence(
+    payload,
+    access_payload=None,
+    distribution_payload=None,
+    activity_payload=None,
+    home_artifacts=None,
+):
+    """Join inert Production evidence to the live Dev facility configuration."""
     if not isinstance(payload, dict):
         return payload
-    copied = payload.get("source_environment") == "production"
     access_copied = isinstance(access_payload, dict) and access_payload.get("source_environment") == "production"
-    status = "available" if copied and access_copied else "unavailable"
+    distributions_copied = isinstance(distribution_payload, dict) and distribution_payload.get("source_environment") == "production"
+    activity_copied = isinstance(activity_payload, dict) and activity_payload.get("source_environment") == "production"
+    home_artifacts = home_artifacts or set()
+
+    activity = {}
+    for row in (activity_payload or {}).get("rows") or []:
+        for key in (row.get("facility_key"), row.get("facility_name")):
+            if key:
+                activity[str(key).strip().casefold()] = row.get("operational_data")
+
+    deliveries = defaultdict(list)
+    if distributions_copied:
+        for row in distribution_payload.get("rows") or []:
+            if row.get("configuration_state") != "enabled" or not row.get("recipient_email"):
+                continue
+            artifact_key = row.get("report_artifact_key")
+            if not artifact_key:
+                continue
+            for facility in row.get("facilities") or []:
+                deliveries[(str(facility).strip().casefold(), artifact_key)].append({
+                    "delivery_artifact_key": row.get("delivery_artifact_key") or row.get("artifact_key"),
+                    "recipient_email": row.get("recipient_email"),
+                    "delivery_type": row.get("delivery_type"),
+                    "configuration_source": row.get("source") or "production_snapshot",
+                })
+
+    users_by_artifact = defaultdict(list)
+    if access_copied:
+        for subject in access_payload.get("rows") or []:
+            if not subject.get("active") or not subject.get("username"):
+                continue
+            for match in subject.get("matches") or []:
+                if not match.get("artifact_active") or not (match.get("can_view") or match.get("can_run")):
+                    continue
+                details = match.get("details") or []
+                roles = {detail.get("role") for detail in details if detail.get("role")}
+                via_group = any(detail.get("source") == "group" for detail in details)
+                users_by_artifact[match.get("artifact_key")].append((
+                    roles,
+                    {
+                        "display_name": subject.get("display_name") or subject.get("username"),
+                        "username": subject.get("username"),
+                        "access_basis": "Via group" if via_group else "Direct assignment",
+                        "available_from_home": match.get("artifact_key") in home_artifacts,
+                    },
+                ))
+
+    for facility in payload.get("rows") or []:
+        facility.pop("facility_id", None)
+        operational = activity.get(str(facility.get("facility_key") or "").casefold())
+        if operational is None:
+            operational = activity.get(str(facility.get("facility_name") or "").strip().casefold(), "no_data")
+        facility["operational_data"] = operational
+        facility["facility_status"] = "active" if operational in {"available", "partial"} else "inactive"
+        facility_users = {}
+        scope_values = {
+            str(value).strip().casefold()
+            for value in [facility.get("facility_name"), *(facility.get("entity_codes") or [])]
+            if value
+        }
+        for report in facility.get("reports") or []:
+            artifact_key = report.get("artifact_key")
+            report["distributions"] = [] if distributions_copied else report.get("distributions", [])
+            if distributions_copied:
+                seen_deliveries = set()
+                for scope in scope_values:
+                    for item in deliveries.get((scope, artifact_key), []):
+                        key = (
+                            str(item.get("recipient_email") or "").casefold(),
+                            item.get("delivery_type"),
+                            item.get("delivery_artifact_key"),
+                        )
+                        if key not in seen_deliveries:
+                            seen_deliveries.add(key)
+                            report["distributions"].append(item)
+            report["distributions"].sort(key=lambda item: (
+                str(item.get("recipient_email") or "").casefold(),
+                str(item.get("delivery_type") or ""),
+            ))
+
+            required_roles = set(report.pop("_access_roles", []))
+            report["users"] = [] if access_copied else report.get("users", [])
+            if access_copied:
+                for roles, user in users_by_artifact.get(artifact_key, []):
+                    if required_roles and not required_roles.intersection(roles):
+                        continue
+                    if user not in report["users"]:
+                        report["users"].append(user)
+            report["users"].sort(key=lambda item: (
+                str(item.get("display_name") or "").casefold(),
+                str(item.get("username") or "").casefold(),
+            ))
+            for user in report["users"]:
+                key = str(user.get("username") or "").casefold() + "|" + str(artifact_key)
+                facility_users[key] = {
+                    **user,
+                    "artifact_key": artifact_key,
+                    "artifact_name": report.get("display_name") or artifact_key,
+                }
+        facility["user_access_status"] = "available" if access_copied else facility.get("user_access_status", "unavailable")
+        facility["user_access"] = sorted(facility_users.values(), key=lambda item: (
+            str(item.get("display_name") or "").casefold(),
+            str(item.get("username") or "").casefold(),
+        ))
+
     sources = payload.setdefault("sources", [])
-    sources[:] = [source for source in sources if source.get("source") != "facility_access_snapshot"]
-    sources.append({"source": "facility_access_snapshot", "status": status})
+    copied_sources = {
+        "facility_access_snapshot": access_copied,
+        "facility_distribution_snapshot": distributions_copied,
+        "facility_activity_snapshot": activity_copied,
+    }
+    sources[:] = [source for source in sources if source.get("source") not in copied_sources]
+    sources.extend({"source": key, "status": "available" if available else "unavailable"}
+                   for key, available in copied_sources.items())
+    if access_copied:
+        payload["source_environment"] = "production"
+        payload["captured_at"] = access_payload.get("captured_at")
     return payload
 
 
@@ -207,6 +325,10 @@ def _build_rows(data, catalog, user_rows, home_artifacts=None):
         facility = facilities.get(facility_key)
         if facility is not None and entity_code and entity_code not in facility["entity_codes"]:
             facility["entity_codes"].append(entity_code)
+
+    for facility_key, facility in facilities.items():
+        for artifact_key, report in facility["reports"].items():
+            report["_access_roles"] = sorted(role_scope.get((facility_key, artifact_key), set()))
 
     restricted_artifacts = {artifact_key for _facility_key, artifact_key in role_scope}
     for display_name, username, artifact_key, role_key, source, group_key in user_rows or []:
