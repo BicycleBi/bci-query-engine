@@ -92,6 +92,8 @@ class FakeData:
             return FakeResult(row=(self.freshness_timestamp is not None,))
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
+        if "SELECT to_regprocedure(%s)" in sql and str(params[0]).endswith("_query_cache_policy()"):
+            return FakeResult(row=(None,))
 
         self.calls += 1
         if self.fail_on_execute:
@@ -907,3 +909,79 @@ def test_bound_prewarm_serves_equivalent_filter_sets_from_the_persistent_generat
     assert data.calls == 2
     assert [json.loads(query) for query in data.query_payloads] == requests
     assert all(cache.redis.ttl(key) == -1 for key in cache.redis.scan_iter())
+
+def test_startup_and_details_share_one_complete_generation(monkeypatch):
+    from datetime import datetime
+
+    from fakeredis import FakeRedis
+
+    from bci_redis_cache import RedisCache
+
+    class StartupData(FakeQueryData):
+        def execute(self, statement, params=None):
+            if statement.startswith("SET TRANSACTION ISOLATION"):
+                return FakeResult()
+            if "pg_get_viewdef" in statement:
+                return FakeResult(row=("fixture-definition",))
+            if statement == "SELECT * FROM rpt.visit_counts":
+                self.calls += 1
+                return FakeResult(
+                    rows=[("rcm-report", "live_core", {"surface": "context"})],
+                    description=[("artifact_key",), ("data_mode",), ("payload_json",)],
+                )
+            return super().execute(statement, params)
+
+    class FailingCache(RedisCache):
+        fail_view = False
+
+        def set(self, key, value, ttl_seconds=None):
+            if self.fail_view and value == {"rows": [{
+                "artifact_key": "rcm-report", "data_mode": "live_core", "payload_json": {"surface": "context"},
+            }]}:
+                raise OSError("synthetic Redis write failure")
+            return super().set(key, value, ttl_seconds)
+
+    stamp = "2026-11-11 11:00:00+00"
+    data = StartupData(cache_scope="shared", freshness_timestamp=stamp, cache_policy={
+        "refresh_mode": "prewarm_swap", "ttl_seconds": 0, "bind_freshness": True,
+        "shared_render_view": True, "set_filter_keys": ["facilities", "payers"],
+    })
+    _patch_connections(monkeypatch, data=data)
+    cache = FailingCache(redis_client=FakeRedis(decode_responses=True))
+    monkeypatch.setattr(cache_module, "get_cache_settings",
+                        lambda: cache_module.CacheSettings(enabled=True, cache_rendered=False))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: cache)
+    queries = [
+        {"operation": "detailFacts", "detailScope": "collections",
+         "presentationVersion": 2, "facilities": ["b", "a"]},
+        {"operation": "detailFacts", "detailScope": "claimFlow",
+         "presentationVersion": 3, "payers": ["z", "a"]},
+    ]
+    artifact = ("srp", "rcm-report")
+
+    def prewarm(expected=stamp):
+        return engine.prewarm_artifact_query_cache(
+            *artifact, queries=queries, expected_freshness=datetime.fromisoformat(expected),
+        )
+
+    assert prewarm()["render_view_prewarmed"] is True
+    active = cache.get_query_generation(*artifact)
+    assert data.calls == 3
+    preview = engine.execute_artifact(*artifact, behavior="preview",
+                                      authenticated_subject="synthetic", authorized_roles=["report-role"])
+    assert preview["preview_html"] == "<p>1</p>"
+    assert data.authenticated_subjects[-1] == "synthetic"
+    for query, reordered in zip(queries, [{"facilities": ["a", "b", "a"]}, {"payers": ["a", "z", "a"]}], strict=True):
+        assert engine.execute_artifact_query(*artifact, query={**query, **reordered}) == data.result
+    assert data.calls == 3
+    assert all(cache.redis.ttl(key) == -1 for key in cache.redis.scan_iter())
+
+    assert prewarm("2026-11-10 11:00:00+00")["status"] == "superseded"
+    cache.fail_view = True
+    with pytest.raises(OSError, match="Redis write failure"):
+        prewarm()
+    assert cache.get_query_generation(*artifact) == active
+    assert len(list(cache.redis.scan_iter())) == 4
+    cache.fail_view = False
+    assert prewarm()["render_view_prewarmed"]
+    assert cache.get_query_generation(*artifact) != active

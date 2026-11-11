@@ -206,6 +206,7 @@ class ArtifactQueryCachePrewarmResponse(BaseModel):
     status: str
     entry_count: int
     refresh_mode: Optional[str] = None
+    render_view_prewarmed: Optional[bool] = None
 
 
 class ArtifactExecutionResponse(BaseModel):
