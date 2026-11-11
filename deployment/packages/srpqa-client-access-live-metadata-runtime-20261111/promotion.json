@@ -59,7 +59,7 @@
       "expected_advance_ref": "refs/heads/qa",
       "schema_version": 4,
       "source_commit": "c5d86b343e9c2bf37d7c5089f9b54480cf2d589d",
-      "source_ref": "refs/heads/codex/srp-client-access-live-metadata-qa-20261111",
+      "source_ref": "refs/heads/codex/srp-client-access-live-metadata-qa-runtime-source-20261111",
       "target_commit": "3d500de70259376c48e1c67062ff63320bd509dc",
       "target_ref": "refs/heads/qa"
     },
@@ -69,7 +69,7 @@
     "dependencies": [],
     "environment": "qa",
     "forbidden_units": [],
-    "generated_at": "2026-11-11T14:05:54Z",
+    "generated_at": "2026-11-11T14:24:37Z",
     "intent": "Serve the Dev-validated live-metadata Client Access and Distribution APIs in SRP QA.",
     "operator": "bcipromote",
     "package_path": "deployment/packages/srpqa-client-access-live-metadata-runtime-20261111",
