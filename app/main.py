@@ -17,9 +17,9 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .report_snapshot import get_copied_report
-from .facility_reporting import attach_copied_facility_access, get_facility_report
-from .distribution_reporting import attach_report_configurations, get_distribution_report
+from .report_snapshot import get_copied_report, get_copied_snapshot
+from .facility_reporting import attach_copied_facility_evidence, get_facility_report
+from .distribution_reporting import attach_distribution_catalog, attach_report_configurations, get_distribution_report, select_current_distributions
 from .mailer import send as send_email
 from .analytics import get_analytics_reporting_config
 from .engine import (
@@ -97,7 +97,7 @@ _data_load_action_worker_started = False
 
 def start_delivery_worker() -> None:
     global _delivery_worker_started
-    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "true").lower() != "true":
+    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "false").lower() != "true":
         return
     try:
         worker_count = max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
@@ -566,6 +566,11 @@ def usage_summary(
     client_key: str,
     artifact_key: str,
     days: int = 30,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    audience: str = "all",
+    artifact_search: str = "",
+    user_search: str = "",
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Return bounded monitoring aggregates for one authorized client."""
@@ -574,9 +579,27 @@ def usage_summary(
         raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
-    require_analytics_reporting_access(identity, client_key, "usage")
+    is_admin = require_analytics_reporting_access(identity, client_key, "usage")
+    config = get_analytics_reporting_config(client_key)
+    if audience not in config.audiences or len(artifact_search) > 100 or len(user_search) > 100:
+        raise HTTPException(400, "Invalid usage filter")
+    effective_audience = audience if is_admin or audience == "all" else client_key
+    from datetime import date
+    try:
+        first = date.fromisoformat(start_date) if start_date is not None else None
+        last = date.fromisoformat(end_date) if end_date is not None else None
+        if (first is None) != (last is None) or (first is not None and
+                (first > last or (last - first).days >= 90 or last > datetime.now(timezone.utc).date())):
+            raise ValueError("date bounds")
+    except ValueError:
+        raise HTTPException(400, "Use both YYYY-MM-DD dates, ordered within 90 UTC days and not in the future") from None
     response.headers["Cache-Control"] = "no-store"
-    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days))
+    options = {}
+    if first is not None:
+        options.update(start_date=first, end_date=last)
+    if effective_audience != "all" or artifact_search or user_search:
+        options.update(audience=effective_audience, artifact_search=artifact_search, user_search=user_search)
+    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days, **options))
 
 
 @app.get("/artifacts/{client_key}/{artifact_key}/access-summary")
@@ -636,8 +659,19 @@ def distribution_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        copied = get_copied_report('distributions', search=search, facility=facility, result=result, offset=offset)
-        result_payload = copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        copied = get_copied_snapshot('distributions')
+        if copied is not None:
+            result_payload = select_current_distributions(
+                attach_distribution_catalog(copied),
+                search=search,
+                facility=facility,
+                result=result,
+                offset=offset,
+            )
+        else:
+            result_payload = attach_distribution_catalog(
+                get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+            )
         return attach_report_configurations(result_payload)
     except ValueError:
         raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
@@ -657,22 +691,18 @@ def facility_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        copied = get_copied_report('facilities', search=search, status=status, offset=offset)
-        if copied is not None:
-            access = get_copied_report('access-users', offset=0)
-            if access is not None:
-                access_rows = list(access['rows'])
-                access_offset = access['limit']
-                while access.get('has_more'):
-                    if access_offset >= 5000:
-                        raise RuntimeError("Copied access snapshot exceeds reporting bound")
-                    page = get_copied_report('access-users', offset=access_offset)
-                    access_rows.extend(page['rows'])
-                    access = page
-                    access_offset += page['limit']
-                access = dict(access, rows=access_rows)
-            return attach_report_configurations(attach_copied_facility_access(copied, access), facilities=True)
-        return attach_report_configurations(get_facility_report(search=search, status=status, offset=offset), facilities=True)
+        live = get_facility_report(search=search, status=status, offset=offset)
+        access = get_copied_snapshot('access-users')
+        distributions = attach_distribution_catalog(get_copied_snapshot('distributions'))
+        activity = get_copied_snapshot('facilities')
+        merged = attach_copied_facility_evidence(
+            live,
+            access_payload=access,
+            distribution_payload=distributions,
+            activity_payload=activity,
+            home_artifacts=set(get_home_artifact_keys(client_key)),
+        )
+        return attach_report_configurations(merged, facilities=True)
     except ValueError:
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
@@ -772,7 +802,6 @@ def list_artifact_distribution_groups(
 @app.post(
     "/internal/artifacts/{client_key}/{artifact_key}/query-cache/prewarm",
     response_model=ArtifactQueryCachePrewarmResponse,
-    response_model_exclude_none=True,
 )
 def prewarm_artifact_data_cache(
     client_key: str,

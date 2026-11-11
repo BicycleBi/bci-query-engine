@@ -3,17 +3,13 @@ from copy import deepcopy
 from .db import get_data_conn
 
 ARTIFACT = 'client-access-distribution-report'
+SECTIONS = {'access-users', 'access-artifacts', 'distributions', 'facilities', 'slas'}
 
 
-def get_copied_report(section, *, search='', facility='', result='', status='', offset=0):
-    if section not in {'access-users', 'access-artifacts', 'distributions', 'facilities'}:
+def get_copied_snapshot(section):
+    """Return one complete, verified inert snapshot section without exposing it publicly."""
+    if section not in SECTIONS:
         raise ValueError('Invalid report section')
-    if len(search) > 100 or len(facility) > 200 or not 0 <= offset <= 100000:
-        raise ValueError('Invalid reporting bounds')
-    if result not in {'', 'not_confirmed', 'matches', 'missing', 'extra', 'scope_mismatch', 'source_unavailable'}:
-        raise ValueError('Invalid distribution result')
-    if status not in {'', 'exceptions', 'no_data', 'not_configured', 'disabled', 'unresolved', 'not_confirmed'}:
-        raise ValueError('Invalid facility status')
     with get_data_conn() as conn:
         conn.execute('SET TRANSACTION READ ONLY')
         conn.execute("SET LOCAL statement_timeout='10s'")
@@ -24,13 +20,32 @@ def get_copied_report(section, *, search='', facility='', result='', status='', 
           WHERE client_key=%s AND artifact_key=%s ORDER BY section_key''', ('srp', ARTIFACT)).fetchall()
     if not rows:
         return None
-    expected = {'access-users', 'access-artifacts', 'distributions', 'facilities', 'slas'}
-    if {r[0] for r in rows} != expected or len({(r[2], r[3], r[4]) for r in rows}) != 1 or rows[0][2] != 'production':
+    if {r[0] for r in rows} != SECTIONS or len({(r[2], r[3], r[4]) for r in rows}) != 1 or rows[0][2] != 'production':
         raise RuntimeError('Copied report is incomplete')
     selected = next(r for r in rows if r[0] == section)
     payload = deepcopy(selected[1])
     if payload.get('client_key') != 'srp' or payload.get('audience') != 'srp' or not isinstance(payload.get('rows'), list):
         raise RuntimeError('Copied report could not be verified')
+    payload.update(source_environment=selected[2], captured_at=selected[3].isoformat())
+    return payload
+
+
+def get_copied_report(section, *, search='', facility='', result='', status='', offset=0):
+    if section not in SECTIONS - {'slas'}:
+        raise ValueError('Invalid report section')
+    if len(search) > 100 or len(facility) > 200 or not 0 <= offset <= 100000:
+        raise ValueError('Invalid reporting bounds')
+    if result not in {'', 'not_confirmed', 'matches', 'missing', 'extra', 'scope_mismatch', 'source_unavailable'}:
+        raise ValueError('Invalid distribution result')
+    if status not in {'', 'exceptions', 'no_data', 'not_configured', 'disabled', 'unresolved', 'not_confirmed'}:
+        raise ValueError('Invalid facility status')
+    payload = get_copied_snapshot(section)
+    if payload is None:
+        return None
+    # The redesigned facility shell comes from live Dev configuration. Its
+    # copied Production snapshot is joined internally only as review evidence.
+    if section == 'facilities' and payload.get('coverage') != 'configuration':
+        return None
     q = search.strip().casefold()
     records = payload['rows']
     if section.startswith('access-'):
@@ -43,15 +58,12 @@ def get_copied_report(section, *, search='', facility='', result='', status='', 
     else:
         if not any(source.get('source') == 'facilities' and source.get('status') == 'available' for source in payload.get('sources', [])):
             raise RuntimeError('Copied facility roster unavailable')
-        records = [r for r in records if 'facilities' in r.get('sources', [])]
-        records = [r for r in records if (not q or q in ' '.join([r['facility_name'], r['facility_key'], *r['entity_codes']]).casefold()) and (
-            not status or status == 'exceptions' and any(x != 'approval_not_confirmed' for x in r['exceptions']) or
-            status == 'no_data' and r['operational_data'] == 'no_data' or
-            status == 'not_configured' and any(r[x]['configuration'] == 'not_configured' for x in ('weekly','monthly')) or
-            status == 'disabled' and any(r[x]['configuration'] == 'disabled' for x in ('weekly','monthly')) or
-            status == 'unresolved' and any('unresolved' in x or 'ambiguous' in x or 'mismatch' in x for x in r['exceptions']) or
-            status == 'not_confirmed' and r['approved'] is None)]
+        records = [
+            r for r in records
+            if not q or q in ' '.join(
+                [r['facility_name'], r['facility_key'], *r.get('entity_codes', [])]
+            ).casefold()
+        ]
     payload.update(rows=records[offset:offset+50], total=len(records), offset=offset, limit=50,
-                   has_more=offset+50<len(records), source_environment=selected[2],
-                   captured_at=selected[3].isoformat())
+                   has_more=offset+50<len(records))
     return payload
