@@ -6,7 +6,7 @@ from enum import Enum
 import re
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 
 class RunMode(str, Enum):
@@ -197,6 +197,7 @@ class ArtifactExecutionRequest(BaseModel):
 
 class ArtifactQueryCachePrewarmRequest(BaseModel):
     queries: list[dict[str, Any]] = Field(min_length=1, max_length=16)
+    expected_freshness: Optional[AwareDatetime] = None
 
 
 class ArtifactQueryCachePrewarmResponse(BaseModel):
@@ -204,6 +205,8 @@ class ArtifactQueryCachePrewarmResponse(BaseModel):
     artifact_key: str
     status: str
     entry_count: int
+    refresh_mode: Optional[str] = None
+    render_view_prewarmed: Optional[bool] = None
 
 
 class ArtifactExecutionResponse(BaseModel):

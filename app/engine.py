@@ -886,6 +886,11 @@ def _query_cache_scope_function_name(view_name: str) -> str:
     return _safe_view_name(f"{_safe_view_name(view_name)}_query_cache_scope")
 
 
+def _query_cache_policy_function_name(view_name: str) -> str:
+    """Return the optional database-owned cache-retention contract."""
+    return _safe_view_name(f"{_safe_view_name(view_name)}_query_cache_policy")
+
+
 def _serialized_artifact_query(query: dict[str, Any]) -> str:
     if not isinstance(query, dict):
         raise ValueError("Artifact query must be a JSON object")
@@ -915,6 +920,65 @@ def _artifact_query_cache_scope(data, view_name: str, serialized_query: str) -> 
     return scope
 
 
+def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int) -> dict[str, Any]:
+    """Resolve retention policy without changing the safe TTL default."""
+    policy_function = _query_cache_policy_function_name(view_name)
+    function_exists = data.execute(
+        "SELECT to_regprocedure(%s)",
+        (f"{policy_function}()",),
+    ).fetchone()[0]
+    if function_exists is None:
+        return {"refresh_mode": "ttl", "ttl_seconds": default_ttl_seconds}
+    row = data.execute(f"SELECT {policy_function}()",).fetchone()  # noqa: S608
+    policy = row[0] if row else None
+    if isinstance(policy, str):
+        policy = json.loads(policy)
+    if not isinstance(policy, dict):
+        raise ValueError("Artifact query cache policy must be a JSON object")
+    if set(policy) - {"refresh_mode", "ttl_seconds", "bind_freshness", "set_filter_keys", "shared_render_view"}:
+        raise ValueError("Artifact query cache policy contains unsupported fields")
+    refresh_mode = str(policy.get("refresh_mode") or "").strip().lower()
+    ttl_seconds = policy.get("ttl_seconds")
+    if refresh_mode not in {"ttl", "prewarm_swap"}:
+        raise ValueError(f"Artifact query cache refresh mode is invalid: {refresh_mode or '<empty>'}")
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds < 0:
+        raise ValueError("Artifact query cache TTL must be a non-negative integer")
+    if refresh_mode == "prewarm_swap" and ttl_seconds != 0:
+        raise ValueError("Prewarm-swap query caches must use a zero (persistent) TTL")
+    bind_freshness = policy.get("bind_freshness", False)
+    if not isinstance(bind_freshness, bool) or (bind_freshness and refresh_mode != "prewarm_swap"):
+        raise ValueError("Freshness binding requires prewarm-swap query caching")
+    set_filter_keys = policy.get("set_filter_keys", [])
+    if not isinstance(set_filter_keys, list) or not all(
+        isinstance(key, str) and key for key in set_filter_keys
+    ):
+        raise ValueError("Artifact query cache set filter keys must be a list of strings")
+    shared_render_view = policy.get("shared_render_view", False)
+    if not isinstance(shared_render_view, bool) or (shared_render_view and not bind_freshness):
+        raise ValueError("A shared render view requires freshness-bound query caching")
+    return {
+        "refresh_mode": refresh_mode,
+        "ttl_seconds": ttl_seconds,
+        "bind_freshness": bind_freshness,
+        "set_filter_keys": set_filter_keys,
+        "shared_render_view": shared_render_view,
+    }
+
+
+def _canonical_cache_query(query: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Normalize declared sets for the cache key and keep the database input intact."""
+    result = query.copy()
+    for key in policy.get("set_filter_keys", ()):
+        values = query.get(key)
+        if isinstance(values, list) and all(isinstance(value, str) for value in values):
+            result[key] = sorted(set(values))
+    return result
+
+
+def _query_cache_type(generation: Optional[str]) -> str:
+    return "artifact-query" if generation is None else f"artifact-query-generation:{generation}"
+
+
 def _artifact_query_cache_params(
     *,
     query: dict[str, Any],
@@ -937,6 +1001,49 @@ def _artifact_query_cache_params(
         "authorization_context_hash": _authorization_context_hash(authorized_roles),
         "query": query,
     }
+
+
+def _read_artifact_view(data, view_name: str) -> list[dict[str, Any]]:
+    cursor = data.execute(f"SELECT * FROM {_safe_view_name(view_name)}")  # noqa: S608
+    columns = [column[0] for column in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _render_view_generation_key(
+    data, cache, client_key: str, artifact_key: str, view_name: str, generation: str, freshness: str,
+) -> str:
+    definition = data.execute(
+        "SELECT md5(pg_get_viewdef(%s::regclass, true))", (view_name,),
+    ).fetchone()[0]
+    return cache.build_key(client_key, artifact_key, _query_cache_type(generation), {
+        "render_view": view_name,
+        "definition": definition,
+        "data_freshness_timestamp": freshness,
+    })
+
+
+def _cached_render_view_rows(
+    data, cache, client_key: str, artifact_key: str, view_name: str, default_ttl_seconds: int,
+) -> Optional[list[dict[str, Any]]]:
+    policy = _artifact_query_cache_policy(data, view_name, default_ttl_seconds)
+    if not policy.get("shared_render_view"):
+        return None
+    freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+    if freshness is None:
+        return None
+    try:
+        generation = cache.get_query_generation(client_key, artifact_key)
+        if generation is None:
+            return None
+    except Exception:
+        return None
+    key = _render_view_generation_key(data, cache, client_key, artifact_key, view_name, generation, freshness)
+    try:
+        record = cache.get(key)
+    except Exception:
+        return None
+    rows = record.get("rows") if isinstance(record, dict) else None
+    return rows if isinstance(rows, list) and all(isinstance(row, dict) for row in rows) else None
 
 
 def _execute_artifact_query_contract(data, view_name: str, serialized_query: str) -> Any:
@@ -1017,17 +1124,33 @@ def execute_artifact_query(
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
         _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
+        bind_freshness = policy.get("bind_freshness", False)
+        generation = None
+        if cache and policy["refresh_mode"] == "prewarm_swap":
+            try:
+                generation = cache.get_query_generation(client_key, artifact_key)
+            except Exception:
+                cache = None
+        freshness = (
+            None
+            if policy["refresh_mode"] == "prewarm_swap" and not bind_freshness
+            else _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        )
+        if bind_freshness and (freshness is None or generation is None):
+            cache = None
         cache_params = _artifact_query_cache_params(
-            query=query,
+            query=_canonical_cache_query(query, policy),
             freshness=freshness,
             cache_scope=cache_scope,
             authenticated_subject=authenticated_subject,
             authorized_roles=authorized_roles,
         )
-        cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params) if cache else None
+        cache_key = cache.build_key(
+            client_key, artifact_key, _query_cache_type(generation), cache_params
+        ) if cache else None
         if cache and cache_key:
             try:
                 cached = cache.get(cache_key)
@@ -1046,9 +1169,10 @@ def execute_artifact_query(
                 ) from exc
             raise
 
-        if cache and cache_key:
+        if cache and cache_key and not bind_freshness:
             try:
-                cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+                ttl_seconds = policy["ttl_seconds"] or None
+                cache.set(cache_key, result, ttl_seconds=ttl_seconds)
             except Exception:
                 pass
         return result
@@ -1059,6 +1183,7 @@ def prewarm_artifact_query_cache(
     artifact_key: str,
     *,
     queries: list[dict[str, Any]],
+    expected_freshness: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Rebuild the exact shared Redis entries declared by an artifact contract."""
     if not queries or len(queries) > 16:
@@ -1083,30 +1208,106 @@ def prewarm_artifact_query_cache(
 
     entries: list[tuple[str, Any]] = []
     with get_data_conn() as data:
+        if expected_freshness is not None:
+            data.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         _set_authorization_context(data, client_key, None, None)
-        freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
+        bind_freshness = policy.get("bind_freshness", False)
+        if bind_freshness != (expected_freshness is not None):
+            raise ValueError("Expected freshness is required only for a bound query cache")
+        generation = uuid.uuid4().hex if policy["refresh_mode"] == "prewarm_swap" else None
+        freshness = (
+            None
+            if policy["refresh_mode"] == "prewarm_swap" and not bind_freshness
+            else _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        )
+        if bind_freshness:
+            superseded = {
+                "client_key": client_key,
+                "artifact_key": artifact_key,
+                "status": "superseded",
+                "entry_count": 0,
+                "refresh_mode": policy["refresh_mode"],
+            }
+            if freshness is None or datetime.fromisoformat(freshness) != expected_freshness:
+                return superseded
+            previous_generation = cache.get_query_generation(client_key, artifact_key)
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
             if cache_scope != "shared":
                 raise ValueError("Artifact query cache prewarm accepts only shared query contracts")
             result = _execute_artifact_query_contract(data, view_name, serialized_query)
             cache_params = _artifact_query_cache_params(
-                query=query,
+                query=_canonical_cache_query(query, policy),
                 freshness=freshness,
                 cache_scope="shared",
             )
-            cache_key = cache.build_key(client_key, artifact_key, "artifact-query", cache_params)
+            cache_key = cache.build_key(
+                client_key, artifact_key, _query_cache_type(generation), cache_params
+            )
             entries.append((cache_key, result))
+        shared_render_view = policy.get("shared_render_view", False)
+        if shared_render_view:
+            render_key = _render_view_generation_key(
+                data, cache, client_key, artifact_key, view_name, generation, freshness,
+            )
+            entries.append((render_key, {"rows": _read_artifact_view(data, view_name)}))
 
-    cache.invalidate_pattern(f"bci:cache:{client_key}:{artifact_key}:artifact-query:*")
-    for cache_key, result in entries:
-        cache.set(cache_key, result, ttl_seconds=cache_settings.ttl_seconds)
+    if policy["refresh_mode"] == "prewarm_swap":
+        candidate_pattern = (
+            f"bci:cache:{client_key}:{artifact_key}:artifact-query-generation:{generation}:*"
+        )
+        try:
+            for cache_key, result in entries:
+                cache.set(cache_key, result, ttl_seconds=None)
+            if bind_freshness:
+                with get_data_conn() as data:
+                    _set_authorization_context(data, client_key, None, None)
+                    current_freshness = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
+        except Exception:
+            try:
+                cache.invalidate_pattern(candidate_pattern)
+            except Exception:
+                pass
+            raise
+        # Do not delete a fully written candidate when activation has an
+        # ambiguous network outcome: the swap may have succeeded before its
+        # response was lost. In either outcome a complete generation remains.
+        if bind_freshness:
+            if current_freshness != freshness or not cache.activate_query_generation_if_current(
+                client_key, artifact_key, generation, previous_generation
+            ):
+                try:
+                    cache.invalidate_pattern(candidate_pattern)
+                except Exception:
+                    pass
+                return superseded
+        else:
+            previous_generation = cache.activate_query_generation(
+                client_key, artifact_key, generation
+            )
+        # Cleanup is deliberately after the single-key activation boundary.
+        # A cleanup failure wastes space but cannot make the active generation stale.
+        try:
+            cache.invalidate_pattern(
+                f"bci:cache:{client_key}:{artifact_key}:artifact-query:*"
+                if previous_generation is None
+                else f"bci:cache:{client_key}:{artifact_key}:artifact-query-generation:{previous_generation}:*"
+            )
+        except Exception:
+            pass
+    else:
+        cache.invalidate_pattern(f"bci:cache:{client_key}:{artifact_key}:artifact-query:*")
+        for cache_key, result in entries:
+            cache.set(cache_key, result, ttl_seconds=policy["ttl_seconds"])
 
     return {
         "client_key": client_key,
         "artifact_key": artifact_key,
         "status": "prewarmed",
-        "entry_count": len(entries),
+        "entry_count": len(queries),
+        "refresh_mode": policy["refresh_mode"],
+        **({"render_view_prewarmed": True} if shared_render_view else {}),
     }
 
 
@@ -1246,9 +1447,13 @@ def execute_artifact(
                         else:
                             data_rows = [{"value": query_result}]
                     else:
-                        cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                        cols = [d[0] for d in cur.description]
-                        data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                        data_rows = None
+                        if cache is not None and not refresh_cache:
+                            data_rows = _cached_render_view_rows(
+                                data, cache, client_key, artifact_key, view_name, cache_settings.ttl_seconds,
+                            )
+                        if data_rows is None:
+                            data_rows = _read_artifact_view(data, view_name)
                 data_query_ms = (perf_counter() - data_query_started) * 1000
 
             if cached_render is None:
