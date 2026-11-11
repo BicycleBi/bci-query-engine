@@ -137,6 +137,42 @@ def attach_distribution_catalog(payload: dict) -> dict:
     return payload
 
 
+def select_current_distributions(payload: dict, *, search='', facility='', result='', offset=0) -> dict:
+    """Keep only enabled deliveries that resolve through maintained report metadata."""
+    if not isinstance(payload, dict):
+        return payload
+    if len(search) > 100 or len(facility) > 200 or result not in RESULTS | {''} or not 0 <= offset <= 100000:
+        raise ValueError('Invalid distribution reporting bounds')
+    query = search.strip().casefold()
+    rows = [
+        row for row in payload.get('rows') or []
+        if row.get('configuration_state') == 'enabled'
+        and row.get('report_artifact_key')
+        and (not query or query in ' '.join([
+            str(row.get('report_name') or ''),
+            str(row.get('report_artifact_key') or ''),
+            str(row.get('recipient_email') or ''),
+            *(str(value) for value in row.get('facilities') or []),
+        ]).casefold())
+        and (not facility or facility in (row.get('facilities') or []))
+        and (not result or row.get('result') == result)
+    ]
+    used = {row.get('report_artifact_key') for row in rows}
+    payload['report_catalog'] = [
+        item for item in payload.get('report_catalog') or []
+        if item.get('artifact_key') in used
+    ]
+    payload.update(
+        rows=rows[offset:offset + PAGE_SIZE],
+        total=len(rows),
+        offset=offset,
+        limit=PAGE_SIZE,
+        has_more=offset + PAGE_SIZE < len(rows),
+        coverage='current_configuration',
+    )
+    return payload
+
+
 def attach_report_configurations(payload: dict, *, facilities: bool = False) -> dict:
     """Enrich an existing bounded report response with configuration metadata."""
     configurations = get_report_configurations()
@@ -227,7 +263,8 @@ def get_distribution_report(*, search: str = '', facility: str = '', result: str
     for row in rows:
         row['facilities'].sort(key=str.casefold)
     query = search.strip().casefold()
-    rows = [r for r in rows if (not query or query in ' '.join([r['report_name'], r['artifact_key'], r['recipient_email'], *r['facilities']]).casefold())
+    rows = [r for r in rows if r['configuration_state'] == 'enabled'
+            and (not query or query in ' '.join([r['report_name'], r['artifact_key'], r['recipient_email'], *r['facilities']]).casefold())
             and (not facility or facility in r['facilities']) and (not result or r['result'] == result)]
     rows.sort(key=lambda r: (r['report_name'].casefold(), r['recipient_email'].casefold(), r['delivery_type']))
     return dict(client_key='srp', audience='srp', as_of=datetime.now(timezone.utc),

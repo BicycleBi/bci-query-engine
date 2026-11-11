@@ -87,6 +87,21 @@ def test_copied_delivery_can_use_unique_report_label(monkeypatch):
     assert result["rows"][0]["report_artifact_key"] == "weekly-practice-report"
 
 
+def test_current_distributions_exclude_historical_unmapped_and_disabled_rows():
+    payload = {
+        "rows": [
+            {"configuration_state": "enabled", "report_artifact_key": "weekly", "recipient_email": "current@example.invalid", "facilities": ["North"], "result": "not_confirmed"},
+            {"configuration_state": "enabled", "recipient_email": "historical@example.invalid", "facilities": ["North"], "result": "not_confirmed"},
+            {"configuration_state": "disabled", "report_artifact_key": "weekly", "recipient_email": "disabled@example.invalid", "facilities": ["North"], "result": "not_confirmed"},
+        ],
+        "report_catalog": [{"artifact_key": "weekly"}],
+    }
+    result = reporting.select_current_distributions(payload)
+    assert result["total"] == 1
+    assert result["rows"][0]["recipient_email"] == "current@example.invalid"
+    assert result["coverage"] == "current_configuration"
+
+
 def test_schedule_configuration_uses_live_load_mapping(monkeypatch):
     monkeypatch.setattr(reporting, "_read", lambda *args, **kwargs: [
         ("example-report", "example-load", "example-trigger", "09:30:00", "America/New_York", True, True)
@@ -101,7 +116,7 @@ def test_report_preserves_authorization_and_no_store(monkeypatch):
     main = _load_main(monkeypatch)
     calls = []
     monkeypatch.setattr(main, "require_analytics_reporting_access", lambda *args: calls.append(args))
-    monkeypatch.setattr(main, "get_copied_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "get_copied_snapshot", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "get_distribution_report", lambda **kw: {"audience": "srp", "rows": []})
     monkeypatch.setattr(main, "attach_distribution_catalog", lambda value: value)
     monkeypatch.setattr(main, "attach_report_configurations", lambda value, **kwargs: value)
