@@ -1,0 +1,22 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    release_id: service-runtime-srp-production-client-access-live-metadata-20261111
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Serve the QA-validated live-metadata Client Access and Distribution APIs in Production
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: query-engine
