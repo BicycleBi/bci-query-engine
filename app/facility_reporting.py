@@ -83,9 +83,11 @@ def attach_copied_facility_evidence(
 
     for facility in payload.get("rows") or []:
         facility.pop("facility_id", None)
-        operational = activity.get(str(facility.get("facility_key") or "").casefold())
-        if operational is None:
-            operational = activity.get(str(facility.get("facility_name") or "").strip().casefold(), "no_data")
+        operational = facility.get("operational_data")
+        if activity_copied:
+            operational = activity.get(str(facility.get("facility_key") or "").casefold())
+            if operational is None:
+                operational = activity.get(str(facility.get("facility_name") or "").strip().casefold(), "no_data")
         facility["operational_data"] = operational
         facility["facility_status"] = "active" if operational in {"available", "partial"} else "inactive"
         facility_users = {}
@@ -140,14 +142,15 @@ def attach_copied_facility_evidence(
         ))
 
     sources = payload.setdefault("sources", [])
-    copied_sources = {
-        "facility_access_snapshot": access_copied,
-        "facility_distribution_snapshot": distributions_copied,
-        "facility_activity_snapshot": activity_copied,
+    live_status = {source.get("source"): source.get("status") == "available" for source in sources}
+    evidence_sources = {
+        "facility_access": access_copied or live_status.get("security_metadata", False),
+        "facility_distribution": distributions_copied or live_status.get("distributions", False),
+        "facility_activity": activity_copied or live_status.get("activity", False),
     }
-    sources[:] = [source for source in sources if source.get("source") not in copied_sources]
+    sources[:] = [source for source in sources if source.get("source") not in evidence_sources]
     sources.extend({"source": key, "status": "available" if available else "unavailable"}
-                   for key, available in copied_sources.items())
+                   for key, available in evidence_sources.items())
     if access_copied:
         payload["source_environment"] = "production"
         payload["captured_at"] = access_payload.get("captured_at")
@@ -166,6 +169,15 @@ def _load_configuration():
               AND NULLIF(btrim(facility_id), '') IS NOT NULL
               AND NULLIF(btrim(facility_name), '') IS NOT NULL
             ORDER BY btrim(facility_name), btrim(facility_id)
+            """,
+        ),
+        (
+            "activity",
+            "public.srp_client_access_facility_activity_status",
+            """
+            SELECT facility_key, operational_data
+            FROM public.srp_client_access_facility_activity_status
+            ORDER BY facility_key
             """,
         ),
         (
@@ -207,7 +219,7 @@ def _load_configuration():
         sources.append({"source": name, "status": "available" if data[name] is not None else "unavailable"})
     if data["facilities"] is None:
         raise RuntimeError("Facility roster is unavailable")
-    if data["report_scope"] is None or data["distributions"] is None or data["role_scope"] is None:
+    if data["activity"] is None or data["report_scope"] is None or data["distributions"] is None or data["role_scope"] is None:
         raise RuntimeError("Facility configuration projection is unavailable")
     return data, sources
 
@@ -289,6 +301,13 @@ def _build_rows(data, catalog, user_rows, home_artifacts=None):
             "entity_codes": [],
             "reports": {},
         }
+
+    activity = {facility_key: operational_data for facility_key, operational_data in data["activity"]}
+    for facility_key, facility in facilities.items():
+        facility["operational_data"] = activity.get(facility_key, "no_data")
+        facility["facility_status"] = (
+            "active" if facility["operational_data"] in {"available", "partial"} else "inactive"
+        )
 
     for facility_key, _facility_id, _facility_name, artifact_key, entity_code, mapping_source in data["report_scope"]:
         facility = facilities.get(facility_key)

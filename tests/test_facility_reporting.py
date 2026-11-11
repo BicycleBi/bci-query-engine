@@ -12,6 +12,7 @@ from test_usage_summary import _auth_headers, _load_main, _token
 def configuration():
     return {
         "facilities": [("ecw:1", "1", "Example North"), ("ecw:2", "2", "Example South")],
+        "activity": [("ecw:1", "available"), ("ecw:2", "no_data")],
         "report_scope": [
             ("ecw:1", "1", "Example North", "example-report", "entity_north", "maintained_scope"),
         ],
@@ -43,7 +44,8 @@ def test_rows_use_only_maintained_configuration():
     assert north["reports"][0]["distributions"][0]["recipient_email"] == "north@example.invalid"
     assert north["reports"][0]["users"][0]["username"] == "user@example.invalid"
     assert rows[1]["reports"] == []
-    assert "operational_data" not in north and "status" not in north
+    assert north["operational_data"] == "available" and north["facility_status"] == "active"
+    assert rows[1]["facility_status"] == "inactive"
 
 
 def test_disabled_or_unregistered_configuration_is_not_invented():
@@ -112,6 +114,30 @@ def test_copied_production_evidence_replaces_dev_placeholders():
     assert north["reports"][0]["users"][0]["available_from_home"] is True
     assert "_access_roles" not in north["reports"][0]
     assert "facility_id" not in north
+
+
+def test_live_activity_is_preserved_without_a_copied_snapshot():
+    catalog = {
+        "example-report": {
+            "artifact_key": "example-report",
+            "display_name": "Example Report",
+            "delivery_mode": "web",
+            "front_end": True,
+            "active": True,
+        }
+    }
+    live = {"rows": reporting._build_rows(configuration(), catalog, []), "sources": [
+        {"source": "activity", "status": "available"},
+        {"source": "distributions", "status": "available"},
+        {"source": "security_metadata", "status": "available"},
+    ]}
+    result = reporting.attach_copied_facility_evidence(live)
+    north, south = result["rows"]
+    assert north["facility_status"] == "active"
+    assert south["facility_status"] == "inactive"
+    assert {source["source"] for source in result["sources"]} >= {
+        "facility_access", "facility_distribution", "facility_activity"
+    }
 
 
 def test_report_bounds_search_and_status_rejection(monkeypatch):
