@@ -10,6 +10,14 @@
   artifact permissions, while reporting successful authentications with no
   current artifact grants alongside observed HTTP 403 activity.
 
+## 0.6.1-rc.2
+
+- Add opt-in persistent query generations bound to the accepted source
+  version. A report can publish its shared render context and query results
+  together after a data load.
+- Normalize declared set filters for cache lookup while retaining the original
+  request and authorization checks for the database query.
+
 ## 0.4.0 - 2026-09-18
 
 ### Added
