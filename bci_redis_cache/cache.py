@@ -56,8 +56,54 @@ class RedisCache:
             return None
         return value
 
-    def set(self, key: str, value: dict[str, Any], ttl_seconds: int = 3600) -> None:
-        self.redis.set(key, json.dumps(value, sort_keys=True, default=str), ex=ttl_seconds)
+    def set(
+        self,
+        key: str,
+        value: dict[str, Any],
+        ttl_seconds: Optional[int] = 3600,
+    ) -> None:
+        encoded = json.dumps(value, sort_keys=True, default=str)
+        if ttl_seconds is None or ttl_seconds == 0:
+            self.redis.set(key, encoded)
+            return
+        self.redis.set(key, encoded, ex=ttl_seconds)
+
+    @staticmethod
+    def _query_generation_key(client_key: str, artifact_key: str) -> str:
+        return f"bci:cache:{client_key}:{artifact_key}:artifact-query-generation"
+
+    def get_query_generation(self, client_key: str, artifact_key: str) -> Optional[str]:
+        return self.redis.get(self._query_generation_key(client_key, artifact_key))
+
+    def activate_query_generation(
+        self,
+        client_key: str,
+        artifact_key: str,
+        generation: str,
+    ) -> Optional[str]:
+        return self.redis.getset(
+            self._query_generation_key(client_key, artifact_key),
+            generation,
+        )
+
+    def activate_query_generation_if_current(
+        self,
+        client_key: str,
+        artifact_key: str,
+        generation: str,
+        previous_generation: Optional[str],
+    ) -> bool:
+        """Swap a fully written candidate only if no other build activated."""
+        script = """
+        local current = redis.call('GET', KEYS[1]) or ''
+        if current ~= ARGV[1] then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2])
+        return 1
+        """
+        return bool(self.redis.eval(
+            script, 1, self._query_generation_key(client_key, artifact_key),
+            previous_generation or "", generation,
+        ))
 
     def invalidate_pattern(self, pattern: str) -> int:
         removed = 0

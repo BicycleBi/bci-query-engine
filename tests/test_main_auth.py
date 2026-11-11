@@ -972,6 +972,7 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
             "artifact_key": artifact_key,
             "status": "prewarmed",
             "entry_count": len(kwargs["queries"]),
+            "refresh_mode": "ttl",
         }
 
     monkeypatch.setattr(main, "prewarm_artifact_query_cache", fake_prewarm)
@@ -991,8 +992,31 @@ def test_artifact_query_cache_prewarm_uses_service_only_contract(monkeypatch):
         "artifact_key": "lot-summary",
         "status": "prewarmed",
         "entry_count": 2,
+        "refresh_mode": "ttl",
     }
     assert captured["queries"] == queries
+
+
+def test_artifact_query_cache_prewarm_validates_and_forwards_expected_freshness(monkeypatch):
+    main = _load_main(monkeypatch)
+    client = TestClient(main.app)
+    received = []
+
+    def fake_prewarm(client_key, artifact_key, *, queries, expected_freshness):
+        received.append(expected_freshness.isoformat())
+        return {"client_key": client_key, "artifact_key": artifact_key,
+                "status": "superseded", "entry_count": 0, "refresh_mode": "prewarm_swap"}
+
+    monkeypatch.setattr(main, "prewarm_artifact_query_cache", fake_prewarm)
+    url = "/internal/artifacts/srp/rcm-report/query-cache/prewarm"
+    headers = {"Authorization": "Bearer test-service-token"}
+    body = {"queries": [{"operation": "snapshot"}], "expected_freshness": "2026-11-11T11:00:00"}
+    assert client.post(url, headers=headers, json=body).status_code == 422
+    body["expected_freshness"] += "Z"
+    response = client.post(url, headers=headers, json=body)
+    assert response.status_code == 200
+    assert response.json()["status"] == "superseded"
+    assert received == ["2026-11-11T11:00:00+00:00"]
 
 
 def test_artifact_asset_route_is_authenticated_and_immutable(monkeypatch):
