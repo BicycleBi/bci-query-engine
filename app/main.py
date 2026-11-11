@@ -17,9 +17,9 @@ from typing import Any, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .report_snapshot import get_copied_report
-from .facility_reporting import attach_copied_facility_access, get_facility_report
-from .distribution_reporting import attach_report_configurations, get_distribution_report
+from .report_snapshot import get_copied_report, get_copied_snapshot
+from .facility_reporting import attach_copied_facility_evidence, get_facility_report
+from .distribution_reporting import attach_distribution_catalog, attach_report_configurations, get_distribution_report, select_current_distributions
 from .mailer import send as send_email
 from .analytics import get_analytics_reporting_config
 from .engine import (
@@ -659,8 +659,19 @@ def distribution_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        copied = get_copied_report('distributions', search=search, facility=facility, result=result, offset=offset)
-        result_payload = copied if copied is not None else get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+        copied = get_copied_snapshot('distributions')
+        if copied is not None:
+            result_payload = select_current_distributions(
+                attach_distribution_catalog(copied),
+                search=search,
+                facility=facility,
+                result=result,
+                offset=offset,
+            )
+        else:
+            result_payload = attach_distribution_catalog(
+                get_distribution_report(search=search, facility=facility, result=result, offset=offset)
+            )
         return attach_report_configurations(result_payload)
     except ValueError:
         raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
@@ -680,22 +691,18 @@ def facility_summary(
     require_analytics_reporting_access(identity, client_key, "access")
     response.headers["Cache-Control"] = "no-store"
     try:
-        copied = get_copied_report('facilities', search=search, status=status, offset=offset)
-        if copied is not None:
-            access = get_copied_report('access-users', offset=0)
-            if access is not None:
-                access_rows = list(access['rows'])
-                access_offset = access['limit']
-                while access.get('has_more'):
-                    if access_offset >= 5000:
-                        raise RuntimeError("Copied access snapshot exceeds reporting bound")
-                    page = get_copied_report('access-users', offset=access_offset)
-                    access_rows.extend(page['rows'])
-                    access = page
-                    access_offset += page['limit']
-                access = dict(access, rows=access_rows)
-            return attach_report_configurations(attach_copied_facility_access(copied, access), facilities=True)
-        return attach_report_configurations(get_facility_report(search=search, status=status, offset=offset), facilities=True)
+        live = get_facility_report(search=search, status=status, offset=offset)
+        access = get_copied_snapshot('access-users')
+        distributions = attach_distribution_catalog(get_copied_snapshot('distributions'))
+        activity = get_copied_snapshot('facilities')
+        merged = attach_copied_facility_evidence(
+            live,
+            access_payload=access,
+            distribution_payload=distributions,
+            activity_payload=activity,
+            home_artifacts=set(get_home_artifact_keys(client_key)),
+        )
+        return attach_report_configurations(merged, facilities=True)
     except ValueError:
         raise HTTPException(400, "Invalid facility reporting bounds") from None
     except Exception:
