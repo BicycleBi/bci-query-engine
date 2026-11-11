@@ -48,7 +48,10 @@ def test_search_pagination_and_source_stamp(monkeypatch):
 def test_distribution_filters_match_live_contract(monkeypatch):
     rows=[dict(report_name='Weekly',artifact_key='weekly',recipient_email='example@example.invalid',facilities=['North'],result='missing'),
           dict(report_name='Monthly',artifact_key='monthly',recipient_email='other@example.invalid',facilities=['South'],result='extra')]
-    bind(monkeypatch,documents(rows,'distributions'))
+    docs=documents(rows,'distributions')
+    for key,payload,*_ in docs:
+        if key=='distributions':payload['coverage']='configuration'
+    bind(monkeypatch,docs)
     assert m.get_copied_report('distributions',facility='North',result='missing')['rows']==rows[:1]
     assert m.get_copied_report('distributions',search='South')['rows']==rows[1:]
 
@@ -82,16 +85,26 @@ def test_denied_viewer_never_reads_snapshot(monkeypatch):
 
 
 def test_copied_facilities_uses_only_current_roster(monkeypatch):
-    rows=[dict(facility_name='Example '+str(i),facility_key='ecw:'+str(i),entity_codes=[],sources=['facilities'],operational_data='no_data',approved=None) for i in range(55)]
-    rows.append(dict(facility_name='Excel only',facility_key='name:Excel only',entity_codes=[],sources=['facility_reference']))
+    rows=[dict(facility_name='Example '+str(i),facility_key='ecw:'+str(i),entity_codes=[],reports=[],user_access=[]) for i in range(55)]
+    rows.append(dict(facility_name='Excel only',facility_key='name:Excel only',entity_codes=[],reports=[],user_access=[]))
     docs=documents(rows,'facilities')
     for key,payload,*_ in docs:
-        if key=='facilities':payload['sources']=[dict(source='facilities',status='available')]
+        if key=='facilities':
+            payload['sources']=[dict(source='facilities',status='available')]
+            payload['coverage']='configuration'
     bind(monkeypatch,docs)
-    assert m.get_copied_report('facilities')['total']==55
-    assert len(m.get_copied_report('facilities',offset=50)['rows'])==5
-    assert m.get_copied_report('facilities',search='Excel only')['total']==0
+    assert m.get_copied_report('facilities')['total']==56
+    assert len(m.get_copied_report('facilities',offset=50)['rows'])==6
+    assert m.get_copied_report('facilities',search='Excel only')['total']==1
     for key,payload,*_ in docs:
         if key=='facilities':payload['sources'][0]['status']='unavailable'
     bind(monkeypatch,docs)
     with pytest.raises(RuntimeError):m.get_copied_report('facilities')
+
+
+def test_legacy_configuration_sections_fall_back_to_live(monkeypatch):
+    rows=[dict(facility_name='Legacy',facility_key='ecw:1',entity_codes=[])]
+    bind(monkeypatch,documents(rows,'facilities'))
+    assert m.get_copied_report('facilities') is None
+    bind(monkeypatch,documents([], 'distributions'))
+    assert m.get_copied_report('distributions') is None

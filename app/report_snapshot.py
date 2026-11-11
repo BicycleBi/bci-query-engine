@@ -31,6 +31,11 @@ def get_copied_report(section, *, search='', facility='', result='', status='', 
     payload = deepcopy(selected[1])
     if payload.get('client_key') != 'srp' or payload.get('audience') != 'srp' or not isinstance(payload.get('rows'), list):
         raise RuntimeError('Copied report could not be verified')
+    # The redesigned facilities and distributions views use configuration-only
+    # payloads. An older copied snapshot must not override the live Dev
+    # projections with the retired report contract.
+    if section in {'facilities', 'distributions'} and payload.get('coverage') != 'configuration':
+        return None
     q = search.strip().casefold()
     records = payload['rows']
     if section.startswith('access-'):
@@ -43,14 +48,12 @@ def get_copied_report(section, *, search='', facility='', result='', status='', 
     else:
         if not any(source.get('source') == 'facilities' and source.get('status') == 'available' for source in payload.get('sources', [])):
             raise RuntimeError('Copied facility roster unavailable')
-        records = [r for r in records if 'facilities' in r.get('sources', [])]
-        records = [r for r in records if (not q or q in ' '.join([r['facility_name'], r['facility_key'], *r['entity_codes']]).casefold()) and (
-            not status or status == 'exceptions' and any(x != 'approval_not_confirmed' for x in r['exceptions']) or
-            status == 'no_data' and r['operational_data'] == 'no_data' or
-            status == 'not_configured' and any(r[x]['configuration'] == 'not_configured' for x in ('weekly','monthly')) or
-            status == 'disabled' and any(r[x]['configuration'] == 'disabled' for x in ('weekly','monthly')) or
-            status == 'unresolved' and any('unresolved' in x or 'ambiguous' in x or 'mismatch' in x for x in r['exceptions']) or
-            status == 'not_confirmed' and r['approved'] is None)]
+        records = [
+            r for r in records
+            if not q or q in ' '.join(
+                [r['facility_name'], r['facility_key'], *r.get('entity_codes', [])]
+            ).casefold()
+        ]
     payload.update(rows=records[offset:offset+50], total=len(records), offset=offset, limit=50,
                    has_more=offset+50<len(records), source_environment=selected[2],
                    captured_at=selected[3].isoformat())
