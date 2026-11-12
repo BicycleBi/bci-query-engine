@@ -1,0 +1,24 @@
+schema_version: 1
+client: srp
+environment: production
+source_repo: .
+source_commit: HEAD
+
+targets:
+  stack_dir: /home/shared/bci-clients/srp
+  compose_project: bci-srp-production
+
+service_runtime:
+  promote:
+    source: .
+    service: query-engine
+    release_id: service-runtime-srp-production-ppp-cache-restore-20261112
+    build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
+    purpose: Restore Practice Performance Pulse cache generations on the current Access and Distributions runtime
+
+validate:
+  - type: compose-config
+  - type: service-health
+    service: redis
+  - type: service-health
+    service: query-engine
