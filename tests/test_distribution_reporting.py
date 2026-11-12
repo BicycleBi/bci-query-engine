@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app import distribution_reporting as reporting
+from app import facility_reporting
 from test_usage_summary import _auth_headers, _load_main, _token
 
 
@@ -45,6 +46,40 @@ def test_unavailable_projection_is_not_an_empty_result(monkeypatch):
     monkeypatch.setattr(reporting, "_read", lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError):
         reporting.get_distribution_report()
+
+
+def test_configured_email_publication_without_portal_registration(monkeypatch):
+    key = "weekly-practice-report"
+    retired = "retired-practice-report"
+
+    def read(factory, relation, query, params=None):
+        if relation == "public.srp_client_access_facility_distribution":
+            return [
+                ("Example North", key, key, "list@example.invalid", "to", True, "maintained"),
+                ("Example South", key, key, "other@example.invalid", "to", False, "maintained"),
+                ("Example North", retired, retired, "list@example.invalid", "to", True, "maintained"),
+            ]
+        if relation == "app.artifacts":
+            if "delivery_mode" in query:
+                return [(retired, "Retired Practice Report", "email", False)]
+            return [(retired, "Retired Practice Report", False)]
+        if relation == "public.srp_client_access_report_scope_configuration":
+            assert params == ([key],)
+            return [(key,)]
+        raise AssertionError(relation)
+
+    monkeypatch.setattr(reporting, "_read", read)
+    monkeypatch.setattr(facility_reporting, "_read", read)
+    result = reporting.get_distribution_report()
+    assert result["total"] == 1
+    assert result["rows"][0]["report_name"] == "Weekly Practice Report"
+    assert result["rows"][0]["facilities"] == ["Example North"]
+
+    catalog, _ = facility_reporting._artifact_catalog({key, retired})
+    assert catalog[key]["delivery_mode"] == "email"
+    assert catalog[key]["front_end"] is False
+    assert catalog[key]["active"] is True
+    assert catalog[retired]["active"] is False
 
 
 def test_copied_delivery_is_related_to_canonical_report(monkeypatch):

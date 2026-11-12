@@ -7,60 +7,36 @@
         "operation": "replace",
         "path": "app/distribution_reporting.py",
         "role": "distribution-reporting",
-        "sha256": "1da299aa6775dacf8f6abbabe8c9b05de8194bd4e4a159e0648a04b4fb5699de"
+        "sha256": "26d261addfc62d6245b8e47b1e62131891378eb1a189ae7f4a35488ac17c8f7e"
       },
       {
         "operation": "replace",
         "path": "app/facility_reporting.py",
         "role": "facility-reporting",
-        "sha256": "de72b09bb5fb69fea7404b3b9bd33720f28068d97dfb3bdb7e138d1d568b677b"
-      },
-      {
-        "operation": "replace",
-        "path": "app/main.py",
-        "role": "main",
-        "sha256": "0efe56c160be1d19bb443cceaac22cd7625a82792f09d8bf89452aa090533c66"
-      },
-      {
-        "operation": "replace",
-        "path": "app/report_snapshot.py",
-        "role": "report-snapshot",
-        "sha256": "216945292fe80ec5bde7281049150b2e75abd7d3aed7c7bf8721b0c38f464e18"
+        "sha256": "93bb1bdc472a67b33d1ecf60033b8cdd335275f669eb91eff78ededeff7a7562"
       },
       {
         "operation": "replace",
         "path": "tests/test_distribution_reporting.py",
         "role": "test-distribution-reporting",
-        "sha256": "eb7bbcadcefa4eb3dcc4f4e3ad64cb65cba5edab5534b7ae2a5e38f9e74e38a2"
-      },
-      {
-        "operation": "replace",
-        "path": "tests/test_facility_reporting.py",
-        "role": "test-facility-reporting",
-        "sha256": "3709cf72dc580a2c57bcf3faa79dde0fb81f46c08119ad1feeb7295fffb5513b"
-      },
-      {
-        "operation": "replace",
-        "path": "tests/test_report_snapshot.py",
-        "role": "test-report-snapshot",
-        "sha256": "d5d9e34b63fbb19958e8d10f6b3b5c266f21063ed11d9d762e3431df78452b17"
+        "sha256": "5df18b708722f349deaf0851e20fe6be88cbe59983d0d9e008a4b388c3b71c39"
       },
       {
         "operation": "replace",
         "path": "deployment/promotions/production-srp-client-access-live-metadata-runtime-20261111.yml",
         "role": "production-srp-client-access-live-metadata-runtime-20261111",
-        "sha256": "02effee8d59b9dfb68fb5a01e56e0f3b0aada07c88b53a360551124111641c1a"
+        "sha256": "8199cfca0ace08d85134cbd092d4250527de3ddd86ce84e861647194b670b2c8"
       }
     ],
     "approver": "Jeanre",
-    "baseline_commit": "ad062a15470ff3c636ee1151c2a3a990d1d5ee70",
+    "baseline_commit": "b3e1c7b1d64f9f1ebcbbe6869ae221af88770fb6",
     "branch_provenance": {
       "change_class": "client-stack-architecture",
       "expected_advance_ref": "refs/heads/main",
       "schema_version": 4,
-      "source_commit": "ad062a15470ff3c636ee1151c2a3a990d1d5ee70",
-      "source_ref": "refs/heads/codex/srp-client-access-live-metadata-production-runtime-source-20261111",
-      "target_commit": "ad062a15470ff3c636ee1151c2a3a990d1d5ee70",
+      "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
+      "source_ref": "refs/heads/codex/srp-weekly-publication-visibility",
+      "target_commit": "b3e1c7b1d64f9f1ebcbbe6869ae221af88770fb6",
       "target_ref": "refs/heads/main"
     },
     "change_class": "client-stack-architecture",
@@ -69,8 +45,8 @@
     "dependencies": [],
     "environment": "production",
     "forbidden_units": [],
-    "generated_at": "2026-11-11T14:45:43Z",
-    "intent": "Deploy the QA-validated live-metadata Client Access and Distribution Query Engine runtime to SRP Production.",
+    "generated_at": "2026-11-12T09:00:19Z",
+    "intent": "Show Weekly email publication configuration in SRP Production",
     "operator": "bcipromote",
     "package_path": "deployment/packages/srp-production-client-access-live-metadata-runtime-20261111",
     "regression_checks": [],
@@ -78,25 +54,25 @@
       "mode": "direct"
     },
     "rollback": {
-      "method": "restore-previous-query-engine-build-context-and-recreate-service",
-      "reference": "pre-promotion-srp-production-query-engine-runtime"
+      "method": "Rebuild the previous exact Query Engine runtime through governed recovery",
+      "reference": "b3e1c7b"
     },
     "schema_version": 3,
     "semantic_checks": [],
-    "source_commit": "ad062a15470ff3c636ee1151c2a3a990d1d5ee70",
+    "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
     "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111"
   },
   "schema_version": 1,
   "service_runtime": {
     "promote": {
       "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
-      "purpose": "Serve the QA-validated live-metadata Client Access and Distribution APIs in Production",
-      "release_id": "service-runtime-srp-production-client-access-live-metadata-20261111",
+      "purpose": "Include configured email-only practice publications in SRP Production",
+      "release_id": "service-runtime-srp-production-weekly-publication-visibility-20261112",
       "service": "query-engine",
       "source": "."
     }
   },
-  "source_commit": "ad062a15470ff3c636ee1151c2a3a990d1d5ee70",
+  "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
   "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111",
   "targets": {
     "compose_project": "bci-srp-production",
