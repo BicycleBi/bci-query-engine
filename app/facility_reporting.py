@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from .analytics import get_analytics_reporting_config
 from .db import get_data_conn, get_metadata_conn
+from .distribution_reporting import practice_email_publications
 
 MAX_SOURCE_ROWS = 5000
 PAGE_SIZE = 100
@@ -248,6 +249,15 @@ def _artifact_catalog(artifact_keys):
         }
         for key, display_name, delivery_mode, active in rows or []
     }
+    if rows is not None:
+        for key, name in practice_email_publications(artifact_keys - catalog.keys()).items():
+            catalog[key] = {
+                "artifact_key": key,
+                "display_name": name,
+                "delivery_mode": "email",
+                "front_end": False,
+                "active": True,
+            }
     return catalog, rows
 
 
