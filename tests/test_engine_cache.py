@@ -108,6 +108,8 @@ class FakeCache:
         self.fail_get = fail_get
         self.set_calls = []
         self.invalidated_patterns = []
+        self.generation = None
+        self.activated_generations = []
 
     @staticmethod
     def build_key(client_key, artifact_key, cache_type, params):
@@ -138,6 +140,15 @@ class FakeCache:
     def invalidate_pattern(self, pattern):
         self.invalidated_patterns.append(pattern)
         return 0
+
+    def get_query_generation(self, client_key, artifact_key):
+        return self.generation
+
+    def activate_query_generation(self, client_key, artifact_key, generation):
+        previous = self.generation
+        self.generation = generation
+        self.activated_generations.append(generation)
+        return previous
 
 
 @contextmanager
@@ -425,10 +436,11 @@ def test_query_function_name_follows_the_render_view_contract():
 
 
 class FakeQueryData(FakeData):
-    def __init__(self, *, contract_exists=True, cache_scope=None, result=None, **kwargs):
+    def __init__(self, *, contract_exists=True, cache_scope=None, cache_policy=None, result=None, **kwargs):
         super().__init__(**kwargs)
         self.contract_exists = contract_exists
         self.cache_scope = cache_scope
+        self.cache_policy = cache_policy
         self.result = result if result is not None else {"rows": [], "total_count": 0}
         self.query_payloads = []
 
@@ -450,6 +462,12 @@ class FakeQueryData(FakeData):
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
         if "SELECT to_regprocedure(%s)" in sql:
+            if str(params[0]).endswith("_query_cache_policy()"):
+                return FakeResult(
+                    row=("rpt.visit_counts_query_cache_policy()",)
+                    if self.cache_policy is not None
+                    else (None,)
+                )
             if str(params[0]).endswith("_query_cache_scope(jsonb)"):
                 return FakeResult(
                     row=("rpt.visit_counts_query_cache_scope(jsonb)",)
@@ -459,6 +477,8 @@ class FakeQueryData(FakeData):
             return FakeResult(row=("rpt.visit_counts_query(jsonb)",) if self.contract_exists else (None,))
         if "SELECT rpt.visit_counts_query_cache_scope" in sql:
             return FakeResult(row=(self.cache_scope,))
+        if "SELECT rpt.visit_counts_query_cache_policy" in sql:
+            return FakeResult(row=(self.cache_policy,))
         if "SELECT rpt.visit_counts_query" in sql:
             self.calls += 1
             self.query_payloads.append(params[0])
@@ -566,6 +586,7 @@ def test_prewarm_builds_declared_shared_query_entries(monkeypatch):
         "artifact_key": "lot-summary",
         "status": "prewarmed",
         "entry_count": 1,
+        "refresh_mode": "ttl",
     }
     assert fake_cache.invalidated_patterns == [
         "bci:cache:rag:lot-summary:artifact-query:*"
@@ -582,6 +603,133 @@ def test_prewarm_builds_declared_shared_query_entries(monkeypatch):
     )
 
     assert fake_cache.set_calls[1][0] == prewarmed_key
+
+
+def test_prewarm_swap_activates_complete_persistent_generation(monkeypatch):
+    data = FakeQueryData(
+        cache_scope="shared",
+        cache_policy={"refresh_mode": "prewarm_swap", "ttl_seconds": 0},
+        result={"rows": []},
+    )
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    fake_cache.generation = "prior-generation"
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    result = engine.prewarm_artifact_query_cache(
+        "srp",
+        "practice-performance-pulse",
+        queries=[
+            {"operation": "appointments"},
+            {"operation": "claims"},
+            {"operation": "ewc"},
+        ],
+    )
+
+    assert result["refresh_mode"] == "prewarm_swap"
+    assert result["entry_count"] == 3
+    assert len(fake_cache.activated_generations) == 1
+    active = fake_cache.activated_generations[0]
+    assert active != "prior-generation"
+    assert all(f"artifact-query-generation:{active}:" in call[0] for call in fake_cache.set_calls)
+    assert all(call[2] is None for call in fake_cache.set_calls)
+    assert fake_cache.invalidated_patterns == [
+        "bci:cache:srp:practice-performance-pulse:artifact-query-generation:prior-generation:*"
+    ]
+
+
+def test_prewarm_swap_failure_keeps_prior_generation_active(monkeypatch):
+    class FailingCache(FakeCache):
+        def set(self, key, value, ttl_seconds):
+            super().set(key, value, ttl_seconds)
+            raise RuntimeError("redis write failed")
+
+    data = FakeQueryData(
+        cache_scope="shared",
+        cache_policy={"refresh_mode": "prewarm_swap", "ttl_seconds": 0},
+    )
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FailingCache(payload=None)
+    fake_cache.generation = "last-good"
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    with pytest.raises(RuntimeError, match="redis write failed"):
+        engine.prewarm_artifact_query_cache(
+            "srp",
+            "practice-performance-pulse",
+            queries=[{"operation": "appointments"}],
+        )
+
+    assert fake_cache.generation == "last-good"
+    assert fake_cache.activated_generations == []
+    assert len(fake_cache.invalidated_patterns) == 1
+    assert "artifact-query-generation:" in fake_cache.invalidated_patterns[0]
+
+
+def test_prewarm_swap_activation_uncertainty_keeps_complete_candidate(monkeypatch):
+    class ActivationFailureCache(FakeCache):
+        def activate_query_generation(self, client_key, artifact_key, generation):
+            raise RuntimeError("redis activation response lost")
+
+    data = FakeQueryData(
+        cache_scope="shared",
+        cache_policy={"refresh_mode": "prewarm_swap", "ttl_seconds": 0},
+    )
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = ActivationFailureCache(payload=None)
+    fake_cache.generation = "last-good"
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    with pytest.raises(RuntimeError, match="activation response lost"):
+        engine.prewarm_artifact_query_cache(
+            "srp",
+            "practice-performance-pulse",
+            queries=[{"operation": "appointments"}],
+        )
+
+    assert len(fake_cache.set_calls) == 1
+    assert fake_cache.generation == "last-good"
+    assert fake_cache.invalidated_patterns == []
+
+
+def test_prewarm_swap_query_uses_active_generation_and_no_expiry(monkeypatch):
+    data = FakeQueryData(
+        cache_scope="shared",
+        cache_policy={"refresh_mode": "prewarm_swap", "ttl_seconds": 0},
+    )
+    _patch_connections(monkeypatch, data=data)
+    fake_cache = FakeCache(payload=None)
+    fake_cache.generation = "active-generation"
+    monkeypatch.setattr(
+        cache_module,
+        "get_cache_settings",
+        lambda: cache_module.CacheSettings(enabled=True, ttl_seconds=42),
+    )
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: fake_cache)
+
+    engine.execute_artifact_query(
+        "srp",
+        "practice-performance-pulse",
+        query={"operation": "appointments"},
+    )
+
+    assert "artifact-query-generation:active-generation:" in fake_cache.set_calls[0][0]
+    assert fake_cache.set_calls[0][2] is None
 
 
 def test_prewarm_rejects_identity_scoped_query(monkeypatch):
