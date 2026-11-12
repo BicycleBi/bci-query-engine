@@ -7,36 +7,30 @@
         "operation": "replace",
         "path": "app/distribution_reporting.py",
         "role": "distribution-reporting",
-        "sha256": "26d261addfc62d6245b8e47b1e62131891378eb1a189ae7f4a35488ac17c8f7e"
-      },
-      {
-        "operation": "replace",
-        "path": "app/facility_reporting.py",
-        "role": "facility-reporting",
-        "sha256": "93bb1bdc472a67b33d1ecf60033b8cdd335275f669eb91eff78ededeff7a7562"
+        "sha256": "aab785053c6e9db7eacea4bf37acd6a045d22e0c894657c24216aac2c3430255"
       },
       {
         "operation": "replace",
         "path": "tests/test_distribution_reporting.py",
         "role": "test-distribution-reporting",
-        "sha256": "5df18b708722f349deaf0851e20fe6be88cbe59983d0d9e008a4b388c3b71c39"
+        "sha256": "1e8523f9a0c181a1bc2cb52dd0cdcff70f54ba799b3369a940eab20cd2fc99da"
       },
       {
         "operation": "replace",
         "path": "deployment/promotions/production-srp-client-access-live-metadata-runtime-20261111.yml",
         "role": "production-srp-client-access-live-metadata-runtime-20261111",
-        "sha256": "8199cfca0ace08d85134cbd092d4250527de3ddd86ce84e861647194b670b2c8"
+        "sha256": "907051fa6191d0b82ad8719f37f3a926d7fe831e2501990ea9744b68548c8d96"
       }
     ],
     "approver": "Jeanre",
-    "baseline_commit": "b3e1c7b1d64f9f1ebcbbe6869ae221af88770fb6",
+    "baseline_commit": "f995c121bcc94addd50a8e4f7e93996000553153",
     "branch_provenance": {
       "change_class": "client-stack-architecture",
       "expected_advance_ref": "refs/heads/main",
       "schema_version": 4,
-      "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
-      "source_ref": "refs/heads/codex/srp-weekly-publication-visibility",
-      "target_commit": "b3e1c7b1d64f9f1ebcbbe6869ae221af88770fb6",
+      "source_commit": "035ec517e73834fa7653464d683e1d8c55caed7a",
+      "source_ref": "refs/heads/codex/srp-distribution-tab-recovery",
+      "target_commit": "f995c121bcc94addd50a8e4f7e93996000553153",
       "target_ref": "refs/heads/main"
     },
     "change_class": "client-stack-architecture",
@@ -45,8 +39,8 @@
     "dependencies": [],
     "environment": "production",
     "forbidden_units": [],
-    "generated_at": "2026-11-12T09:00:19Z",
-    "intent": "Show Weekly email publication configuration in SRP Production",
+    "generated_at": "2026-11-12T10:19:22Z",
+    "intent": "Restore the SRP Access and Distributions tab after the Weekly publication change",
     "operator": "bcipromote",
     "package_path": "deployment/packages/srp-production-client-access-live-metadata-runtime-20261111",
     "regression_checks": [],
@@ -55,24 +49,24 @@
     },
     "rollback": {
       "method": "Rebuild the previous exact Query Engine runtime through governed recovery",
-      "reference": "b3e1c7b"
+      "reference": "f995c121bcc94addd50a8e4f7e93996000553153"
     },
     "schema_version": 3,
     "semantic_checks": [],
-    "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
+    "source_commit": "035ec517e73834fa7653464d683e1d8c55caed7a",
     "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111"
   },
   "schema_version": 1,
   "service_runtime": {
     "promote": {
       "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
-      "purpose": "Include configured email-only practice publications in SRP Production",
-      "release_id": "service-runtime-srp-production-weekly-publication-visibility-20261112",
+      "purpose": "Restore Access and Distributions for configured email-only publications",
+      "release_id": "service-runtime-srp-production-distribution-tab-recovery-20261112",
       "service": "query-engine",
       "source": "."
     }
   },
-  "source_commit": "e288fb80b4d8cd98ed7308914add9de5e50bc006",
+  "source_commit": "035ec517e73834fa7653464d683e1d8c55caed7a",
   "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111",
   "targets": {
     "compose_project": "bci-srp-production",
