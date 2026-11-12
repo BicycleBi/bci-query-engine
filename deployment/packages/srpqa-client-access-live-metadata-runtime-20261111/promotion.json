@@ -1,0 +1,86 @@
+{
+  "client": "srp",
+  "environment": "qa",
+  "protected_update_package": {
+    "allowed_units": [
+      {
+        "operation": "replace",
+        "path": "app/distribution_reporting.py",
+        "role": "distribution-reporting",
+        "sha256": "26d261addfc62d6245b8e47b1e62131891378eb1a189ae7f4a35488ac17c8f7e"
+      },
+      {
+        "operation": "replace",
+        "path": "app/facility_reporting.py",
+        "role": "facility-reporting",
+        "sha256": "93bb1bdc472a67b33d1ecf60033b8cdd335275f669eb91eff78ededeff7a7562"
+      },
+      {
+        "operation": "replace",
+        "path": "tests/test_distribution_reporting.py",
+        "role": "test-distribution-reporting",
+        "sha256": "5df18b708722f349deaf0851e20fe6be88cbe59983d0d9e008a4b388c3b71c39"
+      },
+      {
+        "operation": "replace",
+        "path": "deployment/promotions/qa-srp-client-access-live-metadata-runtime-20261111.yml",
+        "role": "qa-srp-client-access-live-metadata-runtime-20261111",
+        "sha256": "61c3a8c55c829a7b951c6cc83ab94e30c8916e4983f53d5fd52827ad67a163eb"
+      }
+    ],
+    "approver": "Jeanre",
+    "baseline_commit": "e41e40625565aafe4de5b4dcf925e90f62d5b154",
+    "branch_provenance": {
+      "change_class": "client-stack-architecture",
+      "expected_advance_ref": "refs/heads/qa",
+      "schema_version": 4,
+      "source_commit": "81bc336407b61076622a760a8292accbe20128a6",
+      "source_ref": "refs/heads/codex/srp-weekly-publication-visibility-qa",
+      "target_commit": "e41e40625565aafe4de5b4dcf925e90f62d5b154",
+      "target_ref": "refs/heads/qa"
+    },
+    "change_class": "client-stack-architecture",
+    "change_id": "srpqa-client-access-live-metadata-runtime-20261111",
+    "client": "srp",
+    "dependencies": [],
+    "environment": "qa",
+    "forbidden_units": [],
+    "generated_at": "2026-11-12T08:58:51Z",
+    "intent": "Show Weekly email publication configuration in SRP QA",
+    "operator": "bcipromote",
+    "package_path": "deployment/packages/srpqa-client-access-live-metadata-runtime-20261111",
+    "regression_checks": [],
+    "release_content": {
+      "mode": "direct"
+    },
+    "schema_version": 3,
+    "semantic_checks": [],
+    "source_commit": "81bc336407b61076622a760a8292accbe20128a6",
+    "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111"
+  },
+  "schema_version": 1,
+  "service_runtime": {
+    "promote": {
+      "build_context_env_var": "QUERY_ENGINE_BUILD_CONTEXT",
+      "purpose": "Include configured email-only practice publications in SRP QA",
+      "release_id": "service-runtime-srp-qa-weekly-publication-visibility-20261112",
+      "service": "query-engine",
+      "source": "."
+    }
+  },
+  "source_commit": "81bc336407b61076622a760a8292accbe20128a6",
+  "source_repo": "/home/shared/repos/bci-query-engine-promote-srp-client-access-live-metadata-20261111",
+  "targets": {
+    "compose_project": "srpqa",
+    "stack_dir": "/home/shared/bci-clients/srpqa"
+  },
+  "validate": [
+    {
+      "type": "compose-config"
+    },
+    {
+      "service": "query-engine",
+      "type": "service-health"
+    }
+  ]
+}
