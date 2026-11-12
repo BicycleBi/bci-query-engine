@@ -73,7 +73,7 @@ def get_report_configurations() -> dict:
 
 
 def _distribution_catalog():
-    """Map maintained delivery artifacts to their canonical front-end reports."""
+    """Map maintained delivery artifacts to active reports and email publications."""
     pairs = _read(get_data_conn, 'public.srp_client_access_facility_distribution', """
         SELECT DISTINCT artifact_key, delivery_artifact_key
         FROM public.srp_client_access_facility_distribution
@@ -85,14 +85,16 @@ def _distribution_catalog():
         raise RuntimeError('Facility distribution configuration is unavailable')
     artifact_keys = sorted({row[0] for row in pairs})
     artifacts = _read(get_metadata_conn, 'app.artifacts', """
-        SELECT artifact_key, display_name
+        SELECT artifact_key, display_name, active
         FROM app.artifacts
-        WHERE client_key='srp' AND artifact_key = ANY(%s) AND active
+        WHERE client_key='srp' AND artifact_key = ANY(%s)
         ORDER BY artifact_key
     """, (artifact_keys,)) if artifact_keys else []
     if artifacts is None:
         raise RuntimeError('Artifact registry is unavailable')
-    names = {key: name or key for key, name in artifacts}
+    names = {key: name or key for key, name, active in artifacts if active}
+    registered_keys = {key for key, _, _ in artifacts}
+    names.update(practice_email_publications(set(artifact_keys) - registered_keys))
     return pairs, names
 
 
@@ -134,7 +136,7 @@ def attach_distribution_catalog(payload: dict) -> dict:
     used = set()
     for row in payload.get('rows') or []:
         delivery_key = str(row.get('delivery_artifact_key') or row.get('artifact_key') or '').strip()
-        matches = exact.get(delivery_key, set())
+        matches = exact.get(delivery_key, set()) & canonical_keys
         if not matches:
             matches = {key for key in canonical_keys if key in delivery_key}
         if not matches:
