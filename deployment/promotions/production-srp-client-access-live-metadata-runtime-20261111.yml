@@ -12,9 +12,9 @@ service_runtime:
   promote:
     source: .
     service: query-engine
-    release_id: service-runtime-srp-production-weekly-publication-visibility-20261112
+    release_id: service-runtime-srp-production-distribution-tab-recovery-20261112
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: Include configured email-only practice publications in SRP Production
+    purpose: Restore Access and Distributions for configured email-only publications
 
 validate:
   - type: compose-config

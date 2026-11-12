@@ -54,6 +54,8 @@ def test_configured_email_publication_without_portal_registration(monkeypatch):
 
     def read(factory, relation, query, params=None):
         if relation == "public.srp_client_access_facility_distribution":
+            if "SELECT DISTINCT artifact_key" in query:
+                return [(key, key), (retired, retired)]
             return [
                 ("Example North", key, key, "list@example.invalid", "to", True, "maintained"),
                 ("Example South", key, key, "other@example.invalid", "to", False, "maintained"),
@@ -74,6 +76,11 @@ def test_configured_email_publication_without_portal_registration(monkeypatch):
     assert result["total"] == 1
     assert result["rows"][0]["report_name"] == "Weekly Practice Report"
     assert result["rows"][0]["facilities"] == ["Example North"]
+    result = reporting.attach_distribution_catalog(result)
+    assert result["report_catalog"] == [
+        {"family": key, "artifact_key": key, "display_name": "Weekly Practice Report"}
+    ]
+    assert result["rows"][0]["report_family"] == key
 
     catalog, _ = facility_reporting._artifact_catalog({key, retired})
     assert catalog[key]["delivery_mode"] == "email"
@@ -87,7 +94,7 @@ def test_copied_delivery_is_related_to_canonical_report(monkeypatch):
         if relation == "public.srp_client_access_facility_distribution":
             return [("example-report", "example-report-north-email")]
         if relation == "app.artifacts":
-            return [("example-report", "Example Report")]
+            return [("example-report", "Example Report", True)]
         raise AssertionError(relation)
 
     monkeypatch.setattr(reporting, "_read", read)
@@ -107,7 +114,7 @@ def test_copied_delivery_can_use_unique_report_label(monkeypatch):
         if relation == "public.srp_client_access_facility_distribution":
             return [("weekly-practice-report", "weekly-practice-report")]
         if relation == "app.artifacts":
-            return [("weekly-practice-report", "Weekly Practice Report")]
+            return [("weekly-practice-report", "Weekly Practice Report", True)]
         raise AssertionError(relation)
 
     monkeypatch.setattr(reporting, "_read", read)
