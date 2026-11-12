@@ -96,6 +96,25 @@ def _distribution_catalog():
     return pairs, names
 
 
+def practice_email_publications(missing_keys):
+    """Resolve configured practice publications that have no artifact registry row."""
+    if not missing_keys:
+        return {}
+    rows = _read(
+        get_data_conn,
+        'public.srp_client_access_report_scope_configuration',
+        """
+        SELECT artifact_key
+        FROM public.srp_client_access_report_scope_configuration
+        WHERE scope_source = 'practice_publication'
+          AND active AND distributions_enabled AND artifact_key = ANY(%s)
+        ORDER BY artifact_key
+        """,
+        (sorted(missing_keys),),
+    )
+    return {key: key.replace('-', ' ').title() for (key,) in rows or []}
+
+
 def _label_key(value):
     return re.sub(r'[^a-z0-9]+', '', str(value or '').casefold())
 
@@ -233,6 +252,8 @@ def get_distribution_report(*, search: str = '', facility: str = '', result: str
         {'source': 'artifact_registry', 'status': 'available'},
     ]
     catalog = {key: (name or key, bool(active)) for key, name, active in artifacts}
+    for key, name in practice_email_publications(set(artifact_keys) - catalog.keys()).items():
+        catalog[key] = (name, True)
     grouped = {}
     for facility_name, artifact_key, delivery_key, email, delivery_type, enabled, source in distributions:
         if not email or artifact_key not in catalog:
