@@ -12,9 +12,9 @@ service_runtime:
   promote:
     source: .
     service: query-engine
-    release_id: service-runtime-srp-production-client-access-live-metadata-20261111
+    release_id: service-runtime-srp-production-weekly-publication-visibility-20261112
     build_context_env_var: QUERY_ENGINE_BUILD_CONTEXT
-    purpose: Serve the QA-validated live-metadata Client Access and Distribution APIs in Production
+    purpose: Include configured email-only practice publications in SRP Production
 
 validate:
   - type: compose-config
