@@ -1,0 +1,42 @@
+{
+  "checks": "passed",
+  "image": {
+    "image_id": "sha256:39c5092258772eb50e3fe3705f62816544d1502ab41b706f4f1897246f9c104f",
+    "platform": "linux/amd64",
+    "repo_digests": [
+      "bci-query-engine-srpdev-facility-owners@sha256:39c5092258772eb50e3fe3705f62816544d1502ab41b706f4f1897246f9c104f"
+    ]
+  },
+  "kind": "container-release",
+  "package_id": "c0d3eeae80b19299e65b8118fe6accfe8b2a0d66632357c5973624566e23535f",
+  "provenance": {
+    "kind": "framework_build",
+    "recipe_sha256": "9263d8a937321bc167a87a3da1d2c5d03b528886ac0bab4f2c636f2b8cd577b3"
+  },
+  "recipe": {
+    "checks": [
+      [
+        "python3",
+        "-m",
+        "compileall",
+        "-q",
+        "app"
+      ]
+    ],
+    "dockerfile": "Dockerfile",
+    "image": "bci-query-engine-srpdev-facility-owners:{source_commit}",
+    "platform": "linux/amd64",
+    "schema_version": 1,
+    "timeout_seconds": 600
+  },
+  "record_id": "8858d00d284955b8e46a24b1db721096a83110d50f27e33959749dfd1b596b60",
+  "schema_version": 1,
+  "source": {
+    "commit": "a2312d492a52633f2c8967fc07898b887c99ad8b",
+    "ref": "codex/srpdev-facility-owner-runtime-20261118",
+    "repository": "git@github.com:BicycleBi/bci-query-engine.git",
+    "requested_commit": "a2312d492a52633f2c8967fc07898b887c99ad8b",
+    "target_commit": "a2312d492a52633f2c8967fc07898b887c99ad8b",
+    "tree": "f1e6664d4724a0a8cc21a58ea41a6583465aa768"
+  }
+}
