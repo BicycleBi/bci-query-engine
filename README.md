@@ -332,6 +332,34 @@ sorting, pagination, calculation, and response-shape logic. Query Engine owns
 only authorization, safe function resolution, request-size enforcement, and
 freshness-aware Redis caching of the opaque request and response.
 
+### Interactive Metadata queries
+
+```text
+POST /artifacts/{client_key}/{artifact_key}/metadata/{query_key}
+```
+
+Use this endpoint for report SQL that reads from the stack's Metadata
+database. A trusted deployment registers each query on an active artifact
+using [the Metadata query registry schema](docs/artifact-metadata-queries.sql).
+The registry maps a stable query key to a schema-qualified PostgreSQL function
+with signature `(jsonb) RETURNS jsonb` and an access policy. Grant the existing
+Query Engine Metadata role read access to the registry and execution on the
+approved functions. Registration and function ownership belong to the trusted
+deployment role.
+
+Query Engine checks the signed client and subject, resolves the artifact's
+authorized roles, and enforces the registered policy. `artifact` uses the
+standard artifact scope. `usage` and `access` also require live reporting
+grants. For those policies, a viewer without the Bicycle admin assignment
+is restricted to the client's audience. Register Usage Monitoring and user
+access list queries with their corresponding policies.
+
+The report function defines accepted filters, applies the supplied authorization
+context, bounds its result, and returns only the fields needed by the report.
+Use schema-qualified references in report SQL. Query Engine uses its existing
+Metadata connection in a read-only transaction with a statement timeout. It
+passes the request JSON as a parameter and does not cache the result.
+
 ### Data-load cache prewarming
 
 An artifact whose interactive response is identical for every authorized user

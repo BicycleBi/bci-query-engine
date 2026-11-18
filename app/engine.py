@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -977,7 +978,10 @@ def _artifact_query_cache_params(
 
 
 def _execute_artifact_query_contract(data, view_name: str, serialized_query: str) -> Any:
-    query_function = _query_function_name(view_name)
+    return _execute_registered_query(data, _query_function_name(view_name), serialized_query)
+
+
+def _execute_registered_query(data, query_function: str, serialized_query: str) -> Any:
     function_signature = f"{query_function}(jsonb)"
     function_exists = data.execute(
         "SELECT to_regprocedure(%s)",
@@ -1103,6 +1107,54 @@ def execute_artifact_query(
             except Exception:
                 pass
         return result
+
+
+def execute_artifact_metadata_query(
+    client_key: str,
+    artifact_key: str,
+    query_key: str,
+    *,
+    query: dict[str, Any],
+    authorize_query: Callable[[str], bool],
+    authenticated_subject: str,
+    authorized_roles: list[str],
+) -> Any:
+    """Run an explicitly registered report function on the Metadata connection."""
+    serialized_query = _serialized_artifact_query(query)
+    with get_metadata_conn() as meta:
+        meta.execute("SET TRANSACTION READ ONLY")
+        meta.execute("SET LOCAL statement_timeout = '10s'")
+        meta.execute("SET LOCAL search_path = pg_catalog")
+        registry = meta.execute(
+            "SELECT to_regclass('app.artifact_metadata_queries')"
+        ).fetchone()
+        registration = None
+        if registry and registry[0] is not None:
+            registration = meta.execute(
+                """
+                SELECT q.function_name, q.access_policy
+                FROM app.artifacts a
+                JOIN app.artifact_metadata_queries q USING (artifact_id)
+                WHERE a.client_key = %s AND a.artifact_key = %s AND a.active
+                  AND q.query_key = %s
+                """,
+                (client_key, artifact_key, query_key),
+            ).fetchone()
+        if registration is None:
+            raise ValueError("Artifact has no registered Metadata query")
+
+        function_name, access_policy = registration
+        if access_policy not in {"artifact", "usage", "access"}:
+            raise ValueError("Invalid Metadata query access policy")
+        client_only = authorize_query(access_policy)
+        if client_only:
+            serialized_query = _serialized_artifact_query({**query, "audience": client_key})
+
+        if "." not in function_name:
+            raise ValueError("Metadata query function must be schema-qualified")
+        function_name = _safe_view_name(function_name)
+        _set_authorization_context(meta, client_key, authenticated_subject, authorized_roles)
+        return _execute_registered_query(meta, function_name, serialized_query)
 
 
 def prewarm_artifact_query_cache(

@@ -25,6 +25,7 @@ from .analytics import get_analytics_reporting_config
 from .engine import (
     execute_artifact,
     execute_artifact_query,
+    execute_artifact_metadata_query,
     execute_queued_artifact,
     cancel_queued_artifact_executions,
     get_artifact_asset,
@@ -769,6 +770,44 @@ def get_artifact_data(
             artifact_key,
             query=query,
             authenticated_subject=authenticated_subject(identity),
+            authorized_roles=roles,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+
+@app.post("/artifacts/{client_key}/{artifact_key}/metadata/{query_key}")
+def get_artifact_metadata(
+    response: Response,
+    client_key: str,
+    artifact_key: str,
+    query_key: str,
+    query: dict[str, Any],
+    x_identity_roles: Optional[str] = Header(default=None),
+    identity: dict[str, Any] = Depends(require_internal_identity),
+):
+    """Run a registered report query through the stack's Metadata connection."""
+    require_client_access(identity, client_key)
+    roles = authorized_roles(identity, x_identity_roles)
+    subject = authenticated_subject(identity)
+
+    def authorize_query(policy: str) -> bool:
+        report = "" if policy == "artifact" else policy
+        require_artifact_scope(client_key, artifact_key, roles, report=report)
+        if report:
+            return not require_analytics_reporting_access(identity, client_key, report)
+        return False
+
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return execute_artifact_metadata_query(
+            client_key,
+            artifact_key,
+            query_key,
+            query=query,
+            authorize_query=authorize_query,
+            authenticated_subject=subject,
             authorized_roles=roles,
         )
     except ValueError as exc:
