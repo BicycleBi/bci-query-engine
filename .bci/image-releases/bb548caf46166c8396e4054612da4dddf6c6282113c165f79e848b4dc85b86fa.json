@@ -1,0 +1,42 @@
+{
+  "checks": "passed",
+  "image": {
+    "image_id": "sha256:8e215af977a24ea045d9af83428334dcbab5680bf23f19c5e3f6a453351fe4cc",
+    "platform": "linux/amd64",
+    "repo_digests": [
+      "bci-query-engine@sha256:8e215af977a24ea045d9af83428334dcbab5680bf23f19c5e3f6a453351fe4cc"
+    ]
+  },
+  "kind": "container-release",
+  "package_id": "bb548caf46166c8396e4054612da4dddf6c6282113c165f79e848b4dc85b86fa",
+  "provenance": {
+    "kind": "framework_build",
+    "recipe_sha256": "a6b8930697e4eac139cb1f42c8c6cfa0e793743a562fe6993074689fb7f8d89a"
+  },
+  "recipe": {
+    "checks": [
+      [
+        "python3",
+        "-m",
+        "compileall",
+        "-q",
+        "app"
+      ]
+    ],
+    "dockerfile": "Dockerfile",
+    "image": "bci-query-engine:metadata-query-{source_commit}",
+    "platform": "linux/amd64",
+    "schema_version": 1,
+    "timeout_seconds": 900
+  },
+  "record_id": "45901edffdbfa95af10f4db60d3318445ac806cedb73cb1d94420f456cd381ac",
+  "schema_version": 1,
+  "source": {
+    "commit": "9cfc27e01980214801f50abab6ba6765bb96f3eb",
+    "ref": "codex/metadata-report-query-srpqa",
+    "repository": "git@github.com:BicycleBi/bci-query-engine.git",
+    "requested_commit": "9cfc27e01980214801f50abab6ba6765bb96f3eb",
+    "target_commit": "9cfc27e01980214801f50abab6ba6765bb96f3eb",
+    "tree": "b785d300999c0185598627f1db83bdc5b40196e7"
+  }
+}
