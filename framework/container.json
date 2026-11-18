@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "image": "bci-query-engine:{source_commit}",
+  "platform": "linux/amd64",
+  "dockerfile": "Dockerfile",
+  "checks": [
+    ["python3", "-c", "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('app').rglob('*.py')]"]
+  ],
+  "timeout_seconds": 600
+}

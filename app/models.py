@@ -216,6 +216,7 @@ class ArtifactExecutionResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     preview_html: Optional[str] = None
+    email_subject: Optional[str] = None
     outputs: list[dict] = Field(default_factory=list)
     delivery_id: Optional[str] = None
     delivery_status: Optional[str] = None

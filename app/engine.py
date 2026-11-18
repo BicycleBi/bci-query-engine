@@ -1283,6 +1283,7 @@ def execute_artifact(
     output_formats = output_formats or []
     distribution_group_keys = distribution_group_keys or []
     from .renderer import render
+    from .composition import compose, load_email_composition
     from . import mailer as _mailer
     from .cache import (
         build_render_cache_params,
@@ -1320,7 +1321,14 @@ def execute_artifact(
             delivery_mode = artifact["delivery_mode"]
             subject = artifact["subject"]
 
-            render_artifact = _resolve_render_artifact(meta, artifact)
+            composition = (
+                load_email_composition(meta, artifact, _fetch_artifact)
+                if artifact["delivery_mode"] in {"email", "both"} and artifact["template_body"]
+                else None
+            )
+            if composition is not None and (behavior == "deliver" or output_formats):
+                raise ValueError("Email compositions use render-only HTML execution")
+            render_artifact = artifact if composition else _resolve_render_artifact(meta, artifact)
             view_name = render_artifact["view_name"]
             template_body = render_artifact["template_body"]
             render_artifact_id = render_artifact["artifact_id"]
@@ -1331,6 +1339,7 @@ def execute_artifact(
                 behavior in {"display", "preview"}
                 and not output_formats
                 and execution_query is None
+                and composition is None
             )
             cache_status = "bypass"
             cache_read_ms: Optional[float] = None
@@ -1369,14 +1378,36 @@ def execute_artifact(
 
             # ── 2. Query data DB ───────────────────────────────────────
             query_result: Any = None
+            composed_html = None
             if cached_render is not None:
                 html = cached_render["html"]
                 row_count = int(cached_render.get("row_count", 0))
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
+                    if composition:
+                        data.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                    if execution_query is not None:
+                    if composition:
+                        def content_rows(name, query):
+                            content_view = _safe_view_name(name)
+                            if query is None:
+                                cursor = data.execute(f"SELECT * FROM {content_view}")  # noqa: S608
+                                names = [item[0] for item in cursor.description]
+                                return [dict(zip(names, row)) for row in cursor.fetchall()]
+                            value = _execute_artifact_query_contract(
+                                data, content_view, _serialized_artifact_query(query)
+                            )
+                            if isinstance(value, dict):
+                                return [value]
+                            if isinstance(value, list) and all(isinstance(row, dict) for row in value):
+                                return value
+                            raise ValueError("Email content must return report rows")
+
+                        subject, composed_html, content_count = compose(
+                            composition, template_body, execution_query, content_rows, render,
+                        )
+                    elif execution_query is not None:
                         serialized_query = _serialized_artifact_query(execution_query)
                         query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
                         if isinstance(query_result, dict):
@@ -1396,9 +1427,11 @@ def execute_artifact(
             if cached_render is None:
                 # 3. Render
                 render_started = perf_counter()
-                html = render(template_body, data_rows)
+                if composition:
+                    html, row_count = composed_html, content_count
+                else:
+                    html, row_count = render(template_body, data_rows), len(data_rows)
                 render_ms = (perf_counter() - render_started) * 1000
-                row_count = len(data_rows)
                 if (
                     isinstance(query_result, dict)
                     and isinstance(query_result.get("csv"), dict)
@@ -1426,6 +1459,7 @@ def execute_artifact(
                     "started_at": started_at,
                     "completed_at": _now(),
                     "preview_html": html,
+                    "email_subject": subject if composition else None,
                     "outputs": [],
                     "cache": {
                         "status": cache_status,
@@ -1604,6 +1638,7 @@ def execute_artifact(
                 "started_at": started_at,
                 "completed_at": completed_at,
                 "preview_html": html if return_html else None,
+                "email_subject": subject if composition else None,
                 "outputs": outputs,
                 "cache": {
                     "status": cache_status,

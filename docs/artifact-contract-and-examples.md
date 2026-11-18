@@ -79,3 +79,18 @@ The shared examples are safe for model and local synthetic rendering checks.
 For client-backed checks, follow the orchestration guide and its data-safety
 policy. Keep raw client rows, recipient lists, rendered client reports, and
 secrets out of AI-visible evidence.
+
+## Metadata-owned email composition
+
+Install `docs/artifact-email-composition.sql` in the stack Metadata database
+to opt in. An enabled email artifact keeps its layout in its registered
+template and gets a subject template from `app.artifact_email_composition`.
+Rows in `app.artifact_email_content` name ordered slots and reference active,
+same-client data artifacts. A slot's parameter map maps each child parameter
+to a parent parameter. A null map passes the whole parent query through.
+
+The layout reads rendered slots using names such as `{{ slots['body'] }}`.
+The renderer reads the child data in one read-only transaction and applies the
+request's authorization throughout. HTML display and dry-run responses contain
+the body and `email_subject`. Distribution still belongs to Coordinator.
+Existing single-body artifacts can keep their current contract.
