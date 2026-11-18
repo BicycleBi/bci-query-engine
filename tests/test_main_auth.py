@@ -5,10 +5,15 @@ import importlib
 import json
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import UUID
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+from app import engine
 
 
 def _load_main(monkeypatch):
@@ -946,6 +951,94 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
     }
     assert captured["authenticated_subject"] == "user-1"
     assert captured["authorized_roles"] == ["srp_scope_a", "srp_scope_b"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "roles", "has_grant", "is_admin", "status", "expected_audience"),
+    [
+        ("access", ["rf_client"], True, False, 200, "rf"),
+        ("access", ["rf_admin"], True, True, 200, "bicycle"),
+        ("usage", ["rf_admin"], True, True, 200, "bicycle"),
+        ("usage", ["rf_client"], True, False, 403, None),
+        ("access", ["rf_client"], False, False, 403, None),
+        (None, ["rf_admin"], True, True, 400, None),
+    ],
+)
+def test_artifact_metadata_query_enforces_registered_policy(
+    monkeypatch, policy, roles, has_grant, is_admin, status, expected_audience,
+):
+    main = _load_main(monkeypatch)
+    monkeypatch.setenv("ANALYTICS_REPORTING_CLIENT_KEY", "rf")
+    monkeypatch.setenv("ANALYTICS_BICYCLE_ADMIN_ROLE", "rf_admin")
+    monkeypatch.setenv("ANALYTICS_CLIENT_REPORTING_ROLE", "rf_client")
+    monkeypatch.setattr(main, "record_request_span_async", lambda **kwargs: None)
+
+    def check_grant(identity, client_key, report):
+        assert identity["sub"] == "fixture-subject"
+        assert client_key == "rf"
+        assert report == policy
+        if not has_grant:
+            raise HTTPException(403, "Analytics reporting access denied")
+        return is_admin
+
+    statements = []
+
+    class Metadata:
+        def execute(self, sql, params=None):
+            statements.append((sql, params))
+            row = None
+            if "to_regclass" in sql:
+                row = ("app.artifact_metadata_queries",)
+            elif "app.artifact_metadata_queries q" in sql:
+                assert params == ("rf", "usage-monitoring-dashboard", "fixture")
+                if policy is not None:
+                    row = ("reporting.fixture", policy)
+            elif "to_regprocedure" in sql:
+                assert params == ("reporting.fixture(jsonb)",)
+                row = ("reporting.fixture(jsonb)",)
+            elif "SELECT reporting.fixture(" in sql:
+                row = ({"audience": json.loads(params[0])["audience"]},)
+            return type("Result", (), {"fetchone": lambda self: row})()
+
+    @contextmanager
+    def metadata_connection():
+        yield Metadata()
+
+    def unexpected_data_connection():
+        raise AssertionError("Metadata queries must not use the Data connection")
+
+    monkeypatch.setattr(main, "require_analytics_reporting_access", check_grant)
+    monkeypatch.setattr(engine, "get_metadata_conn", metadata_connection)
+    monkeypatch.setattr(engine, "get_data_conn", unexpected_data_connection)
+    token = _encode_token(
+        {
+            "aud": "bci-client",
+            "client_key": "rf",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+            "iss": "bci-security",
+            "roles": roles,
+            "sub": "fixture-subject",
+        }
+    )
+
+    response = TestClient(main.app).post(
+        "/artifacts/rf/usage-monitoring-dashboard/metadata/fixture",
+        headers=_auth_headers(token),
+        json={"audience": "bicycle", "access_policy": "artifact"},
+    )
+
+    assert response.status_code == status
+    invoked = any("SELECT reporting.fixture(" in sql for sql, _ in statements)
+    assert invoked == (status == 200)
+    if invoked:
+        assert response.json() == {"audience": expected_audience}
+        assert response.headers["Cache-Control"] == "no-store"
+        assert statements[0] == ("SET TRANSACTION READ ONLY", None)
+        assert (
+            "SELECT set_config('bci.authenticated_subject', %s, true)",
+            ("fixture-subject",),
+        ) in statements
 
 
 def test_artifact_query_cache_prewarm_requires_service_token(monkeypatch):
