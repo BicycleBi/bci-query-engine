@@ -173,6 +173,15 @@ def _load_configuration():
             """,
         ),
         (
+            "owners",
+            "public.srp_client_access_facility_owner",
+            """
+            SELECT facility_id, owner_name, owner_email
+            FROM public.srp_client_access_facility_owner
+            ORDER BY facility_id, lower(owner_name), owner_email
+            """,
+        ),
+        (
             "activity",
             "public.srp_client_access_facility_activity_status",
             """
@@ -302,12 +311,16 @@ def _home_artifacts():
 
 def _build_rows(data, catalog, user_rows, home_artifacts=None):
     home_artifacts = home_artifacts or set()
+    owners = defaultdict(list)
+    for facility_id, name, email in data.get("owners") or []:
+        owners[facility_id].append({"name": name, "email": email})
     facilities = {}
     for facility_key, facility_id, facility_name in data["facilities"]:
         facilities[facility_key] = {
             "facility_key": facility_key,
             "facility_id": facility_id,
             "facility_name": facility_name,
+            "owners": owners.get(facility_id, []),
             "entity_codes": [],
             "reports": {},
         }
