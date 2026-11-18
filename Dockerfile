@@ -15,6 +15,7 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY app ./app
 COPY bci_redis_cache ./bci_redis_cache
+RUN chmod -R a+rX /app/app /app/bci_redis_cache
 
 RUN pip install --no-cache-dir ".[redis]"
 
@@ -22,6 +23,7 @@ RUN useradd --no-create-home --shell /bin/false appuser
 RUN mkdir -p /tmp/bci-query-engine/.config /tmp/bci-query-engine/.cache \
     && chown -R appuser:appuser /tmp/bci-query-engine
 USER appuser
+RUN python -c "import app.main"
 
 EXPOSE 8300 8514/udp
 
