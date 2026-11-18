@@ -1,0 +1,7 @@
+{
+  "image": "bci-query-engine-srpdev-facility-owners:{source_commit}",
+  "platform": "linux/amd64",
+  "dockerfile": "Dockerfile",
+  "checks": [["python3", "-m", "compileall", "-q", "app"]],
+  "timeout_seconds": 600
+}

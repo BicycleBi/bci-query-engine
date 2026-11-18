@@ -53,6 +53,24 @@ def test_disabled_or_unregistered_configuration_is_not_invented():
     assert all(row["reports"] == [] for row in rows)
 
 
+def test_facility_owners_come_only_from_the_confirmed_roster():
+    config = configuration()
+    assert all(row["owners"] == [] for row in reporting._build_rows(config, {}, None))
+
+    config["owners"] = [
+        ("1", "Example Owner", "owner@example.invalid"),
+        ("1", "Example Co-owner", "co-owner@example.invalid"),
+        ("10", "Example Unmapped", "unmapped@example.invalid"),
+    ]
+    payload = {"rows": reporting._build_rows(config, {}, None), "sources": []}
+    north, south = reporting.attach_copied_facility_evidence(payload)["rows"]
+    assert north["owners"] == [
+        {"name": "Example Owner", "email": "owner@example.invalid"},
+        {"name": "Example Co-owner", "email": "co-owner@example.invalid"},
+    ]
+    assert south["owners"] == []
+
+
 def test_copied_production_evidence_replaces_dev_placeholders():
     catalog = {
         "example-report": {
