@@ -1,0 +1,42 @@
+{
+  "checks": "passed",
+  "image": {
+    "image_id": "sha256:f72d0fdc01c7047747be54b1bdadbbc66552c219daf4125f953df758dfff8478",
+    "platform": "linux/amd64",
+    "repo_digests": [
+      "bci-query-engine@sha256:f72d0fdc01c7047747be54b1bdadbbc66552c219daf4125f953df758dfff8478"
+    ]
+  },
+  "kind": "container-release",
+  "package_id": "2309c83973159c2bce73946c8ba7fcf02392243fdd9e871659ba1915a1318f26",
+  "provenance": {
+    "kind": "framework_build",
+    "recipe_sha256": "a6b8930697e4eac139cb1f42c8c6cfa0e793743a562fe6993074689fb7f8d89a"
+  },
+  "recipe": {
+    "checks": [
+      [
+        "python3",
+        "-m",
+        "compileall",
+        "-q",
+        "app"
+      ]
+    ],
+    "dockerfile": "Dockerfile",
+    "image": "bci-query-engine:metadata-query-{source_commit}",
+    "platform": "linux/amd64",
+    "schema_version": 1,
+    "timeout_seconds": 900
+  },
+  "record_id": "1bb219e09870ae03044558db010526f2b2c02661c749ef1f13b7348b4dc363ca",
+  "schema_version": 1,
+  "source": {
+    "commit": "66b019ec114b2f88fb5a21a4a3095cfa3dbfef85",
+    "ref": "codex/metadata-report-query",
+    "repository": "git@github.com:BicycleBi/bci-query-engine.git",
+    "requested_commit": "66b019ec114b2f88fb5a21a4a3095cfa3dbfef85",
+    "target_commit": "66b019ec114b2f88fb5a21a4a3095cfa3dbfef85",
+    "tree": "732927a2fdfb4728824c1499be35d9ac674d9e6d"
+  }
+}
