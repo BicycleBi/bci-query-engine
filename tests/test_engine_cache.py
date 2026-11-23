@@ -89,6 +89,9 @@ class FakeData:
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
 
+        if sql == "SELECT to_regprocedure(%s)" and params[0].endswith("_payload_cache_policy()"):
+            return FakeResult(row=(None,))
+
         self.calls += 1
         if self.fail_on_execute:
             raise AssertionError("Data DB should not be queried on cache hit")
@@ -662,3 +665,31 @@ def test_generic_analytics_roles_bind_to_transaction_without_srp_names(monkeypat
     assert data.platform_admin_roles == ["rfdev_admin"]
     assert data.platform_corporate_roles == ["rfdev_analytics"]
     assert data.authorized_roles == ['["rfdev_admin"]']
+
+
+def test_bound_prewarm_skips_an_outdated_load_receipt(monkeypatch):
+    from datetime import datetime
+
+    data = FakeQueryData(
+        cache_scope="shared",
+        cache_policy={"refresh_mode": "prewarm_swap", "ttl_seconds": 0, "bind_freshness": True},
+        freshness_timestamp="2026-08-12 10:00:00+00",
+        result={"rows": []},
+    )
+    _patch_connections(monkeypatch, data=data)
+    cache = FakeCache()
+    cache.generation = "previous-publication"
+    monkeypatch.setattr(cache_module, "get_cache_settings", lambda: cache_module.CacheSettings(enabled=True))
+    monkeypatch.setattr(cache_module, "get_artifact_cache", lambda settings: cache)
+
+    result = engine.prewarm_artifact_query_cache(
+        "test",
+        "report",
+        queries=[{"operation": "summary"}],
+        expected_freshness=datetime.fromisoformat("2026-08-12 09:00:00+00:00"),
+    )
+
+    assert result["status"] == "superseded"
+    assert cache.generation == "previous-publication"
+    assert not cache.set_calls
+    assert not cache.invalidated_patterns

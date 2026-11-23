@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 
 class ArtifactExecutionBehavior(str, Enum):
@@ -18,6 +18,7 @@ class ArtifactOutputFormat(str, Enum):
 
 class ArtifactQueryCachePrewarmRequest(BaseModel):
     queries: list[dict[str, Any]] = Field(min_length=1, max_length=16)
+    expected_freshness: Optional[AwareDatetime] = None
 
 
 class ArtifactQueryCachePrewarmResponse(BaseModel):
