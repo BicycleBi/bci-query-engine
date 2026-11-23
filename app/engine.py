@@ -1,448 +1,27 @@
-"""
-engine.py — Core artifact run logic.
-
-Flow:
-  1. Read app.artifacts + app.templates from metadata DB
-  2. Execute artifact.view_name against data DB
-  3. Render Jinja2 template
-  4. If delivery_mode in (email, both): resolve governed recipients, POST to email service
-  5. Write log.artifact_runs
-  6. Return run_id + status
-"""
-import csv
+"""Resolve declared artifacts, execute their database contracts, render and cache results."""
 import hashlib
 import json
+import logging
 import os
+from collections.abc import Callable
 import re
 import shutil
-import subprocess
-import tempfile
-import threading
-import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
 from .analytics import get_analytics_reporting_config
+from fastapi import HTTPException
+
+from .composition import compose, load_email_composition
 from .db import get_data_conn, get_metadata_conn
+from .outputs import _generate_csv_output, _generate_pdf_outputs, _insert_artifact_outputs, create_output_directory
 
-
-def _delivery_worker_count() -> int:
-    try:
-        return max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
-    except ValueError:
-        return 2
-
-
-def _delivery_lease_seconds() -> int:
-    try:
-        return max(600, int(os.getenv("ARTIFACT_DELIVERY_LEASE_SECONDS", "1200")))
-    except ValueError:
-        return 1200
-
-
-_DELIVERY_EXECUTION_SLOTS = threading.BoundedSemaphore(_delivery_worker_count())
-
+logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
-
-
-def _safe_filename_part(value: Any, fallback: str = "artifact") -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9 ._-]+", "", str(value or fallback)).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned[:120] or fallback
-
-
-def _row_slice_label(row: dict[str, Any], fallback: str) -> str:
-    for key in ("facility_name", "practice_name", "slice_name", "slice_key", "facility_id"):
-        value = row.get(key)
-        if value:
-            return str(value)
-    return fallback
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _artifact_output_dir() -> Path:
-    return Path(os.getenv("ARTIFACT_OUTPUT_DIR", "/tmp/bci-query-engine/artifact-outputs"))
-
-
-def _chromium_executable() -> str:
-    configured = os.getenv("PDF_CHROMIUM_EXECUTABLE")
-    candidates = [configured] if configured else []
-    candidates.extend(["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"])
-    for candidate in candidates:
-        if candidate and shutil.which(candidate):
-            return candidate
-    raise RuntimeError(
-        "PDF output requested, but no Chromium executable was found. "
-        "Set PDF_CHROMIUM_EXECUTABLE or install chromium in the query-engine image."
-    )
-
-
-def _render_pdf_from_html(html: str, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    executable = _chromium_executable()
-    with tempfile.NamedTemporaryFile("w", suffix=".html", encoding="utf-8", delete=False) as handle:
-        handle.write(html)
-        html_path = Path(handle.name)
-    try:
-        subprocess.run(
-            [
-                executable,
-                "--headless",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                f"--print-to-pdf={output_path}",
-                str(html_path),
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=int(os.getenv("PDF_RENDER_TIMEOUT_SECONDS", "120")),
-        )
-    finally:
-        html_path.unlink(missing_ok=True)
-
-
-def _ensure_artifact_outputs_table(meta) -> None:
-    meta.execute(
-        """
-        CREATE TABLE IF NOT EXISTS log.artifact_outputs (
-            output_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            run_id UUID NOT NULL,
-            artifact_id UUID,
-            artifact_key TEXT NOT NULL,
-            client_key TEXT NOT NULL,
-            output_format TEXT NOT NULL,
-            output_role TEXT,
-            slice_key TEXT,
-            slice_label TEXT,
-            filename TEXT NOT NULL,
-            storage_path TEXT NOT NULL,
-            content_type TEXT NOT NULL,
-            file_size_bytes BIGINT NOT NULL,
-            sha256 TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'completed',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """
-    )
-    meta.execute(
-        """
-        CREATE INDEX IF NOT EXISTS artifact_outputs_run_idx
-        ON log.artifact_outputs (run_id)
-        """
-    )
-    meta.execute(
-        """
-        CREATE INDEX IF NOT EXISTS artifact_outputs_artifact_idx
-        ON log.artifact_outputs (client_key, artifact_key, created_at DESC)
-        """
-    )
-
-
-def _generate_pdf_outputs(
-    *,
-    run_id: str,
-    artifact_id: str,
-    client_key: str,
-    artifact_key: str,
-    subject: str,
-    template_body: str,
-    data_rows: list[dict[str, Any]],
-    render,
-    rendered_at: datetime,
-) -> list[dict[str, Any]]:
-    output_root = _artifact_output_dir() / client_key / artifact_key / run_id
-    render_date = rendered_at.strftime("%Y-%m-%d")
-    outputs: list[dict[str, Any]] = []
-    rows_for_output = data_rows or [{}]
-
-    for index, row in enumerate(rows_for_output, start=1):
-        slice_label = _row_slice_label(row, fallback=f"slice-{index}")
-        slice_key = row.get("slice_key") or row.get("facility_id") or slice_label
-        filename = (
-            f"{_safe_filename_part(subject or artifact_key)} - "
-            f"{_safe_filename_part(slice_label, fallback=f'slice-{index}')} - "
-            f"{render_date}.pdf"
-        )
-        pdf_path = output_root / filename
-        html = render(template_body, [row])
-        _render_pdf_from_html(html, pdf_path)
-        outputs.append(
-            {
-                "run_id": run_id,
-                "artifact_id": artifact_id,
-                "artifact_key": artifact_key,
-                "client_key": client_key,
-                "output_format": "pdf",
-                "output_role": "attachment",
-                "slice_key": str(slice_key),
-                "slice_label": str(slice_label),
-                "filename": filename,
-                "storage_path": str(pdf_path),
-                "content_type": "application/pdf",
-                "file_size_bytes": pdf_path.stat().st_size,
-                "sha256": _sha256_file(pdf_path),
-                "status": "completed",
-            }
-        )
-
-    return outputs
-
-
-def _csv_cell(value: Any) -> Any:
-    """Return a spreadsheet-safe scalar while preserving numeric values."""
-    if value is None:
-        return ""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return value
-    if isinstance(value, (dict, list)):
-        value = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-    text = str(value)
-    if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(("=", "+", "-", "@")):
-        return f"\x27{text}"
-    return text
-
-
-def _generate_csv_output(
-    *,
-    run_id: str,
-    artifact_id: str,
-    client_key: str,
-    artifact_key: str,
-    query_result: Any,
-) -> dict[str, Any]:
-    """Generate one CSV from a database-owned ``csv`` output contract."""
-    if not isinstance(query_result, dict) or not isinstance(query_result.get("csv"), dict):
-        raise ValueError("CSV output query must return a database-owned csv contract")
-
-    contract = query_result["csv"]
-    columns = contract.get("columns")
-    rows = contract.get("rows")
-    if not isinstance(columns, list) or not columns or len(columns) > 64:
-        raise ValueError("CSV output contract must define between 1 and 64 columns")
-    if not isinstance(rows, list):
-        raise ValueError("CSV output contract rows must be an array")
-
-    max_rows = max(1, int(os.getenv("CSV_OUTPUT_MAX_ROWS", "100000")))
-    if len(rows) > max_rows:
-        raise ValueError(f"CSV output exceeds the {max_rows}-row limit")
-
-    normalized_columns: list[tuple[str, str]] = []
-    for column in columns:
-        if not isinstance(column, dict):
-            raise ValueError("CSV output columns must be objects")
-        key = str(column.get("key") or "").strip()
-        label = str(column.get("label") or "").strip()
-        if not key or not label or len(key) > 100 or len(label) > 200:
-            raise ValueError("CSV output columns require bounded key and label values")
-        normalized_columns.append((key, label))
-
-    if any(not isinstance(row, dict) for row in rows):
-        raise ValueError("CSV output rows must be objects")
-
-    requested_filename = str(contract.get("filename") or f"{artifact_key}.csv")
-    filename = f"{_safe_filename_part(Path(requested_filename).stem)}.csv"
-    output_root = _artifact_output_dir() / client_key / artifact_key / run_id
-    output_root.mkdir(parents=True, exist_ok=True)
-    output_path = output_root / filename
-
-    with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow([label for _, label in normalized_columns])
-        for row in rows:
-            writer.writerow([_csv_cell(row.get(key)) for key, _ in normalized_columns])
-
-    file_size = output_path.stat().st_size
-    max_bytes = max(1, int(os.getenv("CSV_OUTPUT_MAX_BYTES", str(3 * 1024 * 1024))))
-    if file_size > max_bytes:
-        output_path.unlink(missing_ok=True)
-        raise ValueError(f"CSV output exceeds the {max_bytes}-byte attachment limit")
-
-    return {
-        "run_id": run_id,
-        "artifact_id": artifact_id,
-        "artifact_key": artifact_key,
-        "client_key": client_key,
-        "output_format": "csv",
-        "output_role": "attachment",
-        "slice_key": None,
-        "slice_label": None,
-        "filename": filename,
-        "storage_path": str(output_path),
-        "content_type": "text/csv; charset=utf-8",
-        "file_size_bytes": file_size,
-        "sha256": _sha256_file(output_path),
-        "status": "completed",
-    }
-
-
-def _resolve_distribution_recipients(
-    meta,
-    *,
-    artifact_id: str,
-    client_key: str,
-    group_keys: list[str],
-) -> list[tuple[str, str]]:
-    """Resolve active, artifact-approved groups and deduplicate their members."""
-    if not group_keys:
-        return []
-
-    approved_rows = meta.execute(
-        """
-        SELECT distribution_group.group_key
-        FROM app.distribution_groups distribution_group
-        JOIN app.artifact_distribution_groups artifact_group
-          ON artifact_group.group_id = distribution_group.group_id
-         AND artifact_group.active
-        WHERE artifact_group.artifact_id = %s::uuid
-          AND distribution_group.client_key = %s
-          AND distribution_group.active
-          AND distribution_group.group_key = ANY(%s)
-        ORDER BY distribution_group.group_key
-        """,
-        (artifact_id, client_key, group_keys),
-    ).fetchall()
-    approved = {str(row[0]) for row in approved_rows}
-    requested = set(group_keys)
-    if approved != requested:
-        unavailable = ", ".join(sorted(requested - approved))
-        raise ValueError(f"Distribution group is unavailable for this artifact: {unavailable}")
-
-    rows = meta.execute(
-        """
-        SELECT contact.email, member.delivery_type
-        FROM app.distribution_groups distribution_group
-        JOIN app.artifact_distribution_groups artifact_group
-          ON artifact_group.group_id = distribution_group.group_id
-         AND artifact_group.active
-        JOIN app.distribution_group_members member
-          ON member.group_id = distribution_group.group_id
-         AND member.active
-        JOIN app.distribution_contacts contact
-          ON contact.contact_id = member.contact_id
-         AND contact.active
-        WHERE artifact_group.artifact_id = %s::uuid
-          AND distribution_group.client_key = %s
-          AND distribution_group.active
-          AND distribution_group.group_key = ANY(%s)
-        ORDER BY contact.email, member.delivery_type
-        """,
-        (artifact_id, client_key, group_keys),
-    ).fetchall()
-
-    delivery_priority = {"to": 0, "cc": 1, "bcc": 2}
-    resolved: dict[str, tuple[str, str]] = {}
-    for email_value, delivery_type_value in rows:
-        email = str(email_value or "").strip()
-        delivery_type = str(delivery_type_value or "").strip().lower()
-        if not email or delivery_type not in delivery_priority:
-            continue
-        lookup = email.casefold()
-        existing = resolved.get(lookup)
-        if existing is None or delivery_priority[delivery_type] < delivery_priority[existing[1]]:
-            resolved[lookup] = (email, delivery_type)
-
-    recipients = sorted(
-        resolved.values(),
-        key=lambda item: (delivery_priority[item[1]], item[0].casefold()),
-    )
-    if not recipients:
-        raise ValueError("Selected distribution groups have no active recipients")
-    return recipients
-
-
-
-def get_artifact_distribution_groups(client_key: str, artifact_key: str) -> list[dict[str, Any]]:
-    """List active artifact-approved groups without exposing recipient metadata."""
-    with get_metadata_conn() as meta:
-        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
-        if artifact is None:
-            raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
-
-        rows = meta.execute(
-            """
-            SELECT
-                distribution_group.group_key,
-                distribution_group.display_name,
-                distribution_group.description
-            FROM app.distribution_groups distribution_group
-            JOIN app.artifact_distribution_groups artifact_group
-              ON artifact_group.group_id = distribution_group.group_id
-             AND artifact_group.active
-            WHERE artifact_group.artifact_id = %s::uuid
-              AND distribution_group.client_key = %s
-              AND distribution_group.active
-              AND EXISTS (
-                  SELECT 1
-                  FROM app.distribution_group_members member
-                  JOIN app.distribution_contacts contact
-                    ON contact.contact_id = member.contact_id
-                   AND contact.active
-                  WHERE member.group_id = distribution_group.group_id
-                    AND member.active
-              )
-            ORDER BY LOWER(distribution_group.display_name), distribution_group.group_key
-            """,
-            (artifact["artifact_id"], client_key),
-        ).fetchall()
-
-    return [
-        {
-            "group_key": str(group_key),
-            "display_name": str(display_name),
-            "description": str(description) if description is not None else None,
-        }
-        for group_key, display_name, description in rows
-    ]
-
-
-def _insert_artifact_outputs(meta, outputs: list[dict[str, Any]]) -> None:
-    if not outputs:
-        return
-    _ensure_artifact_outputs_table(meta)
-    for output in outputs:
-        meta.execute(
-            """
-            INSERT INTO log.artifact_outputs
-                (run_id, artifact_id, artifact_key, client_key, output_format,
-                 output_role, slice_key, slice_label, filename, storage_path,
-                 content_type, file_size_bytes, sha256, status)
-            VALUES
-                (%s::uuid, %s::uuid, %s, %s, %s,
-                 %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s)
-            """,
-            (
-                output["run_id"],
-                output["artifact_id"],
-                output["artifact_key"],
-                output["client_key"],
-                output["output_format"],
-                output.get("output_role"),
-                output.get("slice_key"),
-                output.get("slice_label"),
-                output["filename"],
-                output["storage_path"],
-                output["content_type"],
-                output["file_size_bytes"],
-                output["sha256"],
-                output["status"],
-            ),
-        )
 
 
 def _fetch_artifact(
@@ -492,63 +71,6 @@ def _fetch_artifact(
     return artifact
 
 
-def _delivery_target_mode_allowed(meta, artifact_id: str, mode: str) -> bool:
-    row = meta.execute(
-        """
-        SELECT CASE
-                 WHEN %s = 'live' THEN target.live_enabled
-                 WHEN %s = 'internal_test' THEN target.internal_test_enabled
-                 ELSE false
-               END
-        FROM app.artifact_delivery_targets target
-        WHERE target.artifact_id = %s::uuid
-          AND target.active
-        """,
-        (mode, mode, artifact_id),
-    ).fetchone()
-    return bool(row and row[0])
-
-
-def _artifact_requires_batch(meta, artifact_id: str) -> bool:
-    row = meta.execute(
-        """
-        SELECT COALESCE(bool_or(batch_only), false)
-        FROM app.artifact_delivery_targets
-        WHERE artifact_id = %s::uuid AND active
-        """,
-        (artifact_id,),
-    ).fetchone()
-    return bool(row and row[0])
-
-
-def _internal_test_delivery_envelope(
-    subject: str,
-    html: str,
-) -> tuple[list[tuple[str, str]], str, str]:
-    """Override only recipients while preserving the production message exactly."""
-    internal_recipients = [
-        email.strip()
-        for email in os.getenv("ARTIFACT_INTERNAL_TEST_RECIPIENTS", "").split(",")
-        if email.strip()
-    ]
-    if not internal_recipients:
-        raise ValueError("Internal test recipient allowlist is not configured")
-    return [(email, "to") for email in internal_recipients], subject, html
-
-
-def _email_service_delivery_accepted(delivery: dict[str, Any]) -> bool:
-    """Recognize accepted delivery outcomes across Email Service versions."""
-    status = str(delivery.get("status") or "").strip().lower()
-    return status in {"sent", "submitted"}
-
-
-def _normalized_email_service_delivery_status(delivery: dict[str, Any]) -> str:
-    status = str(delivery.get("status") or "status_unknown").strip().lower()
-    # Graph accepting the request is not evidence that Exchange delivered it.
-    # Older Email Service versions used both values for the accepted state.
-    return "provider_accepted" if status in {"submitted", "sent"} else status
-
-
 def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     row = meta.execute(
         """
@@ -565,7 +87,7 @@ def _lookup_body_reference(meta, artifact_id: str) -> Optional[str]:
     return str(row[0]) if row else None
 
 
-def _resolve_render_artifact(meta, artifact: dict[str, Any], seen: Optional[set[str]] = None) -> dict[str, Any]:
+def _resolve_render_artifact(meta, artifact: dict[str, Any], seen: Optional[set[str]] = None, check_reference=None) -> dict[str, Any]:
     seen = seen or set()
     artifact_id = artifact["artifact_id"]
 
@@ -583,168 +105,14 @@ def _resolve_render_artifact(meta, artifact: dict[str, Any], seen: Optional[set[
         )
 
     referenced_artifact = _fetch_artifact(meta, artifact_id=referenced_artifact_id)
-    if referenced_artifact is None:
+    if referenced_artifact is None or referenced_artifact["client_key"] != artifact["client_key"]:
         raise ValueError(
             f"Referenced artifact {referenced_artifact_id} could not be resolved for {artifact['artifact_key']}"
         )
 
-    return _resolve_render_artifact(meta, referenced_artifact, seen)
-
-
-def write_artifact_definition(definition: dict[str, Any]) -> dict[str, Any]:
-    """Create or update an artifact definition in the metadata database."""
-    template = definition.get("template")
-    recipients = definition.get("recipients", [])
-    references = definition.get("references", [])
-
-    with get_metadata_conn() as meta:
-        client_display_name = definition.get("client_display_name") or definition["client_key"]
-        meta.execute(
-            """
-            INSERT INTO app.clients (client_key, display_name, is_active)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (client_key) DO UPDATE
-            SET display_name = EXCLUDED.display_name,
-                is_active = EXCLUDED.is_active
-            """,
-            (definition["client_key"], client_display_name, True),
-        )
-
-        template_id: Optional[str] = None
-        if template is not None:
-            template_id = str(
-                meta.execute(
-                    """
-                    INSERT INTO app.templates
-                        (client_key, template_key, version, display_name,
-                         content_type, html_content, is_active)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (client_key, template_key, version) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        content_type = EXCLUDED.content_type,
-                        html_content = EXCLUDED.html_content,
-                        is_active = EXCLUDED.is_active
-                    RETURNING template_id
-                    """,
-                    (
-                        definition["client_key"],
-                        template["template_key"],
-                        template["version"],
-                        template.get("display_name"),
-                        template["content_type"],
-                        template["html_content"],
-                        template["is_active"],
-                    ),
-                ).fetchone()[0]
-            )
-
-            if template["is_active"]:
-                meta.execute(
-                    """
-                    UPDATE app.templates
-                    SET is_active = false
-                    WHERE client_key = %s
-                      AND template_key = %s
-                      AND template_id <> %s::uuid
-                    """,
-                    (definition["client_key"], template["template_key"], template_id),
-                )
-
-        artifact_id = str(
-            meta.execute(
-                """
-                INSERT INTO app.artifacts
-                    (client_key, artifact_key, display_name, description,
-                     view_name, delivery_mode, template_id, active, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::uuid, %s, now())
-                ON CONFLICT (client_key, artifact_key) DO UPDATE
-                SET display_name = EXCLUDED.display_name,
-                    description = EXCLUDED.description,
-                    view_name = EXCLUDED.view_name,
-                    delivery_mode = EXCLUDED.delivery_mode,
-                    template_id = EXCLUDED.template_id,
-                    active = EXCLUDED.active,
-                    updated_at = now()
-                RETURNING artifact_id
-                """,
-                (
-                    definition["client_key"],
-                    definition["artifact_key"],
-                    definition.get("display_name"),
-                    definition.get("description"),
-                    definition.get("view_name"),
-                    definition["delivery_mode"],
-                    template_id,
-                    definition.get("active", True),
-                ),
-            ).fetchone()[0]
-        )
-
-        meta.execute(
-            "DELETE FROM app.artifact_recipients WHERE artifact_id = %s::uuid",
-            (artifact_id,),
-        )
-        for recipient in recipients:
-            meta.execute(
-                """
-                INSERT INTO app.artifact_recipients
-                    (artifact_id, email, delivery_type, active)
-                VALUES (%s::uuid, %s, %s, %s)
-                """,
-                (
-                    artifact_id,
-                    recipient["email"],
-                    recipient["delivery_type"],
-                    recipient.get("active", True),
-                ),
-            )
-
-        meta.execute(
-            "DELETE FROM app.artifact_references WHERE artifact_id = %s::uuid",
-            (artifact_id,),
-        )
-        for reference in references:
-            referenced_artifact_id = _lookup_artifact_id(
-                meta,
-                definition["client_key"],
-                reference["referenced_artifact_key"],
-            )
-            if referenced_artifact_id is None:
-                raise ValueError(
-                    "Referenced artifact not found: "
-                    f"client={definition['client_key']} artifact={reference['referenced_artifact_key']}"
-                )
-
-            meta.execute(
-                """
-                INSERT INTO app.artifact_references
-                    (artifact_id, referenced_artifact_id, reference_role, output_format, active)
-                VALUES (%s::uuid, %s::uuid, %s, %s, %s)
-                """,
-                (
-                    artifact_id,
-                    referenced_artifact_id,
-                    reference["reference_role"],
-                    reference["output_format"],
-                    reference.get("active", True),
-                ),
-            )
-
-        meta.commit()
-
-    from .cache import invalidate_artifact_cache
-
-    invalidate_artifact_cache(definition["client_key"], definition["artifact_key"])
-
-    return {
-        "artifact_id": artifact_id,
-        "template_id": template_id,
-        "client_key": definition["client_key"],
-        "artifact_key": definition["artifact_key"],
-        "status": "saved",
-        "recipient_count": len(recipients),
-        "reference_count": len(references),
-    }
+    if check_reference is not None:
+        check_reference(referenced_artifact["artifact_key"])
+    return _resolve_render_artifact(meta, referenced_artifact, seen, check_reference)
 
 
 def _artifact_cache_freshness_timestamp(data, client_key: str, artifact_key: str) -> Optional[str]:
@@ -780,6 +148,14 @@ def _authorization_context_hash(authorized_roles: Optional[list[str]]) -> Option
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _begin_data_read(data, *, consistent=False):
+    if consistent:
+        data.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+    else:
+        data.execute("SET TRANSACTION READ ONLY")
+    data.execute("SET LOCAL statement_timeout = '30s'")
+
+
 def _set_authorization_context(
     data,
     client_key: str,
@@ -812,68 +188,6 @@ def _safe_view_name(view_name: str) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", view_name or ""):
         raise ValueError("Artifact data view name is not a safe identifier")
     return view_name
-
-
-def _artifact_recipient_source_view(meta, artifact_id: str) -> str | None:
-    registry = meta.execute(
-        "SELECT to_regclass('app.artifact_recipient_sources')"
-    ).fetchone()
-    if not registry or registry[0] is None:
-        return None
-
-    row = meta.execute(
-        """
-        SELECT source_view_name
-        FROM app.artifact_recipient_sources
-        WHERE artifact_id = %s::uuid
-          AND active
-        """,
-        (artifact_id,),
-    ).fetchone()
-    return _safe_view_name(str(row[0])) if row else None
-
-
-def _delivery_recipients(
-    meta,
-    artifact_id: str,
-    artifact_key: str,
-) -> list[tuple[str, str]]:
-    source_view = _artifact_recipient_source_view(meta, artifact_id)
-    if source_view is None:
-        return meta.execute(
-            """
-            SELECT email, delivery_type
-            FROM app.artifact_recipients
-            WHERE artifact_id = %s::uuid AND active
-            ORDER BY delivery_type, email
-            """,
-            (artifact_id,),
-        ).fetchall()
-
-    with get_data_conn() as data:
-        rows = data.execute(
-            f"""
-            SELECT recipient_email, recipient_type
-            FROM {source_view}
-            WHERE artifact_key = %s
-            ORDER BY recipient_type, recipient_email
-            """,  # noqa: S608 - source_view is validated by _safe_view_name
-            (artifact_key,),
-        ).fetchall()
-
-    if not rows:
-        raise ValueError(
-            "No eligible recipient is available from the configured server-side source"
-        )
-
-    recipients: list[tuple[str, str]] = []
-    for recipient_email, recipient_type in rows:
-        normalized_email = str(recipient_email or "").strip()
-        normalized_type = str(recipient_type or "").strip().lower()
-        if not normalized_email or normalized_type not in {"to", "cc", "bcc"}:
-            raise ValueError("Configured server-side recipient source returned an invalid row")
-        recipients.append((normalized_email, normalized_type))
-    return recipients
 
 
 def _query_function_name(view_name: str) -> str:
@@ -977,7 +291,10 @@ def _artifact_query_cache_params(
 
 
 def _execute_artifact_query_contract(data, view_name: str, serialized_query: str) -> Any:
-    query_function = _query_function_name(view_name)
+    return _execute_registered_query(data, _query_function_name(view_name), serialized_query)
+
+
+def _execute_registered_query(data, query_function: str, serialized_query: str) -> Any:
     function_signature = f"{query_function}(jsonb)"
     function_exists = data.execute(
         "SELECT to_regprocedure(%s)",
@@ -1038,6 +355,7 @@ def execute_artifact_query(
     query: dict[str, Any],
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
+    check_reference: Optional[Callable[[str], None]] = None,
 ) -> Any:
     """Execute a database-owned artifact query without interpreting its payload."""
     serialized_query = _serialized_artifact_query(query)
@@ -1046,13 +364,14 @@ def execute_artifact_query(
         artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
         if artifact is None:
             raise ValueError(f"No active artifact found: client={client_key} artifact={artifact_key}")
-        render_artifact = _resolve_render_artifact(meta, artifact)
+        render_artifact = _resolve_render_artifact(meta, artifact, check_reference=check_reference)
         view_name = _safe_view_name(render_artifact["view_name"])
 
     from .cache import get_artifact_cache, get_cache_settings
 
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
+        _begin_data_read(data)
         _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
         policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
@@ -1105,6 +424,54 @@ def execute_artifact_query(
         return result
 
 
+def execute_artifact_metadata_query(
+    client_key: str,
+    artifact_key: str,
+    query_key: str,
+    *,
+    query: dict[str, Any],
+    authorize_query: Callable[[str], bool],
+    authenticated_subject: str,
+    authorized_roles: list[str],
+) -> Any:
+    """Run an explicitly registered report function on the Metadata connection."""
+    serialized_query = _serialized_artifact_query(query)
+    with get_metadata_conn() as meta:
+        meta.execute("SET TRANSACTION READ ONLY")
+        meta.execute("SET LOCAL statement_timeout = '10s'")
+        meta.execute("SET LOCAL search_path = pg_catalog")
+        registry = meta.execute(
+            "SELECT to_regclass('app.artifact_metadata_queries')"
+        ).fetchone()
+        registration = None
+        if registry and registry[0] is not None:
+            registration = meta.execute(
+                """
+                SELECT q.function_name, q.access_policy
+                FROM app.artifacts a
+                JOIN app.artifact_metadata_queries q USING (artifact_id)
+                WHERE a.client_key = %s AND a.artifact_key = %s AND a.active
+                  AND q.query_key = %s
+                """,
+                (client_key, artifact_key, query_key),
+            ).fetchone()
+        if registration is None:
+            raise ValueError("Artifact has no registered Metadata query")
+
+        function_name, access_policy = registration
+        if access_policy not in {"artifact", "usage", "access"}:
+            raise ValueError("Invalid Metadata query access policy")
+        client_only = authorize_query(access_policy)
+        if client_only:
+            serialized_query = _serialized_artifact_query({**query, "audience": client_key})
+
+        if "." not in function_name:
+            raise ValueError("Metadata query function must be schema-qualified")
+        function_name = _safe_view_name(function_name)
+        _set_authorization_context(meta, client_key, authenticated_subject, authorized_roles)
+        return _execute_registered_query(meta, function_name, serialized_query)
+
+
 def prewarm_artifact_query_cache(
     client_key: str,
     artifact_key: str,
@@ -1134,6 +501,7 @@ def prewarm_artifact_query_cache(
 
     entries: list[tuple[str, Any]] = []
     with get_data_conn() as data:
+        _begin_data_read(data)
         _set_authorization_context(data, client_key, None, None)
         policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
         generation = uuid.uuid4().hex if policy["refresh_mode"] == "prewarm_swap" else None
@@ -1200,38 +568,43 @@ def prewarm_artifact_query_cache(
     }
 
 
+def _report_rows(data, name, query):
+    """Read the declared view or bind the caller's JSON to its query function."""
+    view = _safe_view_name(name)
+    if query is None:
+        cursor = data.execute(f"SELECT * FROM {view}")
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()], None
+    result = _execute_artifact_query_contract(data, view, _serialized_artifact_query(query))
+    if isinstance(result, dict):
+        return [result], result
+    if isinstance(result, list) and all(isinstance(row, dict) for row in result):
+        return result, result
+    return [{"value": result}], result
+
+
 def execute_artifact(
     client_key: str,
     artifact_key: str,
-    behavior: str = "deliver",
+    behavior: str = "display",
     output_formats: Optional[list[str]] = None,
     execution_query: Optional[dict[str, Any]] = None,
-    distribution_group_keys: Optional[list[str]] = None,
     refresh_cache: bool = False,
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
-    run_id: Optional[str] = None,
-    started_at: Optional[datetime] = None,
-    precreated_run: bool = False,
-    delivery_mode_override: str = "live",
+    check_reference: Optional[Callable[[str], None]] = None,
 ) -> dict:
-    """
-        Execute a single artifact behavior.
-
-        behavior values:
-            deliver  — render + send email if delivery metadata allows it, then log
-            display  — render + return HTML, then log
-            dry-run  — render + log, no send
-            preview  — render only, return HTML, no log (legacy compatibility)
-    """
-    started_at = started_at or _now()
-    run_id = run_id or str(uuid.uuid4())
+    """Render declared data, optionally export files, and record the outcome."""
+    if behavior not in {"display", "preview", "dry-run"}:
+        raise ValueError("Unsupported render behavior")
+    started_at = _now()
+    run_id = str(uuid.uuid4())
     started_perf = perf_counter()
     artifact_id: Optional[str] = None
     output_formats = output_formats or []
-    distribution_group_keys = distribution_group_keys or []
+    output_directory = None
+    committing = False
     from .renderer import render
-    from . import mailer as _mailer
     from .cache import (
         build_render_cache_params,
         get_artifact_cache,
@@ -1241,20 +614,6 @@ def execute_artifact(
     )
 
     try:
-        if precreated_run:
-            with get_metadata_conn() as status_meta:
-                status_meta.execute(
-                    """
-                    UPDATE log.artifact_runs
-                    SET status = %s,
-                        completed_at = NULL,
-                        error_message = NULL
-                    WHERE run_id = %s::uuid
-                    """,
-                    ("preparing", run_id),
-                )
-                status_meta.commit()
-
         with get_metadata_conn() as meta:
             # ── 1. Read artifact config ────────────────────────────────
             artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
@@ -1268,8 +627,19 @@ def execute_artifact(
             delivery_mode = artifact["delivery_mode"]
             subject = artifact["subject"]
 
-            render_artifact = _resolve_render_artifact(meta, artifact)
-            view_name = render_artifact["view_name"]
+            composition = (
+                load_email_composition(meta, artifact, _fetch_artifact)
+                if artifact["delivery_mode"] in {"email", "both"} and artifact["template_body"]
+                else None
+            )
+            if composition and check_reference:
+                for child in {content["artifact_key"] for _, content, _ in composition.slots}:
+                    check_reference(child)
+            if composition is not None and output_formats:
+                raise ValueError("Email compositions use render-only HTML execution")
+            render_artifact = artifact if composition else _resolve_render_artifact(meta, artifact, check_reference=check_reference)
+            view_name = None if composition else _safe_view_name(render_artifact["view_name"])
+
             template_body = render_artifact["template_body"]
             render_artifact_id = render_artifact["artifact_id"]
             render_template_id = render_artifact["template_id"]
@@ -1279,6 +649,7 @@ def execute_artifact(
                 behavior in {"display", "preview"}
                 and not output_formats
                 and execution_query is None
+                and composition is None
             )
             cache_status = "bypass"
             cache_read_ms: Optional[float] = None
@@ -1287,6 +658,7 @@ def execute_artifact(
             data_freshness_timestamp: Optional[str] = None
             if cacheable_render and cache_settings.enabled:
                 with get_data_conn() as data:
+                    _begin_data_read(data)
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
                     data_freshness_timestamp = _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
             cache = get_artifact_cache(cache_settings) if cacheable_render and cache_settings.enabled else None
@@ -1323,30 +695,26 @@ def execute_artifact(
             else:
                 data_query_started = perf_counter()
                 with get_data_conn() as data:
+                    _begin_data_read(data, consistent=bool(composition))
                     _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
-                    if execution_query is not None:
-                        serialized_query = _serialized_artifact_query(execution_query)
-                        query_result = _execute_artifact_query_contract(data, view_name, serialized_query)
-                        if isinstance(query_result, dict):
-                            data_rows = [query_result]
-                        elif isinstance(query_result, list) and all(
-                            isinstance(row, dict) for row in query_result
-                        ):
-                            data_rows = query_result
-                        else:
-                            data_rows = [{"value": query_result}]
+                    if composition:
+                        def content_rows(name, parameters):
+                            rows, _ = _report_rows(data, name, parameters)
+                            return rows
+
+                        subject, composed_html, content_count = compose(
+                            composition, template_body, execution_query, content_rows, render,
+                        )
                     else:
-                        cur = data.execute(f"SELECT * FROM {view_name}")  # noqa: S608
-                        cols = [d[0] for d in cur.description]
-                        data_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                        data_rows, query_result = _report_rows(data, view_name, execution_query)
                 data_query_ms = (perf_counter() - data_query_started) * 1000
 
             if cached_render is None:
                 # 3. Render
                 render_started = perf_counter()
-                html = render(template_body, data_rows)
+                html = composed_html if composition else render(template_body, data_rows)
                 render_ms = (perf_counter() - render_started) * 1000
-                row_count = len(data_rows)
+                row_count = content_count if composition else len(data_rows)
                 if (
                     isinstance(query_result, dict)
                     and isinstance(query_result.get("csv"), dict)
@@ -1389,6 +757,8 @@ def execute_artifact(
 
             # ── 5. Generate requested file outputs ─────────────────────
             outputs: list[dict[str, Any]] = []
+            if set(output_formats) & {"pdf", "csv"}:
+                output_directory = create_output_directory(client_key, artifact_key, run_id)
             if "pdf" in output_formats:
                 outputs.extend(
                     _generate_pdf_outputs(
@@ -1414,134 +784,28 @@ def execute_artifact(
                     )
                 )
 
-            # ── 6. Send email if applicable ────────────────────────────
-            return_html = behavior == "display"
-            send_email = behavior == "deliver" and delivery_mode in ("email", "both")
-            recipient_count = 0
-            if send_email:
-                if delivery_mode_override == "internal_test":
-                    recipient_rows, subject, html = _internal_test_delivery_envelope(
-                        subject,
-                        html,
-                    )
-                elif distribution_group_keys:
-                    recipient_rows = _resolve_distribution_recipients(
-                        meta,
-                        artifact_id=artifact_id,
-                        client_key=client_key,
-                        group_keys=distribution_group_keys,
-                    )
-                else:
-                    recipient_rows = _delivery_recipients(
-                        meta,
-                        artifact_id,
-                        artifact_key,
-                    )
-                to  = [r[0] for r in recipient_rows if r[1] == "to"]
-                cc  = [r[0] for r in recipient_rows if r[1] == "cc"]
-                bcc = [r[0] for r in recipient_rows if r[1] == "bcc"]
-                recipient_count = len(recipient_rows)
-                if precreated_run:
-                    meta.execute(
-                        """
-                        UPDATE log.artifact_runs
-                        SET status = %s,
-                            recipient_count = %s,
-                            lease_expires_at = NOW() + (%s * INTERVAL '1 second')
-                        WHERE run_id = %s::uuid
-                        """,
-                        ("sending", recipient_count, _delivery_lease_seconds(), run_id),
-                    )
-                    meta.commit()
-                delivery = _mailer.send(
-                    subject=subject,
-                    html=html,
-                    to=to,
-                    cc=cc,
-                    bcc=bcc,
-                    client_key=client_key,
-                    artifact_key=artifact_key,
-                    run_id=run_id,
-                    request_id=run_id,
-                    attachments=outputs,
-                )
-                delivery_accepted = _email_service_delivery_accepted(delivery)
-                normalized_delivery_status = _normalized_email_service_delivery_status(delivery)
-                meta.execute(
-                    """
-                    UPDATE log.artifact_runs
-                    SET delivery_id = %s::uuid,
-                        delivery_status = %s,
-                        delivery_provider = %s,
-                        provider_message_id = %s,
-                        provider_status_code = %s
-                    WHERE run_id = %s::uuid
-                    """,
-                    (
-                        delivery.get("delivery_id"),
-                        normalized_delivery_status,
-                        delivery.get("provider"),
-                        delivery.get("provider_message_id"),
-                        delivery.get("status_code"),
-                        run_id,
-                    ),
-                )
-                meta.commit()
-                if not delivery_accepted:
-                    raise RuntimeError(
-                        delivery.get("error_message")
-                        or "Email Service did not accept the delivery"
-                    )
-
-            # ── 7. Log the run and generated outputs ───────────────────
             completed_at = _now()
-            if precreated_run:
-                meta.execute(
-                    """
-                    UPDATE log.artifact_runs
-                    SET artifact_id = %s,
-                        status = %s,
-                        delivery_mode = %s,
-                        row_count = %s,
-                        slice_count = %s,
-                        recipient_count = %s,
-                        completed_at = %s,
-                        error_message = NULL
-                    WHERE run_id = %s::uuid
-                    """,
-                    (
-                        artifact_id, "completed", delivery_mode,
-                        row_count, len(outputs) if outputs else None, recipient_count,
-                        completed_at, run_id,
-                    ),
-                )
-            else:
-                meta.execute(
-                    """
-                    INSERT INTO log.artifact_runs
-                        (run_id, artifact_id, artifact_key, client_key,
-                         triggered_by, status, delivery_mode,
-                         row_count, slice_count, recipient_count,
-                         started_at, completed_at)
-                    VALUES (%s::uuid, %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s)
-                    """,
-                    (
-                        run_id, artifact_id, artifact_key, client_key,
-                        "api", "completed", delivery_mode,
-                        row_count, len(outputs) if outputs else None, recipient_count,
-                        started_at, completed_at,
-                    ),
-                )
+            meta.execute(
+                """
+                INSERT INTO log.artifact_runs
+                    (run_id, artifact_id, artifact_key, client_key,
+                     triggered_by, status, delivery_mode,
+                     row_count, slice_count, recipient_count,
+                     started_at, completed_at)
+                VALUES (%s::uuid, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s)
+                """,
+                (
+                    run_id, artifact_id, artifact_key, client_key,
+                    "api", "completed", delivery_mode,
+                    row_count, len(outputs) if outputs else None, 0,
+                    started_at, completed_at,
+                ),
+            )
             _insert_artifact_outputs(meta, outputs)
-            if precreated_run:
-                _update_delivery_batch_item(
-                    meta,
-                    run_id,
-                    normalized_delivery_status if send_email else "completed",
-                )
+            committing = True
             meta.commit()
 
             return {
@@ -1551,7 +815,8 @@ def execute_artifact(
                 "status": "success",
                 "started_at": started_at,
                 "completed_at": completed_at,
-                "preview_html": html if return_html else None,
+                "preview_html": html if behavior == "display" else None,
+                "email_subject": subject if composition else None,
                 "outputs": outputs,
                 "cache": {
                     "status": cache_status,
@@ -1565,788 +830,29 @@ def execute_artifact(
                 },
             }
 
+    except HTTPException:
+        raise
     except Exception as exc:
         completed_at = _now()
-
-        # Best-effort log: may fail if metadata DB is down
-        try:
-            with get_metadata_conn() as meta:
-                aid = artifact_id or _lookup_artifact_id(meta, client_key, artifact_key)
-                if aid:
-                    if precreated_run:
-                        meta.execute(
-                            """
-                            UPDATE log.artifact_runs
-                            SET artifact_id = %s,
-                                status = %s,
-                                completed_at = %s,
-                                error_message = %s
-                            WHERE run_id = %s::uuid
-                            """,
-                            (aid, "failed", completed_at, str(exc), run_id),
-                        )
-                    else:
-                        run_id = str(
-                            meta.execute(
-                                """
-                                INSERT INTO log.artifact_runs
-                                    (run_id, artifact_id, artifact_key, client_key,
-                                     triggered_by, status,
-                                     started_at, completed_at, error_message)
-                                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
-                                RETURNING run_id
-                                """,
-                                (
-                                    run_id, aid, artifact_key, client_key,
-                                    "api", "failed",
-                                    started_at, completed_at, str(exc),
-                                ),
-                            ).fetchone()[0]
-                        )
-                    if precreated_run:
-                        _update_delivery_batch_item(meta, run_id, "failed", str(exc))
-                    meta.commit()
-        except Exception:
-            pass
-
-        return {
-            "run_id": run_id,
-            "client_key": client_key,
-            "artifact_key": artifact_key,
-            "status": "error",
-            "started_at": started_at,
-            "completed_at": completed_at,
-            "error_message": str(exc),
-            "outputs": [],
-        }
-
-
-def _update_delivery_batch_item(meta, run_id: str, status: str, error_message: Optional[str] = None) -> None:
-    meta.execute(
-        """
-        UPDATE log.artifact_delivery_batch_items
-        SET status = %s,
-            error_message = %s,
-            completed_at = CASE WHEN %s IN ('delivered', 'completed', 'failed') THEN NOW() ELSE NULL END,
-            updated_at = NOW()
-        WHERE run_id = %s::uuid
-        """,
-        (status, error_message, status, run_id),
-    )
-    meta.execute(
-        """
-        WITH target_batch AS (
-            SELECT batch_id
-            FROM log.artifact_delivery_batch_items
-            WHERE run_id = %s::uuid
-        ),
-        latest AS (
-            SELECT DISTINCT ON (artifact_key) artifact_key, status
-            FROM log.artifact_delivery_batch_items
-            WHERE batch_id = (SELECT batch_id FROM target_batch)
-            ORDER BY artifact_key, attempt_number DESC, created_at DESC
-        ),
-        summary AS (
-            SELECT
-                count(*) AS total,
-                count(*) FILTER (WHERE status IN ('queued', 'preparing', 'sending')) AS active,
-                count(*) FILTER (WHERE status = 'failed') AS failed,
-                count(*) FILTER (WHERE status = 'status_unknown') AS unknown,
-                count(*) FILTER (WHERE status = 'delivered') AS delivered
-            FROM latest
-        )
-        UPDATE log.artifact_delivery_batches batch
-        SET status = CASE
-                WHEN summary.active > 0 THEN 'in_progress'
-                WHEN summary.unknown > 0 THEN 'attention_required'
-                WHEN summary.failed = summary.total THEN 'failed'
-                WHEN summary.failed > 0 THEN 'partially_failed'
-                WHEN summary.delivered = summary.total THEN 'delivered'
-                ELSE 'provider_accepted'
-            END,
-            completed_at = CASE
-                WHEN summary.delivered + summary.failed + summary.unknown = summary.total THEN NOW()
-                ELSE NULL
-            END
-        FROM target_batch, summary
-        WHERE batch.batch_id = target_batch.batch_id
-        """,
-        (run_id,),
-    )
-
-
-def queue_artifact_execution(
-    client_key: str,
-    artifact_key: str,
-    *,
-    authenticated_subject: Optional[str] = None,
-    authorized_roles: Optional[list[str]] = None,
-    execution_mode: str = "live",
-    run_id: Optional[str] = None,
-) -> dict:
-    """Persist an execution before asynchronous work begins."""
-    run_id = run_id or str(uuid.uuid4())
-    started_at = _now()
-    with get_metadata_conn() as meta:
-        artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
-        if artifact is None:
-            raise ValueError(
-                f"No active artifact found: client={client_key} artifact={artifact_key}"
-            )
-        if _artifact_requires_batch(meta, artifact["artifact_id"]):
-            raise ValueError(
-                f"Artifact requires the governed delivery batch API: {artifact_key}"
-            )
-        meta.execute(
-            """
-            INSERT INTO log.artifact_runs
-                (run_id, artifact_id, artifact_key, client_key,
-                 triggered_by, status, delivery_mode, started_at,
-                 authenticated_subject, authorized_roles, execution_mode)
-            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s::jsonb, %s)
-            """,
-            (
-                run_id, artifact["artifact_id"], artifact_key, client_key,
-                "api", "queued", artifact["delivery_mode"], started_at,
-                authenticated_subject,
-                json.dumps(sorted(set(authorized_roles or []))),
-                execution_mode,
-            ),
-        )
-        meta.commit()
-
-    return {
-        "run_id": run_id,
-        "client_key": client_key,
-        "artifact_key": artifact_key,
-        "status": "queued",
-        "started_at": started_at,
-        "completed_at": None,
-        "outputs": [],
-    }
-
-
-def execute_queued_artifact(*args: Any, **kwargs: Any) -> dict:
-    """Run one queued artifact within the bounded delivery worker pool."""
-    with _DELIVERY_EXECUTION_SLOTS:
-        return execute_artifact(*args, **kwargs)
-
-
-def cancel_queued_artifact_executions(
-    client_key: str,
-    run_ids: list[str],
-    *,
-    reason: str,
-) -> dict[str, Any]:
-    """Move an exact set of non-batch queued runs to a terminal audit state."""
-    unique_run_ids = list(dict.fromkeys(str(run_id).strip() for run_id in run_ids))
-    if len(unique_run_ids) != len(run_ids) or any(not run_id for run_id in unique_run_ids):
-        raise ValueError("Queue cancellation requires unique non-empty run IDs")
-
-    with get_metadata_conn() as meta:
-        matched = meta.execute(
-            """
-            SELECT count(*)
-            FROM log.artifact_runs run
-            WHERE run.client_key = %s
-              AND run.run_id = ANY(%s::uuid[])
-              AND run.status = 'queued'
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM log.artifact_delivery_batch_items item
-                  WHERE item.run_id = run.run_id
-              )
-            """,
-            (client_key, unique_run_ids),
-        ).fetchone()[0]
-        if matched != len(unique_run_ids):
-            raise ValueError("Queue cancellation target mismatch; no rows changed")
-
-        updated = meta.execute(
-            """
-            UPDATE log.artifact_runs
-            SET status = 'cancelled',
-                completed_at = NOW(),
-                error_message = %s,
-                lease_owner = NULL,
-                lease_expires_at = NULL
-            WHERE client_key = %s
-              AND run_id = ANY(%s::uuid[])
-              AND status = 'queued'
-            RETURNING run_id
-            """,
-            (reason, client_key, unique_run_ids),
-        ).fetchall()
-        if len(updated) != len(unique_run_ids):
-            raise RuntimeError("Queue cancellation changed an unexpected number of rows")
-        meta.commit()
-
-    return {"status": "cancelled", "cancelled_count": len(updated)}
-
-
-def claim_queued_artifact_execution() -> Optional[dict[str, Any]]:
-    """Atomically lease one queued delivery so only one process can execute it."""
-    with get_metadata_conn() as meta:
-        row = meta.execute(
-            """
-            WITH candidate AS (
-                SELECT run_id
-                FROM log.artifact_runs
-                WHERE status = 'queued'
-                  AND delivery_mode IN ('email', 'both')
-                  AND COALESCE(execution_mode, 'live') <> 'background'
-                ORDER BY started_at, run_id
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-            )
-            UPDATE log.artifact_runs run
-            SET status = 'preparing',
-                lease_owner = %s,
-                lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
-                attempt_count = COALESCE(attempt_count, 0) + 1
-            FROM candidate
-            WHERE run.run_id = candidate.run_id
-            RETURNING run.run_id, run.client_key, run.artifact_key, run.started_at,
-                      run.authenticated_subject, run.authorized_roles, run.execution_mode
-            """,
-            (f"query-engine:{os.getpid()}", _delivery_lease_seconds()),
-        ).fetchone()
-        meta.commit()
-    if row is None:
-        return None
-    return {
-        "run_id": str(row[0]),
-        "client_key": row[1],
-        "artifact_key": row[2],
-        "started_at": row[3],
-        "authenticated_subject": row[4],
-        "authorized_roles": list(row[5] or []),
-        "execution_mode": row[6] or "live",
-    }
-
-
-def run_delivery_worker() -> None:
-    """Continuously execute durable queued deliveries; safe across process restarts."""
-    poll_seconds = max(0.25, float(os.getenv("ARTIFACT_DELIVERY_POLL_SECONDS", "1")))
-    while True:
-        try:
-            recover_expired_delivery_leases()
-            claimed = claim_queued_artifact_execution()
-            if claimed is None:
-                time.sleep(poll_seconds)
-                continue
-            execute_queued_artifact(
-                claimed["client_key"],
-                claimed["artifact_key"],
-                behavior="deliver",
-                authenticated_subject=claimed["authenticated_subject"],
-                authorized_roles=claimed["authorized_roles"],
-                run_id=claimed["run_id"],
-                started_at=claimed["started_at"],
-                precreated_run=True,
-                delivery_mode_override=claimed["execution_mode"],
-            )
-        except Exception:
-            time.sleep(poll_seconds)
-
-
-def recover_expired_delivery_leases() -> None:
-    """Retry pre-send work only; quarantine a send whose outcome is uncertain."""
-    with get_metadata_conn() as meta:
-        meta.execute(
-            """
-            UPDATE log.artifact_runs
-            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL
-            WHERE status = 'preparing'
-              AND lease_expires_at < NOW()
-            """
-        )
-        uncertain = meta.execute(
-            """
-            UPDATE log.artifact_runs
-            SET status = 'status_unknown',
-                delivery_status = 'status_unknown',
-                completed_at = NOW(),
-                error_message = 'Worker lease expired after send began; manual reconciliation required'
-            WHERE status = 'sending'
-              AND lease_expires_at < NOW()
-            RETURNING run_id
-            """
-        ).fetchall()
-        for row in uncertain:
-            _update_delivery_batch_item(
-                meta,
-                str(row[0]),
-                "status_unknown",
-                "Worker lease expired after send began; manual reconciliation required",
-            )
-        meta.commit()
-
-
-def create_delivery_batch(
-    client_key: str,
-    artifact_keys: list[str],
-    *,
-    reporting_period: str,
-    idempotency_key: str,
-    mode: str,
-    authenticated_subject: str,
-    authorized_roles: list[str],
-) -> dict[str, Any]:
-    """Persist one logical owner-delivery batch and all of its durable queue items."""
-    batch_id = str(uuid.uuid4())
-    created_at = _now()
-    with get_metadata_conn() as meta:
-        existing = meta.execute(
-            """
-            SELECT batch_id
-            FROM log.artifact_delivery_batches
-            WHERE client_key = %s AND idempotency_key = %s
-            """,
-            (client_key, idempotency_key),
-        ).fetchone()
-        if existing:
-            meta.commit()
-            return get_delivery_batch(str(existing[0]))
-
-        artifacts: list[dict[str, Any]] = []
-        for artifact_key in artifact_keys:
-            artifact = _fetch_artifact(meta, client_key=client_key, artifact_key=artifact_key)
-            if artifact is None:
-                raise ValueError(f"No active delivery target found: {artifact_key}")
-            if artifact["delivery_mode"] not in {"email", "both"}:
-                raise ValueError(f"Artifact is not configured for email delivery: {artifact_key}")
-            if not _delivery_target_mode_allowed(meta, artifact["artifact_id"], mode):
-                raise ValueError(
-                    f"Artifact is not approved for {mode} owner delivery: {artifact_key}"
-                )
-            artifacts.append(artifact)
-
-        try:
-            meta.execute(
-                """
-                INSERT INTO log.artifact_delivery_batches
-                    (batch_id, client_key, reporting_period, mode, idempotency_key,
-                     status, requested_by, authorized_roles, created_at)
-                VALUES (%s::uuid, %s, %s, %s, %s, 'queued', %s, %s::jsonb, %s)
-                """,
-                (
-                    batch_id, client_key, reporting_period, mode, idempotency_key,
-                    authenticated_subject, json.dumps(sorted(set(authorized_roles))), created_at,
-                ),
-            )
-        except Exception as exc:
-            if getattr(exc, "sqlstate", None) != "23505":
-                raise
-            meta.rollback()
-            existing = meta.execute(
-                """
-                SELECT batch_id
-                FROM log.artifact_delivery_batches
-                WHERE client_key = %s AND idempotency_key = %s
-                """,
-                (client_key, idempotency_key),
-            ).fetchone()
-            if existing is None:
-                raise
-            return get_delivery_batch(str(existing[0]))
-        for artifact in artifacts:
-            run_id = str(uuid.uuid4())
-            item_id = str(uuid.uuid4())
-            meta.execute(
-                """
-                INSERT INTO log.artifact_runs
-                    (run_id, artifact_id, artifact_key, client_key, triggered_by,
-                     status, delivery_mode, started_at, authenticated_subject,
-                     authorized_roles, execution_mode)
-                VALUES (%s::uuid, %s::uuid, %s, %s, 'delivery-batch', 'queued',
-                        %s, %s, %s, %s::jsonb, %s)
-                """,
-                (
-                    run_id, artifact["artifact_id"], artifact["artifact_key"], client_key,
-                    artifact["delivery_mode"], created_at, authenticated_subject,
-                    json.dumps(sorted(set(authorized_roles))), mode,
-                ),
-            )
-            meta.execute(
-                """
-                INSERT INTO log.artifact_delivery_batch_items
-                    (item_id, batch_id, artifact_id, artifact_key, run_id,
-                     status, attempt_number, created_at, updated_at)
-                VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s::uuid,
-                        'queued', 1, %s, %s)
-                """,
-                (
-                    item_id, batch_id, artifact["artifact_id"], artifact["artifact_key"],
-                    run_id, created_at, created_at,
-                ),
-            )
-        meta.commit()
-    result = get_delivery_batch(batch_id)
-    if result is None:
-        raise RuntimeError("Delivery batch could not be reloaded after creation")
-    return result
-
-
-def get_delivery_batch(batch_id: str) -> Optional[dict[str, Any]]:
-    with get_metadata_conn() as meta:
-        batch = meta.execute(
-            """
-            SELECT batch_id, client_key, reporting_period, mode, status, created_at, completed_at
-            FROM log.artifact_delivery_batches
-            WHERE batch_id = %s::uuid
-            """,
-            (batch_id,),
-        ).fetchone()
-        if batch is None:
-            return None
-        rows = meta.execute(
-            """
-            SELECT DISTINCT ON (item.artifact_key)
-                   item.item_id, item.artifact_key, item.run_id,
-                   COALESCE(run.delivery_status, run.status, item.status),
-                   item.attempt_number, run.delivery_id, run.delivery_status,
-                   COALESCE(run.error_message, item.error_message),
-                   CASE WHEN run.delivery_status = 'delivered' THEN run.completed_at END
-            FROM log.artifact_delivery_batch_items item
-            JOIN log.artifact_runs run ON run.run_id = item.run_id
-            WHERE item.batch_id = %s::uuid
-            ORDER BY item.artifact_key, item.attempt_number DESC, item.created_at DESC
-            """,
-            (batch_id,),
-        ).fetchall()
-    items = [
-        {
-            "item_id": str(row[0]),
-            "artifact_key": row[1],
-            "run_id": str(row[2]),
-            "status": row[3],
-            "attempt_number": row[4],
-            "delivery_id": str(row[5]) if row[5] else None,
-            "delivery_status": row[6],
-            "error_message": (
-                "Delivery failed. Use the operator audit log for details."
-                if row[7]
-                else None
-            ),
-            "confirmed_at": row[8],
-        }
-        for row in rows
-    ]
-    statuses = {item["status"] for item in items}
-    if any(status in {"queued", "preparing", "sending"} for status in statuses):
-        status = "in_progress"
-        completed_at = None
-    elif "status_unknown" in statuses:
-        status = "attention_required"
-        completed_at = batch[6] or _now()
-    elif "failed" in statuses:
-        status = "failed" if statuses == {"failed"} else "partially_failed"
-        completed_at = batch[6] or _now()
-    elif statuses and statuses == {"delivered"}:
-        status = "delivered"
-        completed_at = batch[6] or _now()
-    else:
-        status = "provider_accepted"
-        completed_at = None
-    return {
-        "batch_id": str(batch[0]),
-        "client_key": batch[1],
-        "reporting_period": batch[2],
-        "mode": batch[3],
-        "status": status,
-        "created_at": batch[5],
-        "completed_at": completed_at,
-        "items": items,
-    }
-
-
-def retry_delivery_batch_item(
-    batch_id: str,
-    item_id: str,
-    *,
-    reason: str,
-    authenticated_subject: str,
-    authorized_roles: list[str],
-) -> dict[str, Any]:
-    """Create a new attempt only for a definitively failed delivery item."""
-    now = _now()
-    new_item_id = str(uuid.uuid4())
-    new_run_id = str(uuid.uuid4())
-    with get_metadata_conn() as meta:
-        row = meta.execute(
-            """
-            SELECT batch.client_key, batch.mode, item.artifact_id, item.artifact_key,
-                   item.attempt_number, run.status, run.delivery_status
-            FROM log.artifact_delivery_batch_items item
-            JOIN log.artifact_delivery_batches batch ON batch.batch_id = item.batch_id
-            JOIN log.artifact_runs run ON run.run_id = item.run_id
-            WHERE item.batch_id = %s::uuid AND item.item_id = %s::uuid
-            """,
-            (batch_id, item_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError("Delivery item was not found")
-        terminal_status = row[6] or row[5]
-        if terminal_status != "failed":
-            raise ValueError(
-                "Only definitively failed deliveries can be retried; reconcile unknown or accepted sends first"
-            )
-        attempt_number = int(row[4]) + 1
-        meta.execute(
-            """
-            INSERT INTO log.artifact_runs
-                (run_id, artifact_id, artifact_key, client_key, triggered_by,
-                 status, delivery_mode, started_at, authenticated_subject,
-                 authorized_roles, execution_mode)
-            SELECT %s::uuid, artifact_id, artifact_key, client_key, 'delivery-retry',
-                   'queued', delivery_mode, %s, %s, %s::jsonb, %s
-            FROM log.artifact_runs
-            WHERE run_id = (
-                SELECT run_id FROM log.artifact_delivery_batch_items WHERE item_id = %s::uuid
-            )
-            """,
-            (
-                new_run_id, now, authenticated_subject,
-                json.dumps(sorted(set(authorized_roles))), row[1], item_id,
-            ),
-        )
-        meta.execute(
-            """
-            INSERT INTO log.artifact_delivery_batch_items
-                (item_id, batch_id, artifact_id, artifact_key, run_id, status,
-                 attempt_number, retry_reason, requested_by, created_at, updated_at)
-            VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s::uuid, 'queued',
-                    %s, %s, %s, %s, %s)
-            """,
-            (
-                new_item_id, batch_id, row[2], row[3], new_run_id, attempt_number,
-                reason, authenticated_subject, now, now,
-            ),
-        )
-        _update_delivery_batch_item(meta, new_run_id, "queued")
-        meta.commit()
-    result = get_delivery_batch(batch_id)
-    if result is None:
-        raise RuntimeError("Delivery batch disappeared after retry")
-    return result
-
-
-def reconcile_delivery_batch(batch_id: str) -> dict[str, Any]:
-    """Refresh delivery evidence without exposing recipients to Query Engine callers."""
-    with get_metadata_conn() as meta:
-        rows = meta.execute(
-            """
-            SELECT run.run_id
-            FROM log.artifact_delivery_batch_items item
-            JOIN log.artifact_runs run ON run.run_id = item.run_id
-            WHERE item.batch_id = %s::uuid
-              AND run.delivery_id IS NOT NULL
-              AND COALESCE(run.delivery_status, '') NOT IN ('delivered', 'failed', 'suppressed')
-            """,
-            (batch_id,),
-        ).fetchall()
-    # One dashboard poll performs one bounded Exchange trace attempt for each
-    # outstanding item. No request waits for the Email Service's retry loop.
-    for (run_id,) in rows:
-        reconcile_artifact_delivery(str(run_id))
-    result = get_delivery_batch(batch_id)
-    if result is None:
-        raise ValueError("Delivery batch not found")
-    return result
-
-
-def run_artifact(
-    client_key: str,
-    artifact_key: str,
-    mode: str = "email",
-) -> dict:
-    """Legacy execution wrapper for the historical /run API."""
-    mode_to_behavior = {
-        "email": "deliver",
-        "preview": "preview",
-        "dry-run": "dry-run",
-    }
-    return execute_artifact(client_key, artifact_key, behavior=mode_to_behavior[mode])
-
-
-def _lookup_artifact_id(conn, client_key: str, artifact_key: str) -> Optional[str]:
-    row = conn.execute(
-        "SELECT artifact_id FROM app.artifacts WHERE client_key=%s AND artifact_key=%s",
-        (client_key, artifact_key),
-    ).fetchone()
-    return str(row[0]) if row else None
-
-
-def get_run(run_id: str) -> Optional[dict]:
-    """Fetch a previous run record from log.artifact_runs."""
-    with get_metadata_conn() as meta:
-        row = meta.execute(
-            """
-            SELECT
-                r.run_id,
-                r.client_key,
-                r.artifact_key,
-                r.status,
-                r.started_at,
-                r.completed_at,
-                r.error_message
-                ,r.delivery_id
-                ,r.delivery_status
-                ,r.delivery_provider
-                ,r.provider_message_id
-                ,r.provider_status_code
-            FROM log.artifact_runs r
-            WHERE r.run_id = %s
-            """,
-            (run_id,),
-        ).fetchone()
-        _ensure_artifact_outputs_table(meta)
-        outputs = meta.execute(
-            """
-            SELECT
-                output_format,
-                output_role,
-                slice_key,
-                slice_label,
-                filename,
-                storage_path,
-                content_type,
-                file_size_bytes,
-                sha256,
-                status,
-                created_at
-            FROM log.artifact_outputs
-            WHERE run_id = %s
-            ORDER BY created_at, filename
-            """,
-            (run_id,),
-        ).fetchall()
-
-    if row is None:
-        return None
-
-    keys = ["run_id", "client_key", "artifact_key", "status",
-            "started_at", "completed_at", "error_message", "delivery_id",
-            "delivery_status", "provider", "provider_message_id", "provider_status_code"]
-    output_keys = [
-        "output_format",
-        "output_role",
-        "slice_key",
-        "slice_label",
-        "filename",
-        "storage_path",
-        "content_type",
-        "file_size_bytes",
-        "sha256",
-        "status",
-        "created_at",
-    ]
-    result = dict(zip(keys, row))
-    if result["run_id"] is not None:
-        result["run_id"] = str(result["run_id"])
-    result["outputs"] = [dict(zip(output_keys, output)) for output in outputs]
-    return result
-
-
-def reconcile_artifact_delivery(run_id: str) -> Optional[dict]:
-    """Refresh one run from bounded Exchange trace evidence without exposing correlation data."""
-    from . import mailer as _mailer
-
-    record = get_run(run_id)
-    if record is None:
-        return None
-    delivery_id = record.get("delivery_id")
-    delivery_status = str(record.get("delivery_status") or "")
-    if not delivery_id or delivery_status in {"delivered", "failed", "suppressed"}:
-        return record
-
-    try:
-        trace = _mailer.reconcile_delivery_trace(str(delivery_id))
-    except Exception:
-        return record
-
-    reconciliation_status = str(trace.get("reconciliation_status") or "")
-    trace_status = str(trace.get("trace_delivery_status") or "")
-    if reconciliation_status != "matched":
-        return record
-
-    if trace_status == "delivered":
-        normalized = "delivered"
-        run_status = record.get("status") or "completed"
-        error_message = None
-    elif trace_status in {"failed", "quarantined", "filteredAsSpam"}:
-        normalized = "failed"
-        run_status = "failed"
-        error_message = "Email delivery was not completed. Use the operator audit log for details."
-    else:
-        return record
-
-    with get_metadata_conn() as meta:
-        meta.execute(
-            """
-            UPDATE log.artifact_runs
-            SET delivery_status = %s,
-                status = %s,
-                completed_at = NOW(),
-                error_message = %s
-            WHERE run_id = %s::uuid
-            """,
-            (normalized, run_status, error_message, run_id),
-        )
-        _update_delivery_batch_item(meta, run_id, normalized, error_message)
-        meta.commit()
-    return get_run(run_id)
-
-
-def get_latest_artifact_deliveries(client_key: str, artifact_keys: list[str]) -> list[dict[str, Any]]:
-    """Return the latest accepted or Exchange-confirmed delivery metadata without recipients."""
-    with get_metadata_conn() as meta:
-        rows = meta.execute(
-            """
-            SELECT DISTINCT ON (run.artifact_key)
-                run.artifact_key,
-                run.run_id,
-                CASE
-                    WHEN run.delivery_status IN ('submitted', 'sent') THEN 'provider_accepted'
-                    ELSE COALESCE(run.delivery_status, run.status)
-                END AS delivery_status,
-                CASE WHEN run.delivery_status = 'delivered' THEN run.completed_at END AS sent_at,
-                batch.reporting_period,
-                batch.batch_id,
-                item.item_id
-            FROM log.artifact_runs run
-            LEFT JOIN log.artifact_delivery_batch_items item
-              ON item.run_id = run.run_id
-            LEFT JOIN log.artifact_delivery_batches batch
-              ON batch.batch_id = item.batch_id
-            WHERE run.client_key = %s
-              AND run.artifact_key = ANY(%s::text[])
-              AND (
-                  run.delivery_status IN ('sent', 'submitted', 'provider_accepted', 'delivered')
-                  OR (
-                      run.delivery_status IS NULL
-                      AND run.status = 'completed'
-                      AND run.delivery_mode IN ('email', 'both')
-                  )
-              )
-            ORDER BY
-                run.artifact_key,
-                COALESCE(run.completed_at, run.started_at) DESC,
-                run.started_at DESC
-            """,
-            (client_key, artifact_keys),
-        ).fetchall()
-    return [
-        {
-            "artifact_key": row[0],
-            "run_id": str(row[1]),
-            "delivery_status": row[2],
-            "sent_at": row[3],
-            "reporting_period": row[4],
-            "batch_id": str(row[5]) if row[5] else None,
-            "item_id": str(row[6]) if row[6] else None,
-        }
-        for row in rows
-    ]
+        if output_directory is not None and not committing:
+            # This run exclusively created the directory. A failed commit has
+            # an uncertain outcome and must retain any potentially referenced files.
+            try:
+                shutil.rmtree(output_directory)
+            except OSError:
+                logger.warning("Could not clean up incomplete output for render %s", run_id)
+        if artifact_id and not committing:
+            try:
+                with get_metadata_conn() as meta:
+                    meta.execute(
+                        """INSERT INTO log.artifact_runs
+                           (run_id, artifact_id, artifact_key, client_key, triggered_by,
+                            status, started_at, completed_at, error_message)
+                           VALUES (%s, %s, %s, %s, 'api', 'failed', %s, %s, %s)""",
+                        (run_id, artifact_id, artifact_key, client_key, started_at,
+                         completed_at, type(exc).__name__),
+                    )
+            except Exception:
+                logger.exception("Could not record failed render %s", run_id)
+        logger.warning("Render %s failed (%s)", run_id, type(exc).__name__)
+        return {"run_id": run_id, "status": "error", "error_message": "Artifact render failed"}

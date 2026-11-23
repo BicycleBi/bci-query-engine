@@ -1,198 +1,19 @@
-"""
-models.py — Pydantic request/response models for the Query Engine API.
-"""
 from datetime import datetime
 from enum import Enum
-import re
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class RunMode(str, Enum):
-    email = "email"
-    preview = "preview"
-    dry_run = "dry-run"
-
-
 class ArtifactExecutionBehavior(str, Enum):
-    deliver = "deliver"
     display = "display"
     dry_run = "dry-run"
-
-
-class DeliveryMode(str, Enum):
-    email = "email"
-    web = "web"
-    both = "both"
-
-
-class TemplateContentType(str, Enum):
-    html = "html"
-    text = "text"
-
-
-class RecipientDeliveryType(str, Enum):
-    to = "to"
-    cc = "cc"
-    bcc = "bcc"
-
-
-class ArtifactReferenceRole(str, Enum):
-    body = "body"
-    attachment = "attachment"
 
 
 class ArtifactOutputFormat(str, Enum):
     html = "html"
     pdf = "pdf"
-    xlsx = "xlsx"
     csv = "csv"
-    txt = "txt"
-
-
-class TemplateWriteRequest(BaseModel):
-    template_key: str
-    version: int = 1
-    display_name: Optional[str] = None
-    content_type: TemplateContentType = TemplateContentType.html
-    html_content: str
-    is_active: bool = True
-
-
-class ArtifactRecipientWriteRequest(BaseModel):
-    email: str
-    delivery_type: RecipientDeliveryType = RecipientDeliveryType.to
-    active: bool = True
-
-
-class ArtifactReferenceWriteRequest(BaseModel):
-    referenced_artifact_key: str
-    reference_role: ArtifactReferenceRole = ArtifactReferenceRole.body
-    output_format: ArtifactOutputFormat = ArtifactOutputFormat.html
-    active: bool = True
-
-
-class ArtifactWriteRequest(BaseModel):
-    client_key: str
-    artifact_key: str
-    view_name: Optional[str] = None
-    delivery_mode: DeliveryMode
-    template: Optional[TemplateWriteRequest] = None
-    client_display_name: Optional[str] = None
-    display_name: Optional[str] = None
-    description: Optional[str] = None
-    active: bool = True
-    recipients: list[ArtifactRecipientWriteRequest] = Field(default_factory=list)
-    references: list[ArtifactReferenceWriteRequest] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_definition(self) -> "ArtifactWriteRequest":
-        has_source = self.view_name is not None and self.template is not None
-        source_is_empty = self.view_name is None and self.template is None
-        body_reference_count = sum(1 for ref in self.references if ref.reference_role == ArtifactReferenceRole.body)
-
-        if not has_source and not source_is_empty:
-            raise ValueError("Artifact source requires both view_name and template")
-
-        if not has_source and not self.references:
-            raise ValueError("Artifact definition requires a direct source or at least one artifact reference")
-
-        if self.delivery_mode == DeliveryMode.web and not has_source:
-            raise ValueError("Web artifacts must define their own source and template")
-
-        if body_reference_count > 1:
-            raise ValueError("Only one body artifact reference is currently supported")
-
-        return self
-
-
-class ArtifactWriteResponse(BaseModel):
-    artifact_id: str
-    template_id: Optional[str] = None
-    client_key: str
-    artifact_key: str
-    status: str
-    recipient_count: int
-    reference_count: int
-
-
-class ChangeRequestEmailRequest(BaseModel):
-    section: str = Field(min_length=1, max_length=80)
-    record: str = Field(min_length=1, max_length=240)
-    subject: str = Field(min_length=1, max_length=240)
-    details: str = Field(min_length=1, max_length=4000)
-    cc: list[str] = Field(default_factory=list, max_length=10)
-
-    @field_validator("section", "record", "subject", "details")
-    @classmethod
-    def normalize_change_request_text(cls, value: str, info) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError(f"{info.field_name} cannot be blank")
-        if info.field_name == "subject" and ("\r" in normalized or "\n" in normalized):
-            raise ValueError("subject must be one line")
-        return normalized
-
-    @field_validator("cc")
-    @classmethod
-    def validate_change_request_cc(cls, values: list[str]) -> list[str]:
-        normalized = []
-        seen = set()
-        for value in values:
-            email = str(value or "").strip()
-            if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-                raise ValueError("cc contains an invalid email address")
-            key = email.casefold()
-            if key not in seen:
-                seen.add(key)
-                normalized.append(email)
-        return normalized
-
-
-class DistributionGroupSummary(BaseModel):
-    group_key: str
-    display_name: str
-    description: Optional[str] = None
-
-
-class ArtifactDistributionGroupsResponse(BaseModel):
-    client_key: str
-    artifact_key: str
-    groups: list[DistributionGroupSummary] = Field(default_factory=list)
-
-
-class ArtifactExecutionRequest(BaseModel):
-    client_key: str
-    artifact_key: str
-    behavior: ArtifactExecutionBehavior = ArtifactExecutionBehavior.deliver
-    output_formats: list[ArtifactOutputFormat] = Field(default_factory=list)
-    query: Optional[dict[str, Any]] = None
-    distribution_group_keys: list[str] = Field(default_factory=list, max_length=20)
-
-    @field_validator("distribution_group_keys")
-    @classmethod
-    def validate_distribution_group_keys(cls, values: list[str]) -> list[str]:
-        normalized: list[str] = []
-        for value in values:
-            key = value.strip()
-            if not key or len(key) > 100:
-                raise ValueError("Distribution group keys must be between 1 and 100 characters")
-            if not all(character.isalnum() or character in "-_" for character in key):
-                raise ValueError(
-                    "Distribution group keys may contain only letters, numbers, hyphens, and underscores"
-                )
-            if key not in normalized:
-                normalized.append(key)
-        return normalized
-
-    @model_validator(mode="after")
-    def validate_execution_options(self) -> "ArtifactExecutionRequest":
-        if self.distribution_group_keys and self.behavior != ArtifactExecutionBehavior.deliver:
-            raise ValueError("Distribution groups are supported only for delivery executions")
-        if ArtifactOutputFormat.csv in self.output_formats and self.query is None:
-            raise ValueError("CSV output requires a database-owned execution query")
-        return self
 
 
 class ArtifactQueryCachePrewarmRequest(BaseModel):
@@ -216,79 +37,18 @@ class ArtifactExecutionResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     preview_html: Optional[str] = None
+    email_subject: Optional[str] = None
     outputs: list[dict] = Field(default_factory=list)
-    delivery_id: Optional[str] = None
-    delivery_status: Optional[str] = None
-    provider: Optional[str] = None
-    provider_message_id: Optional[str] = None
-    provider_status_code: Optional[int] = None
 
     @field_validator("run_id", mode="before")
     @classmethod
     def normalize_run_id(cls, value: Any) -> Optional[str]:
         return None if value is None else str(value)
 
-    @field_validator("delivery_id", mode="before")
-    @classmethod
-    def normalize_delivery_id(cls, value: Any) -> Optional[str]:
-        return None if value is None else str(value)
-
-
-class ArtifactDeliveryHistoryItem(BaseModel):
-    artifact_key: str
-    run_id: str
-    delivery_status: str
-    sent_at: Optional[datetime] = None
-    reporting_period: Optional[str] = None
-    batch_id: Optional[str] = None
-    item_id: Optional[str] = None
-
-    @field_validator("run_id", "batch_id", "item_id", mode="before")
-    @classmethod
-    def normalize_history_identifiers(cls, value: Any) -> Optional[str]:
-        return None if value is None else str(value)
-
-
-class RunResponse(ArtifactExecutionResponse):
-    pass
-
 
 class HealthResponse(BaseModel):
     status: str
     service: str = "bci-query-engine"
-
-
-class DataLoadEntityFailure(BaseModel):
-    entity_name: str
-    reason_code: str
-    message: str
-
-
-class DataLoadActionResponse(BaseModel):
-    action_id: Optional[str] = None
-    client_key: str
-    artifact_key: str
-    action_key: str
-    status: str
-    trigger_source: Optional[str] = None
-    requested_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    progress_phase: Optional[str] = None
-    current_entity: Optional[str] = None
-    current_step: Optional[str] = None
-    entities_completed: int = 0
-    entities_failed: int = 0
-    entities_total: int = 0
-    progress_updated_at: Optional[datetime] = None
-    entity_failures: list[DataLoadEntityFailure] = Field(default_factory=list)
-
-    @field_validator("action_id", mode="before")
-    @classmethod
-    def normalize_action_id(cls, value: Any) -> Optional[str]:
-        return None if value is None else str(value)
 
 
 class UsageInteractionRequest(BaseModel):
@@ -331,145 +91,16 @@ class UsageEventIngestResponse(BaseModel):
     status: str = "accepted"
 
 
-class DeliveryBatchMode(str, Enum):
-    live = "live"
-    internal_test = "internal_test"
+class ArtifactExecutionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    client_key: str = Field(pattern=r"^[A-Za-z0-9_-]+$")
+    artifact_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    behavior: ArtifactExecutionBehavior
+    output_formats: list[ArtifactOutputFormat] = Field(default_factory=list)
+    query: Optional[dict[str, Any]] = None
 
-
-class DeliveryBatchRequest(BaseModel):
-    client_key: str
-    artifact_keys: list[str] = Field(min_length=1, max_length=100)
-    reporting_period: str = Field(min_length=1, max_length=120)
-    idempotency_key: str = Field(min_length=8, max_length=200)
-    mode: DeliveryBatchMode = DeliveryBatchMode.live
-
-    @field_validator("artifact_keys")
-    @classmethod
-    def unique_artifact_keys(cls, value: list[str]) -> list[str]:
-        normalized = [item.strip() for item in value]
-        if any(not item for item in normalized):
-            raise ValueError("Artifact keys cannot be empty")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("Artifact keys must be unique within a batch")
-        return normalized
-
-
-class DeliveryBatchItemResponse(BaseModel):
-    item_id: str
-    artifact_key: str
-    run_id: str
-    status: str
-    attempt_number: int
-    delivery_id: Optional[str] = None
-    delivery_status: Optional[str] = None
-    error_message: Optional[str] = None
-    confirmed_at: Optional[datetime] = None
-
-    @field_validator("item_id", "run_id", "delivery_id", mode="before")
-    @classmethod
-    def normalize_identifiers(cls, value: Any) -> Optional[str]:
-        return None if value is None else str(value)
-
-
-class DeliveryBatchResponse(BaseModel):
-    batch_id: str
-    client_key: str
-    reporting_period: str
-    mode: DeliveryBatchMode
-    status: str
-    created_at: datetime
-    completed_at: Optional[datetime] = None
-    items: list[DeliveryBatchItemResponse]
-
-    @field_validator("batch_id", mode="before")
-    @classmethod
-    def normalize_batch_id(cls, value: Any) -> str:
-        return str(value)
-
-
-class DeliveryRetryRequest(BaseModel):
-    reason: str = Field(min_length=8, max_length=500)
-
-
-class DeliveryQueueCancelRequest(BaseModel):
-    client_key: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
-    run_ids: list[str] = Field(min_length=1, max_length=100)
-    reason: str = Field(min_length=8, max_length=500)
-
-    @field_validator("run_ids")
-    @classmethod
-    def unique_run_ids(cls, value: list[str]) -> list[str]:
-        normalized = [str(item).strip() for item in value]
-        if any(not item for item in normalized):
-            raise ValueError("Run IDs cannot be empty")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("Run IDs must be unique")
-        return normalized
-
-
-class DeliveryQueueCancelResponse(BaseModel):
-    status: str = "cancelled"
-    cancelled_count: int
-
-
-class UsageSummaryTotals(BaseModel):
-    requests: int = 0
-    active_users: int = 0
-    successful_requests: int = 0
-    failed_requests: int = 0
-    average_response_ms: Optional[float] = None
-    p95_response_ms: Optional[float] = None
-    interactions: int = 0
-    login_started: int = 0
-    login_succeeded: int = 0
-    login_denied: int = 0
-
-
-class UsageDailySummary(BaseModel):
-    date: str
-    requests: int = 0
-    active_users: int = 0
-    failed_requests: int = 0
-    average_response_ms: Optional[float] = None
-
-
-class UsageArtifactSummary(BaseModel):
-    artifact_key: str
-    display_name: str
-    requests: int = 0
-    active_users: int = 0
-    successful_requests: int = 0
-    failed_requests: int = 0
-    average_response_ms: Optional[float] = None
-    p95_response_ms: Optional[float] = None
-    last_activity_at: Optional[datetime] = None
-
-
-class UsageUserSummary(BaseModel):
-    display_name: str
-    username: Optional[str] = None
-    requests: int = 0
-    artifacts_used: int = 0
-    failed_requests: int = 0
-    average_response_ms: Optional[float] = None
-    last_activity_at: Optional[datetime] = None
-
-
-class UsageLoginSummary(BaseModel):
-    outcome: str
-    reason_code: Optional[str] = None
-    events: int = 0
-
-
-class UsageSummaryResponse(BaseModel):
-    applied_filters: dict[str, str] = Field(default_factory=dict)
-    monitoring_available: bool = True
-    client_key: str
-    days: int
-    period_start: datetime
-    period_end: datetime
-    totals: UsageSummaryTotals
-    daily: list[UsageDailySummary] = Field(default_factory=list)
-    artifacts: list[UsageArtifactSummary] = Field(default_factory=list)
-    users: list[UsageUserSummary] = Field(default_factory=list)
-    login_outcomes: list[UsageLoginSummary] = Field(default_factory=list)
+    @model_validator(mode="after")
+    def validate_formats(self):
+        if ArtifactOutputFormat.csv in self.output_formats and self.query is None:
+            raise ValueError("CSV output requires a database-owned execution query")
+        return self

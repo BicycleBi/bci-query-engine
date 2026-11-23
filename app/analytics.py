@@ -34,14 +34,6 @@ def get_analytics_reporting_config(
             raise HTTPException(503, "Analytics reporting authorization is unavailable")
         return None
 
-    # Preserve the accepted SRP runtime contract while stacks migrate to the
-    # generic names. Other clients must configure the generic contract.
-    if client_key == "srp":
-        legacy_admin = os.getenv("SRP_BICYCLE_ADMIN_ROLE", "srpdev_bicycle_dev").strip()
-        legacy_client = os.getenv("SRP_CORPORATE_ANALYTICS_ROLE", "").strip()
-        if legacy_admin:
-            return AnalyticsReportingConfig(client_key, legacy_admin, legacy_client)
-
     if required:
         raise HTTPException(503, "Analytics reporting authorization is unavailable")
     return None

@@ -4,136 +4,34 @@ main.py — FastAPI routes for the Query Engine.
 import base64
 import hashlib
 import hmac
-import html
+import re
 import json
 import os
 import time
-import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Header, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .report_snapshot import get_copied_report, get_copied_snapshot
-from .facility_reporting import attach_copied_facility_evidence, get_facility_report
-from .distribution_reporting import attach_distribution_catalog, attach_report_configurations, get_distribution_report, select_current_distributions
-from .mailer import send as send_email
-from .analytics import get_analytics_reporting_config
-from .engine import (
-    execute_artifact,
-    execute_artifact_query,
-    execute_queued_artifact,
-    cancel_queued_artifact_executions,
-    get_artifact_asset,
-    get_artifact_distribution_groups,
-    get_latest_artifact_deliveries,
-    get_run,
-    reconcile_artifact_delivery,
-    create_delivery_batch,
-    get_delivery_batch,
-    retry_delivery_batch_item,
-    reconcile_delivery_batch,
-    run_delivery_worker,
-    prewarm_artifact_query_cache,
-    queue_artifact_execution,
-    write_artifact_definition,
-)
-from .load_actions import (
-    DataLoadAlreadyRunning,
-    get_canonical_quickbooks_load_status,
-    get_data_load_action,
-    get_latest_data_load_action,
-    get_live_quickbooks_load_progress,
-    latest_quickbooks_load_status,
-    queue_data_load_action,
-    run_data_load_action_worker,
-)
+from .usage_access import require_analytics_reporting_access
+from .access import permitted_roles
+from .engine import execute_artifact, execute_artifact_query, execute_artifact_metadata_query, get_artifact_asset, prewarm_artifact_query_cache
 from .models import (
-    ArtifactExecutionRequest,
-    ArtifactExecutionResponse,
-    ArtifactDistributionGroupsResponse,
-    ArtifactDeliveryHistoryItem,
-    ArtifactQueryCachePrewarmRequest,
-    ArtifactQueryCachePrewarmResponse,
-    ArtifactWriteRequest,
-    ArtifactWriteResponse,
-    ChangeRequestEmailRequest,
-    HealthResponse,
-    DeliveryBatchRequest,
-    DeliveryBatchResponse,
-    DeliveryQueueCancelRequest,
-    DeliveryQueueCancelResponse,
-    DataLoadActionResponse,
-    DeliveryRetryRequest,
-    RunMode,
-    RunResponse,
-    UsageInteractionRequest,
-    UsageInteractionResponse,
-    UsageSummaryResponse,
-    UsageEventIngestRequest,
-    UsageEventIngestResponse,
+    ArtifactExecutionRequest, ArtifactExecutionResponse, ArtifactQueryCachePrewarmRequest,
+    ArtifactQueryCachePrewarmResponse, HealthResponse, UsageEventIngestRequest,
+    UsageEventIngestResponse, UsageInteractionRequest, UsageInteractionResponse,
 )
 from .monitoring import (
-    record_ingested_event_async,
-    record_interaction_event_async,
-    record_request_span_async,
-    get_usage_summary,
-    start_gateway_listener,
-    stop_gateway_listener,
+    record_ingested_event_async, record_interaction_event_async, record_request_span_async,
+    start_gateway_listener, stop_gateway_listener,
 )
-from .usage_access import (
-    get_access_summary,
-    get_access_matrix,
-    get_home_artifact_keys,
-    require_analytics_reporting_access,
-)
-
-_delivery_worker_started = False
-_data_load_action_worker_started = False
-
-
-def start_delivery_worker() -> None:
-    global _delivery_worker_started
-    if _delivery_worker_started or os.getenv("ARTIFACT_DELIVERY_WORKER_ENABLED", "false").lower() != "true":
-        return
-    try:
-        worker_count = max(1, int(os.getenv("ARTIFACT_DELIVERY_WORKERS", "2")))
-    except ValueError:
-        worker_count = 2
-    for worker_index in range(worker_count):
-        thread = threading.Thread(
-            target=run_delivery_worker,
-            name=f"artifact-delivery-worker-{worker_index + 1}",
-            daemon=True,
-        )
-        thread.start()
-    _delivery_worker_started = True
-
-
-def start_data_load_action_worker() -> None:
-    global _data_load_action_worker_started
-    if (
-        _data_load_action_worker_started
-        or os.getenv("DATA_LOAD_ACTION_WORKER_ENABLED", "false").lower() != "true"
-    ):
-        return
-    thread = threading.Thread(
-        target=run_data_load_action_worker,
-        name="data-load-action-worker",
-        daemon=True,
-    )
-    thread.start()
-    _data_load_action_worker_started = True
-
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     start_gateway_listener()
-    start_delivery_worker()
-    start_data_load_action_worker()
     try:
         yield
     finally:
@@ -141,23 +39,15 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="BCI Query Engine", version="0.4.0", lifespan=lifespan)
-SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", "dev-only-change-me"))
+SECURITY_TOKEN_SECRET = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_SECRET", os.getenv("SECURITY_TOKEN_SECRET", ""))
 SECURITY_TOKEN_ISSUER = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_ISSUER", os.getenv("SECURITY_TOKEN_ISSUER", "bci-security"))
 SECURITY_TOKEN_AUDIENCE = os.getenv("QUERY_ENGINE_SECURITY_TOKEN_AUDIENCE", os.getenv("SECURITY_TOKEN_AUDIENCE", "bci-client"))
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
 
-def _token_signature(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    signature = hmac.new(SECURITY_TOKEN_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
-    return (
-        base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-        + "."
-        + base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
-    )
-
-
 def _verify_internal_token(token: str) -> dict[str, Any]:
+    if not SECURITY_TOKEN_SECRET:
+        raise HTTPException(503, "Internal identity verification is unavailable")
     try:
         payload_part, signature_part = token.split(".", 1)
         raw = base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
@@ -174,6 +64,8 @@ def _verify_internal_token(token: str) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid internal token payload") from exc
 
+    if not isinstance(payload, dict):
+        raise HTTPException(401, "Invalid internal token payload")
     if payload.get("iss") != SECURITY_TOKEN_ISSUER:
         raise HTTPException(status_code=401, detail="Invalid internal token issuer")
     if payload.get("aud") != SECURITY_TOKEN_AUDIENCE:
@@ -221,23 +113,14 @@ def authenticated_subject(identity: dict[str, Any]) -> str:
     return subject.strip()
 
 
-def authorized_roles(
-    identity: dict[str, Any],
-    forwarded_roles: Optional[str] = None,
-) -> list[str]:
-    roles: Any
-    if forwarded_roles is not None and forwarded_roles.strip():
-        roles = [role.strip() for role in forwarded_roles.split(",") if role.strip()]
-    else:
-        roles = identity.get("roles", [])
-    if not isinstance(roles, list):
-        raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
-    if any(not isinstance(role, str) or not role.strip() for role in roles):
-        raise HTTPException(status_code=403, detail="Internal token has invalid authorization roles")
-    normalized_roles = sorted(set(role.strip() for role in roles))
-    if not normalized_roles:
-        raise HTTPException(status_code=403, detail="Identity has no authorization roles")
-    return normalized_roles
+def artifact_roles(identity, client_key, artifact_key, permission):
+    require_client_access(identity, client_key)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", client_key):
+        raise HTTPException(400, "Invalid client key")
+    subject = authenticated_subject(identity)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", artifact_key):
+        raise HTTPException(400, "Invalid artifact key")
+    return permitted_roles(client_key, artifact_key, permission, subject, identity)
 
 
 def _safe_request_id(value: Optional[str]) -> str:
@@ -318,64 +201,6 @@ async def monitor_request_lifecycle(request: Request, call_next):
             response.headers["X-Request-ID"] = request_id
 
 
-def require_artifact_scope(client_key: str, artifact_key: str, roles: list[str], report: str = "") -> None:
-    """Protect Analytics for every configured client and SRP internal libraries."""
-    role_set = set(roles)
-    normalized_key = artifact_key.strip().lower()
-
-    if normalized_key == "usage-monitoring-dashboard":
-        config = get_analytics_reporting_config(client_key)
-        admin_role = config.admin_role
-        client_role = config.client_reporting_role
-        allowed_roles = {role for role in (admin_role, client_role) if role}
-        if not allowed_roles or role_set.isdisjoint(allowed_roles):
-            raise HTTPException(status_code=403, detail="Artifact access denied")
-        if report and report not in {"usage", "access"}:
-            raise HTTPException(status_code=400, detail="Unknown analytics report")
-        if report == "usage" and (not admin_role or admin_role not in role_set):
-            raise HTTPException(status_code=403, detail="Usage reporting access denied")
-        if not report and client_role in role_set and admin_role not in role_set:
-            raise HTTPException(status_code=403, detail="Choose the Access report")
-
-    if client_key != "srp":
-        return
-    admin_role = get_analytics_reporting_config(client_key).admin_role
-    internal_library_artifact = (
-        "qc" in normalized_key
-        or "training" in normalized_key
-        or "guided-tour" in normalized_key
-    )
-    if internal_library_artifact and (not admin_role or admin_role not in role_set):
-        raise HTTPException(status_code=403, detail="Artifact access denied")
-
-
-def require_delivery_control(roles: list[str]) -> None:
-    configured = {
-        role.strip()
-        for role in os.getenv("ARTIFACT_DELIVERY_CONTROL_ROLES", "").split(",")
-        if role.strip()
-    }
-    if not configured:
-        raise HTTPException(status_code=503, detail="Delivery control authorization is not configured")
-    if configured.isdisjoint(roles):
-        raise HTTPException(status_code=403, detail="Delivery control access denied")
-
-
-def require_quickbooks_load_control(roles: list[str]) -> None:
-    configured = {
-        role.strip()
-        for role in os.getenv("QUICKBOOKS_LOAD_CONTROL_ROLES", "").split(",")
-        if role.strip()
-    }
-    if not configured:
-        raise HTTPException(
-            status_code=503,
-            detail="QuickBooks load control authorization is not configured",
-        )
-    if configured.isdisjoint(roles):
-        raise HTTPException(status_code=403, detail="QuickBooks load control access denied")
-
-
 @app.get("/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok")
@@ -393,28 +218,16 @@ def ingest_usage_event(event: UsageEventIngestRequest) -> UsageEventIngestRespon
     return UsageEventIngestResponse()
 
 
-@app.post("/artifacts", response_model=ArtifactWriteResponse, status_code=201)
-def save_artifact(definition: ArtifactWriteRequest, identity: dict[str, Any] = Depends(require_internal_identity)):
-    """Create or update an artifact definition in metadata."""
-    require_client_access(identity, definition.client_key)
-    result = write_artifact_definition(definition.model_dump())
-    return ArtifactWriteResponse(**result)
-
-
 @app.get("/artifacts/{client_key}/{artifact_key}", response_class=HTMLResponse)
 def get_artifact_html(
     client_key: str,
     artifact_key: str,
     request: Request,
     refresh: bool = False,
-    report: str = "",
-    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Render and return the artifact HTML for display retrieval."""
-    require_client_access(identity, client_key)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_artifact_scope(client_key, artifact_key, roles, report)
+    roles = artifact_roles(identity, client_key, artifact_key, "artifact:read")
     result = execute_artifact(
         client_key,
         artifact_key,
@@ -422,6 +235,7 @@ def get_artifact_html(
         refresh_cache=refresh,
         authenticated_subject=authenticated_subject(identity),
         authorized_roles=roles,
+        check_reference=lambda key: artifact_roles(identity, client_key, key, "artifact:read"),
     )
     request.state.monitoring_run_id = result.get("run_id")
 
@@ -434,97 +248,6 @@ def get_artifact_html(
 
     headers = _cache_headers(result.get("cache") or {})
     return HTMLResponse(content=html, headers=headers)
-
-
-def _authorize_quickbooks_full_load(
-    identity: dict[str, Any],
-    forwarded_roles: Optional[str],
-) -> tuple[str, list[str]]:
-    require_client_access(identity, "srp")
-    roles = authorized_roles(identity, forwarded_roles)
-    require_artifact_scope("srp", "quickbooks-profit-loss-report", roles)
-    require_quickbooks_load_control(roles)
-    return authenticated_subject(identity), roles
-
-
-@app.post(
-    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load",
-    response_model=DataLoadActionResponse,
-    status_code=202,
-)
-def create_quickbooks_full_load_action(
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Queue a full QuickBooks-only load without exposing service credentials."""
-    subject, roles = _authorize_quickbooks_full_load(identity, x_identity_roles)
-    try:
-        return queue_data_load_action(
-            "srp",
-            "quickbooks-profit-loss-report",
-            "quickbooks-full-load",
-            requested_by=subject,
-            authorized_roles=roles,
-        )
-    except DataLoadAlreadyRunning as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "already_running", "action_id": exc.action_id},
-        ) from exc
-
-
-@app.get(
-    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/latest",
-    response_model=DataLoadActionResponse,
-)
-def latest_quickbooks_full_load_action(
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Return the latest safe status and act as the UI capability check."""
-    _authorize_quickbooks_full_load(identity, x_identity_roles)
-    request_action = get_latest_data_load_action(
-        "srp",
-        "quickbooks-profit-loss-report",
-        "quickbooks-full-load",
-    )
-    result = latest_quickbooks_load_status(
-        request_action,
-        get_canonical_quickbooks_load_status(),
-    )
-    if result and result.get("status") == "running" and result.get("action_id"):
-        result.update(get_live_quickbooks_load_progress(result["action_id"]))
-    return result or DataLoadActionResponse(
-        client_key="srp",
-        artifact_key="quickbooks-profit-loss-report",
-        action_key="quickbooks-full-load",
-        status="idle",
-    )
-
-
-@app.get(
-    "/artifacts/srp/quickbooks-profit-loss-report/actions/quickbooks-full-load/{action_id}",
-    response_model=DataLoadActionResponse,
-)
-def quickbooks_full_load_action_status(
-    action_id: uuid.UUID,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Return only bounded status for one authorized QuickBooks load action."""
-    _authorize_quickbooks_full_load(identity, x_identity_roles)
-    request_action = get_data_load_action(
-        str(action_id),
-        "srp",
-        "quickbooks-profit-loss-report",
-        "quickbooks-full-load",
-    )
-    result = get_canonical_quickbooks_load_status(str(action_id)) or request_action
-    if result is None:
-        raise HTTPException(status_code=404, detail="QuickBooks load action was not found")
-    if result.get("status") == "running":
-        result.update(get_live_quickbooks_load_progress(result["action_id"]))
-    return result
 
 
 @app.post(
@@ -557,212 +280,15 @@ def record_usage_interaction(
     return UsageInteractionResponse()
 
 
-@app.get(
-    "/artifacts/{client_key}/{artifact_key}/usage-summary",
-    response_model=UsageSummaryResponse,
-)
-def usage_summary(
-    response: Response,
-    client_key: str,
-    artifact_key: str,
-    days: int = 30,
-    start_date: str | None = None,
-    end_date: str | None = None,
-    audience: str = "all",
-    artifact_search: str = "",
-    user_search: str = "",
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Return bounded monitoring aggregates for one authorized client."""
-    require_client_access(identity, client_key)
-    if artifact_key != "usage-monitoring-dashboard":
-        raise HTTPException(status_code=404, detail="Usage summary is unavailable for this artifact")
-    if days not in {7, 30, 90}:
-        raise HTTPException(status_code=400, detail="Usage period must be 7, 30, or 90 days")
-    is_admin = require_analytics_reporting_access(identity, client_key, "usage")
-    config = get_analytics_reporting_config(client_key)
-    if audience not in config.audiences or len(artifact_search) > 100 or len(user_search) > 100:
-        raise HTTPException(400, "Invalid usage filter")
-    effective_audience = audience if is_admin or audience == "all" else client_key
-    from datetime import date
-    try:
-        first = date.fromisoformat(start_date) if start_date is not None else None
-        last = date.fromisoformat(end_date) if end_date is not None else None
-        if (first is None) != (last is None) or (first is not None and
-                (first > last or (last - first).days >= 90 or last > datetime.now(timezone.utc).date())):
-            raise ValueError("date bounds")
-    except ValueError:
-        raise HTTPException(400, "Use both YYYY-MM-DD dates, ordered within 90 UTC days and not in the future") from None
-    response.headers["Cache-Control"] = "no-store"
-    options = {}
-    if first is not None:
-        options.update(start_date=first, end_date=last)
-    if effective_audience != "all" or artifact_search or user_search:
-        options.update(audience=effective_audience, artifact_search=artifact_search, user_search=user_search)
-    return UsageSummaryResponse(**get_usage_summary(client_key=client_key, days=days, **options))
-
-
-@app.get("/artifacts/{client_key}/{artifact_key}/access-summary")
-def access_summary(
-    response: Response,
-    client_key: str,
-    artifact_key: str,
-    days: int = 30,
-    search: str = "",
-    offset: int = 0,
-    perspective: str = "",
-    audience: str = "all",
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    require_client_access(identity, client_key)
-    if artifact_key != "usage-monitoring-dashboard" and not (client_key == "srp" and artifact_key == "client-access-distribution-report"):
-        raise HTTPException(404, "Access summary is unavailable for this artifact")
-    if days not in {7, 30, 90} or len(search) > 100 or not 0 <= offset <= 100000:
-        raise HTTPException(400, "Invalid reporting period, search, or offset")
-    config = get_analytics_reporting_config(client_key)
-    if audience not in config.audiences:
-        raise HTTPException(400, "Invalid access audience")
-    if perspective not in {"", "users", "artifacts"}:
-        raise HTTPException(400, "Invalid access perspective")
-    is_bicycle_admin = require_analytics_reporting_access(identity, client_key, "access")
-    effective_audience = audience if is_bicycle_admin else client_key
-    response.headers["Cache-Control"] = "no-store"
-    if artifact_key == "client-access-distribution-report" and (perspective not in {"users", "artifacts"} or effective_audience != "srp"):
-        raise HTTPException(400, "Invalid SRP report perspective or audience")
-    try:
-        copied = None
-        if artifact_key == "client-access-distribution-report":
-            copied = get_copied_report('access-' + perspective, search=search, offset=offset)
-        if copied is not None:
-            result = copied
-        elif perspective:
-            result = get_access_matrix(client_key=client_key, perspective=perspective, search=search, offset=offset, audience=effective_audience)
-        else:
-            result = get_access_summary(client_key=client_key, days=days, search=search, offset=offset, audience=effective_audience)
-        if artifact_key == "client-access-distribution-report":
-            result["home_artifact_keys"] = get_home_artifact_keys(client_key)
-        result["allowed_audiences"] = ["all", client_key, "bicycle"] if is_bicycle_admin else [client_key]
-        return result
-    except Exception:
-        raise HTTPException(503, "Access reporting is unavailable") from None
-
-
-@app.get("/artifacts/{client_key}/{artifact_key}/distribution-summary")
-def distribution_summary(
-    response: Response, client_key: str, artifact_key: str,
-    search: str = "", facility: str = "", result: str = "", offset: int = 0,
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    require_client_access(identity, client_key)
-    if client_key != "srp" or artifact_key != "client-access-distribution-report":
-        raise HTTPException(404, "Distribution reporting is unavailable for this artifact")
-    require_analytics_reporting_access(identity, client_key, "access")
-    response.headers["Cache-Control"] = "no-store"
-    try:
-        copied = get_copied_snapshot('distributions')
-        if copied is not None:
-            result_payload = select_current_distributions(
-                attach_distribution_catalog(copied),
-                search=search,
-                facility=facility,
-                result=result,
-                offset=offset,
-            )
-        else:
-            result_payload = attach_distribution_catalog(
-                get_distribution_report(search=search, facility=facility, result=result, offset=offset)
-            )
-        return attach_report_configurations(result_payload)
-    except ValueError:
-        raise HTTPException(400, "Invalid bounds or unavailable distribution source") from None
-    except Exception:
-        raise HTTPException(503, "Distribution reporting is unavailable") from None
-
-
-@app.get("/artifacts/{client_key}/{artifact_key}/facility-summary")
-def facility_summary(
-    response: Response, client_key: str, artifact_key: str,
-    search: str = "", status: str = "", offset: int = 0,
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    require_client_access(identity, client_key)
-    if client_key != "srp" or artifact_key != "client-access-distribution-report":
-        raise HTTPException(404, "Facility reporting is unavailable for this artifact")
-    require_analytics_reporting_access(identity, client_key, "access")
-    response.headers["Cache-Control"] = "no-store"
-    try:
-        live = get_facility_report(search=search, status=status, offset=offset)
-        access = get_copied_snapshot('access-users')
-        distributions = attach_distribution_catalog(get_copied_snapshot('distributions'))
-        activity = get_copied_snapshot('facilities')
-        merged = attach_copied_facility_evidence(
-            live,
-            access_payload=access,
-            distribution_payload=distributions,
-            activity_payload=activity,
-            home_artifacts=set(get_home_artifact_keys(client_key)),
-        )
-        return attach_report_configurations(merged, facilities=True)
-    except ValueError:
-        raise HTTPException(400, "Invalid facility reporting bounds") from None
-    except Exception:
-        raise HTTPException(503, "Facility reporting is unavailable") from None
-
-
-@app.post("/artifacts/{client_key}/{artifact_key}/change-request")
-def submit_change_request(
-    client_key: str,
-    artifact_key: str,
-    request: ChangeRequestEmailRequest,
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Send one bounded, authenticated report change request to SRP support."""
-    require_client_access(identity, client_key)
-    if client_key != "srp" or artifact_key != "client-access-distribution-report":
-        raise HTTPException(404, "Change requests are unavailable for this artifact")
-    require_analytics_reporting_access(identity, client_key, "access")
-    request_id = str(uuid.uuid4())
-    requester_email = str(identity.get("email") or "").strip()
-    requester = requester_email or str(identity.get("display_name") or identity.get("sub") or "Authenticated SRP user")
-    body = (
-        f"<h2>{html.escape(request.subject)}</h2>"
-        f"<p><strong>Section:</strong> {html.escape(request.section)}<br>"
-        f"<strong>Record:</strong> {html.escape(request.record)}<br>"
-        f"<strong>Requested by:</strong> {html.escape(requester)}<br>"
-        f"<strong>Request ID:</strong> {html.escape(request_id)}</p>"
-        f"<p>{html.escape(request.details).replace(chr(10), '<br>')}</p>"
-    )
-    cc = []
-    for address in ([requester_email] if requester_email else []) + request.cc:
-        if address.casefold() not in {item.casefold() for item in cc}:
-            cc.append(address)
-    try:
-        delivery = send_email(
-            request.subject,
-            body,
-            ["srp@bicyclebi.com"],
-            cc=cc,
-            client_key="srp",
-            artifact_key="client-access-distribution-report",
-            request_id=request_id,
-        )
-    except Exception:
-        raise HTTPException(503, "The change request could not be sent. Open it in email instead.") from None
-    return {"status": "accepted", "request_id": request_id, "delivery_id": delivery.get("delivery_id")}
-
-
 @app.post("/artifacts/{client_key}/{artifact_key}/data")
 def get_artifact_data(
     client_key: str,
     artifact_key: str,
     query: dict[str, Any],
-    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Pass an opaque artifact request to its database-owned query contract."""
-    require_client_access(identity, client_key)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_artifact_scope(client_key, artifact_key, roles)
+    roles = artifact_roles(identity, client_key, artifact_key, "artifact:execute")
     try:
         return execute_artifact_query(
             client_key,
@@ -770,33 +296,10 @@ def get_artifact_data(
             query=query,
             authenticated_subject=authenticated_subject(identity),
             authorized_roles=roles,
+            check_reference=lambda key: artifact_roles(identity, client_key, key, "artifact:execute"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get(
-    "/artifacts/{client_key}/{artifact_key}/distribution-groups",
-    response_model=ArtifactDistributionGroupsResponse,
-)
-def list_artifact_distribution_groups(
-    client_key: str,
-    artifact_key: str,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """List active groups approved for an artifact without recipient details."""
-    require_client_access(identity, client_key)
-    require_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
-    try:
-        groups = get_artifact_distribution_groups(client_key, artifact_key)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ArtifactDistributionGroupsResponse(
-        client_key=client_key,
-        artifact_key=artifact_key,
-        groups=groups,
-    )
 
 
 @app.post(
@@ -827,12 +330,10 @@ def get_artifact_static_asset(
     client_key: str,
     artifact_key: str,
     asset_path: str,
-    x_identity_roles: Optional[str] = Header(default=None),
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
     """Return an authenticated, immutable package-owned artifact asset."""
-    require_client_access(identity, client_key)
-    require_artifact_scope(client_key, artifact_key, authorized_roles(identity, x_identity_roles))
+    artifact_roles(identity, client_key, artifact_key, "artifact:read")
     try:
         asset = get_artifact_asset(client_key, artifact_key, asset_path)
     except ValueError as exc:
@@ -842,7 +343,7 @@ def get_artifact_static_asset(
         content=asset["content"],
         media_type=asset["content_type"],
         headers={
-            "Cache-Control": "private, max-age=31536000, immutable",
+            "Cache-Control": "private, no-cache",
             "ETag": f'"{asset["sha256"]}"',
             "X-Content-Type-Options": "nosniff",
         },
@@ -876,270 +377,73 @@ def _cache_headers(cache: dict) -> dict[str, str]:
     return headers
 
 
-@app.post("/artifact-executions", response_model=ArtifactExecutionResponse, status_code=202)
-def create_artifact_execution(
-    execution: ArtifactExecutionRequest,
-    http_request: Request,
-    background_tasks: BackgroundTasks,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Create an execution request for an artifact."""
-    require_client_access(identity, execution.client_key)
-    http_request.state.monitoring_client_key = execution.client_key
-    http_request.state.monitoring_artifact_key = execution.artifact_key
-    subject = authenticated_subject(identity)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_artifact_scope(execution.client_key, execution.artifact_key, roles)
-
-    if execution.behavior.value == "deliver":
-        try:
-            result = queue_artifact_execution(
-                execution.client_key,
-                execution.artifact_key,
-                authenticated_subject=subject,
-                authorized_roles=roles,
-                execution_mode=(
-                    "background"
-                    if execution.output_formats or execution.query or execution.distribution_group_keys
-                    else "live"
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        http_request.state.monitoring_run_id = result.get("run_id")
-        if execution.output_formats or execution.query or execution.distribution_group_keys:
-            background_tasks.add_task(
-                execute_queued_artifact,
-                execution.client_key,
-                execution.artifact_key,
-                behavior=execution.behavior.value,
-                output_formats=[output_format.value for output_format in execution.output_formats],
-                execution_query=execution.query,
-                distribution_group_keys=execution.distribution_group_keys,
-                authenticated_subject=subject,
-                authorized_roles=roles,
-                run_id=result["run_id"],
-                started_at=result["started_at"],
-                precreated_run=True,
-            )
-        return ArtifactExecutionResponse(**result)
-
+@app.post("/artifact-executions", response_model=ArtifactExecutionResponse)
+def render_execution(execution: ArtifactExecutionRequest, request: Request,
+                     identity: dict[str, Any] = Depends(require_internal_identity)):
+    roles = artifact_roles(identity, execution.client_key, execution.artifact_key, "artifact:execute")
+    request.state.monitoring_client_key = execution.client_key
+    request.state.monitoring_artifact_key = execution.artifact_key
     result = execute_artifact(
-        execution.client_key,
-        execution.artifact_key,
-        behavior=execution.behavior.value,
-        output_formats=[output_format.value for output_format in execution.output_formats],
-        execution_query=execution.query,
-        distribution_group_keys=execution.distribution_group_keys,
-        authenticated_subject=subject,
-        authorized_roles=roles,
+        execution.client_key, execution.artifact_key, behavior=execution.behavior.value,
+        output_formats=execution.output_formats, execution_query=execution.query,
+        authenticated_subject=authenticated_subject(identity), authorized_roles=roles,
+        check_reference=lambda key: artifact_roles(identity, execution.client_key, key, "artifact:execute"),
     )
-    http_request.state.monitoring_run_id = result.get("run_id")
-
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("error_message"))
-
-    return ArtifactExecutionResponse(**result)
+    request.state.monitoring_run_id = result.get("run_id")
+    if result["status"] == "error":
+        raise HTTPException(500, "Artifact render failed")
+    return result
 
 
-@app.get("/artifact-executions/{run_id}", response_model=ArtifactExecutionResponse)
-def get_artifact_execution_status(run_id: str, identity: dict[str, Any] = Depends(require_internal_identity)):
-    """Fetch the status and metadata for a previous artifact execution."""
-    record = get_run(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    require_client_access(identity, record["client_key"])
-    return ArtifactExecutionResponse(**record)
-
-
-@app.post("/artifact-executions/{run_id}/reconcile", response_model=ArtifactExecutionResponse)
-def reconcile_artifact_execution_delivery(
-    run_id: str,
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Refresh one email execution from bounded Exchange delivery evidence."""
-    record = get_run(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Artifact execution not found")
-    require_client_access(identity, record["client_key"])
-    reconciled = reconcile_artifact_delivery(run_id)
-    if reconciled is None:
-        raise HTTPException(status_code=404, detail="Artifact execution not found")
-    return ArtifactExecutionResponse(**reconciled)
-
-
-@app.get("/artifact-deliveries/latest", response_model=list[ArtifactDeliveryHistoryItem])
-def get_latest_artifact_delivery_statuses(
+@app.post("/artifacts/{client_key}/{artifact_key}/metadata/{query_key}")
+def get_artifact_metadata(
+    response: Response,
     client_key: str,
-    artifact_key: list[str] = Query(),
+    artifact_key: str,
+    query_key: str,
+    query: dict[str, Any],
     identity: dict[str, Any] = Depends(require_internal_identity),
 ):
-    """Return latest accepted delivery times without exposing recipients or message content."""
-    require_client_access(identity, client_key)
-    artifact_keys = list(dict.fromkeys(value.strip() for value in artifact_key if value.strip()))
-    if not artifact_keys or len(artifact_keys) > 100:
-        raise HTTPException(status_code=400, detail="Provide between 1 and 100 artifact keys")
-    return [
-        ArtifactDeliveryHistoryItem(**item)
-        for item in get_latest_artifact_deliveries(client_key, artifact_keys)
-    ]
+    """Run a registered report query through the stack's Metadata connection."""
+    roles = artifact_roles(identity, client_key, artifact_key, "artifact:execute")
+    subject = authenticated_subject(identity)
 
+    def authorize_query(policy: str) -> bool:
+        report = "" if policy == "artifact" else policy
+        if report:
+            return not require_analytics_reporting_access(identity, client_key, report, artifact_key)
+        return False
 
-@app.post("/artifact-delivery-queue/cancel", response_model=DeliveryQueueCancelResponse)
-def cancel_artifact_delivery_queue(
-    request: DeliveryQueueCancelRequest,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """Cancel an exact set of queued non-batch executions without deleting audit history."""
-    require_client_access(identity, request.client_key)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_delivery_control(roles)
+    response.headers["Cache-Control"] = "no-store"
     try:
-        return DeliveryQueueCancelResponse(
-            **cancel_queued_artifact_executions(
-                request.client_key,
-                request.run_ids,
-                reason=request.reason,
-            )
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/delivery-batches", response_model=DeliveryBatchResponse, status_code=202)
-def create_artifact_delivery_batch(
-    request: DeliveryBatchRequest,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    require_client_access(identity, request.client_key)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_delivery_control(roles)
-    for artifact_key in request.artifact_keys:
-        require_artifact_scope(request.client_key, artifact_key, roles)
-    try:
-        result = create_delivery_batch(
-            request.client_key,
-            request.artifact_keys,
-            reporting_period=request.reporting_period,
-            idempotency_key=request.idempotency_key,
-            mode=request.mode.value,
-            authenticated_subject=authenticated_subject(identity),
+        return execute_artifact_metadata_query(
+            client_key,
+            artifact_key,
+            query_key,
+            query=query,
+            authorize_query=authorize_query,
+            authenticated_subject=subject,
             authorized_roles=roles,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return DeliveryBatchResponse(**result)
 
 
-@app.get("/delivery-batches/{batch_id}", response_model=DeliveryBatchResponse)
-def get_artifact_delivery_batch(
-    batch_id: str,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    roles = authorized_roles(identity, x_identity_roles)
-    require_delivery_control(roles)
-    result = get_delivery_batch(batch_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Delivery batch not found")
-    require_client_access(identity, result["client_key"])
-    return DeliveryBatchResponse(**result)
 
 
-@app.post(
-    "/delivery-batches/{batch_id}/items/{item_id}/retry",
-    response_model=DeliveryBatchResponse,
-    status_code=202,
-)
-def retry_artifact_delivery_batch_item(
-    batch_id: str,
-    item_id: str,
-    request: DeliveryRetryRequest,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    roles = authorized_roles(identity, x_identity_roles)
-    require_delivery_control(roles)
-    batch = get_delivery_batch(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Delivery batch not found")
-    require_client_access(identity, batch["client_key"])
-    try:
-        result = retry_delivery_batch_item(
-            batch_id,
-            item_id,
-            reason=request.reason,
-            authenticated_subject=authenticated_subject(identity),
-            authorized_roles=roles,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return DeliveryBatchResponse(**result)
+@app.get("/artifact-executions/{run_id}", response_model=ArtifactExecutionResponse)
+def execution_status(run_id: uuid.UUID, identity: dict[str, Any] = Depends(require_internal_identity)):
+    from .db import get_metadata_conn
 
-
-@app.post(
-    "/delivery-batches/{batch_id}/reconcile",
-    response_model=DeliveryBatchResponse,
-)
-def reconcile_artifact_delivery_batch(
-    batch_id: str,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    roles = authorized_roles(identity, x_identity_roles)
-    require_delivery_control(roles)
-    batch = get_delivery_batch(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Delivery batch not found")
-    require_client_access(identity, batch["client_key"])
-    return DeliveryBatchResponse(**reconcile_delivery_batch(batch_id))
-
-
-@app.post("/run/{client_key}/{artifact_key}", response_model=RunResponse, status_code=202, deprecated=True)
-def trigger_run(
-    client_key: str,
-    artifact_key: str,
-    mode: RunMode = RunMode.email,
-    x_identity_roles: Optional[str] = Header(default=None),
-    identity: dict[str, Any] = Depends(require_internal_identity),
-):
-    """
-    Legacy alias for artifact execution.
-
-    mode=email    — render + send email (respects delivery_mode)
-    mode=preview  — render only, return HTML in preview_html field, no log
-    mode=dry-run  — render + log, no send
-    """
-    legacy_behavior = {
-        RunMode.email: "deliver",
-        RunMode.preview: "preview",
-        RunMode.dry_run: "dry-run",
-    }
-    require_client_access(identity, client_key)
-    roles = authorized_roles(identity, x_identity_roles)
-    require_artifact_scope(client_key, artifact_key, roles)
-    result = execute_artifact(
-        client_key,
-        artifact_key,
-        behavior=legacy_behavior[mode],
-        authenticated_subject=authenticated_subject(identity),
-        authorized_roles=roles,
-    )
-
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("error_message"))
-
-    return RunResponse(**result)
-
-
-@app.get("/run/{run_id}", response_model=RunResponse, deprecated=True)
-def get_run_status(run_id: str, identity: dict[str, Any] = Depends(require_internal_identity)):
-    """Legacy alias for artifact execution status."""
-    record = get_run(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    require_client_access(identity, record["client_key"])
-    return RunResponse(**record)
+    with get_metadata_conn() as meta:
+        row = meta.execute(
+            """SELECT client_key, artifact_key, status, started_at, completed_at
+                 FROM log.artifact_runs WHERE run_id = %s AND client_key = %s""",
+            (run_id, identity.get("client_key")),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Render run not found")
+    client, artifact, status, started, completed = row
+    artifact_roles(identity, client, artifact, "artifact:read")
+    return ArtifactExecutionResponse(run_id=run_id, client_key=client, artifact_key=artifact,
+                                     status=status, started_at=started, completed_at=completed)

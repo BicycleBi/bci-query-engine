@@ -57,7 +57,7 @@ def grant(db, resource, permission, **changes):
 
 def authorize(report='access', **identity):
     return usage_access.require_analytics_reporting_access(
-        {'client_key':'rag', 'sub':'synthetic-user', **identity}, 'rag', report)
+        {'client_key':'rag', 'sub':'synthetic-user', **identity}, 'rag', report, 'usage-monitoring-dashboard')
 
 
 @pytest.mark.parametrize('resource', [

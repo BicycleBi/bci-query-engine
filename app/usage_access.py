@@ -1,32 +1,13 @@
-"""Bounded security-metadata reporting. Never reads report or recipient data."""
-from datetime import datetime, timedelta, timezone
+"""Enforce optional platform analytics grants on registered Metadata queries."""
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
 from .analytics import get_analytics_reporting_config
-from .db import get_data_conn, get_metadata_conn
+from .db import get_metadata_conn
 
 
-def get_home_artifact_keys(client_key: str) -> list[str]:
-    """Return active artifacts with a usable link in the existing Home registry."""
-    with get_data_conn() as conn:
-        conn.execute('SET TRANSACTION READ ONLY')
-        conn.execute("SET LOCAL statement_timeout = '5s'")
-        rows = conn.execute(
-            """
-            SELECT artifact_key
-            FROM public.home_artifact_components
-            WHERE client_key = %s
-              AND home_artifact_key = 'home'
-              AND card_state = 'active'
-              AND NULLIF(btrim(component_json->>'href'), '') IS NOT NULL
-            ORDER BY artifact_key
-            """,
-            (client_key,),
-        ).fetchall()
-    return [row[0] for row in rows]
-
-def require_analytics_reporting_access(identity: dict[str, Any], client_key: str, report: str) -> bool:
+def require_analytics_reporting_access(identity: dict[str, Any], client_key: str, report: str, artifact_key: str) -> bool:
     """Require a live report-specific grant and return whether the viewer is a Bicycle admin."""
     # Security also resolves existing canonical users through verified token email
     # when a provider subject differs from their metadata user ID.
@@ -42,7 +23,7 @@ def require_analytics_reporting_access(identity: dict[str, Any], client_key: str
         raise HTTPException(503, 'Analytics reporting authorization is unavailable')
     params = {'client': client_key, 'now': datetime.now(timezone.utc),
               'subject': identity['sub'], 'email': str(identity.get('email') or ''),
-              'resource': f'artifact:{client_key}:usage-monitoring-dashboard',
+              'resource': f'artifact:{client_key}:{artifact_key}',
               # Match Security's canonical resource hierarchy, within the live
               # client/role/identity contract enforced by the query below.
               'wildcard_resources': [f'artifact:{client_key}:*', 'artifact:*:*', '*'],
@@ -80,177 +61,3 @@ def require_analytics_reporting_access(identity: dict[str, Any], client_key: str
     if not row or not row[0]:
         raise HTTPException(403, 'Analytics reporting access denied')
     return bool(row[1])
-
-
-def require_usage_reporting_access(identity: dict[str, Any], client_key: str) -> bool:
-    """Backward-compatible wrapper for callers that specifically request Usage."""
-    return require_analytics_reporting_access(identity, client_key, 'usage')
-
-
-def get_access_summary(*, client_key: str, days: int, search: str = '', offset: int = 0,
-                       audience: str = 'all') -> dict:
-    """Report currently authorized users and bounded unauthorized authentication activity."""
-    config = get_analytics_reporting_config(client_key)
-    if days not in {7, 30, 90} or audience not in config.audiences or not 0 <= offset <= 100000 or len(search) > 100:
-        raise ValueError('Invalid access reporting bounds')
-    now = datetime.now(timezone.utc)
-    params = {'client': client_key, 'now': now, 'start': now - timedelta(days=days),
-              'search': search.strip().lower(), 'offset': offset, 'audience': audience,
-              'admin_role': config.admin_role}
-    scope = """
-      FROM analytics_reporting.authorized_user_audiences u
-      WHERE u.client_key = %(client)s
-        AND u.admin_role_key = %(admin_role)s
-        AND u.audience_key = %(audience)s
-        AND (%(search)s = '' OR strpos(lower(u.display_name), %(search)s)>0
-             OR strpos(lower(u.email), %(search)s)>0)
-    """
-    with get_metadata_conn() as conn:
-        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        conn.execute("SET LOCAL statement_timeout = '10s'")
-        total = conn.execute('SELECT count(*) ' + scope, params).fetchone()[0]
-        users = conn.execute('SELECT u.user_id, u.display_name, u.email, u.active ' + scope +
-                             ' ORDER BY lower(u.display_name), u.user_id LIMIT 50 OFFSET %(offset)s', params).fetchall()
-        params['ids'] = [u[0] for u in users]
-        grants = conn.execute("""
-          WITH ranked_grants AS (
-          SELECT g.user_id, g.role_key, g.source, g.group_key, g.resource_key, g.permission_key,
-            row_number() OVER (PARTITION BY g.user_id ORDER BY g.permission_key NULLS LAST,
-              g.role_key, g.source, g.group_key, g.resource_key) AS grant_number
-          FROM analytics_reporting.client_grants g
-          WHERE g.client_key = %(client)s
-            AND g.admin_role_key = %(admin_role)s
-            AND g.user_id = ANY(%(ids)s)
-          )
-          SELECT user_id, role_key, source, group_key, resource_key, permission_key
-          FROM ranked_grants WHERE grant_number <= 201
-          ORDER BY user_id, grant_number
-        """, params).fetchall()
-        relation = conn.execute("""
-          SELECT to_regclass('analytics_reporting.request_activity'),
-                 to_regprocedure('analytics_reporting.authenticated_denial_summary(text,text,text,timestamp with time zone,timestamp with time zone,integer)')
-        """).fetchone()
-        available = bool(relation and relation[0])
-        denials_available = bool(relation and relation[1])
-        activity = []
-        denials = []
-        if available and users:
-            activity = conn.execute("""
-              SELECT a.user_id, count(a.request_id), max(a.started_at)
-              FROM analytics_reporting.request_activity a
-              WHERE a.client_key = %(client)s AND a.user_id = ANY(%(ids)s)
-                AND a.started_at >= %(start)s AND a.started_at < %(now)s
-              GROUP BY a.user_id
-            """, params).fetchall()
-        if denials_available:
-            denials = conn.execute("""
-              SELECT display_name, username, artifact_key, denied_requests, last_denied_at
-              FROM analytics_reporting.authenticated_denial_summary(
-                  %(client)s, %(admin_role)s, %(audience)s, %(start)s, %(now)s, 201
-              )
-            """, params).fetchall()
-    by_user = {}
-    for user_id, role, source, group, resource, permission in grants:
-        by_user.setdefault(user_id, []).append({'role': role, 'source': source, 'group': group,
-                                                'resource': resource, 'permission': permission})
-    usage = {row[0]: row[1:] for row in activity}
-    return {
-        'client_key': client_key, 'as_of': now, 'days': days, 'audience': audience, 'total_users': total,
-        'offset': offset, 'limit': 50, 'has_more': offset + len(users) < total,
-        'monitoring_available': available,
-        'authenticated_denials_available': denials_available,
-        'authenticated_denials_truncated': len(denials) > 200,
-        'authenticated_denials_limit': 200,
-        'authenticated_denials': [
-            {'display_name': name, 'username': username, 'artifact_key': artifact,
-             'denied_requests': count, 'last_denied_at': last_denied}
-            for name, username, artifact, count, last_denied in denials[:200]
-        ],
-        'users': [{'display_name': name, 'username': email, 'active': active,
-                   'access_status': 'Disabled' if not active else
-                     'Granted' if any(g['permission'] for g in by_user.get(uid, [])) else 'No current grants',
-                   'grants': by_user.get(uid, [])[:200],
-                   'grants_truncated': len(by_user.get(uid, [])) > 200,
-                   'requests': usage.get(uid, (0, None))[0] if available else None,
-                   'last_activity_at': usage.get(uid, (0, None))[1]}
-                  for uid, name, email, active in users],
-    }
-
-
-def get_access_matrix(*, client_key: str, perspective: str, search: str = '', offset: int = 0, audience: str = 'all') -> dict:
-    """Artifact-centric metadata projection matching Security resource wildcards."""
-    config = get_analytics_reporting_config(client_key)
-    if audience not in config.audiences or perspective not in {'users', 'artifacts'} or len(search) > 100 or not 0 <= offset <= 100000:
-        raise ValueError('Invalid access matrix bounds')
-    now = datetime.now(timezone.utc)
-    params = {'client': client_key, 'now': now, 'search': search.strip().lower(), 'offset': offset, 'audience': audience, 'admin_role': config.admin_role}
-    users_scope = """FROM analytics_reporting.authorized_user_audiences u
-      WHERE u.client_key=%(client)s AND u.admin_role_key=%(admin_role)s
-        AND u.audience_key=%(audience)s"""
-    artifact_scope = """FROM analytics_reporting.reportable_artifacts a
-      WHERE a.client_key=%(client)s AND a.admin_role_key=%(admin_role)s"""
-    with get_metadata_conn() as conn:
-        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        conn.execute("SET LOCAL statement_timeout = '10s'")
-        if perspective == 'users':
-            scope = users_scope + " AND (%(search)s='' OR strpos(lower(u.display_name),%(search)s)>0 OR strpos(lower(u.email),%(search)s)>0)"
-            total = conn.execute('SELECT count(*) '+scope, params).fetchone()[0]
-            subjects = conn.execute('SELECT u.user_id,u.display_name,u.email,u.active '+scope+
-                                    ' ORDER BY lower(u.display_name),u.user_id LIMIT 50 OFFSET %(offset)s',params).fetchall()
-            params['ids'] = [r[0] for r in subjects]
-            selection = 'e.user_id=ANY(%(ids)s)'
-        else:
-            scope = artifact_scope + " AND (%(search)s='' OR strpos(lower(a.display_name),%(search)s)>0 OR strpos(lower(a.artifact_key),%(search)s)>0)"
-            total = conn.execute('SELECT count(*) '+scope,params).fetchone()[0]
-            subjects = conn.execute('SELECT a.artifact_key,a.display_name,a.active '+scope+
-                                    ' ORDER BY lower(a.display_name),a.artifact_key LIMIT 50 OFFSET %(offset)s',params).fetchall()
-            params['ids'] = [r[0] for r in subjects]
-            selection = 'e.artifact_key=ANY(%(ids)s)'
-        # Resolve complete permissions before bounding displayed drilldown details.
-        edges = conn.execute("""WITH matched AS (
-            SELECT e.*
-            FROM analytics_reporting.artifact_access_edges e
-            JOIN analytics_reporting.authorized_user_audiences u
-              ON u.client_key=e.client_key AND u.user_id=e.user_id
-             AND u.audience_key=%(audience)s
-            WHERE e.client_key=%(client)s AND e.admin_role_key=%(admin_role)s
-              AND """+selection+"""
-          ), grouped AS (
-            SELECT artifact_key,artifact_name,artifact_active,user_id,display_name,email,active,
-              bool_or(assigned_view) AS can_view,
-              bool_or(assigned_run) AS can_run,
-              count(*) AS grant_count
-            FROM matched GROUP BY artifact_key,artifact_name,artifact_active,user_id,display_name,email,active
-          ), ranked AS (
-            SELECT *,row_number() OVER (PARTITION BY """+('user_id' if perspective=='users' else 'artifact_key')+"""
-              ORDER BY lower("""+('artifact_name' if perspective=='users' else 'display_name')+"""),artifact_key,user_id) AS edge_number,
-              count(*) OVER (PARTITION BY """+('user_id' if perspective=='users' else 'artifact_key')+""" ) AS edge_count
-            FROM grouped
-          )
-          SELECT artifact_key,artifact_name,artifact_active,user_id,display_name,email,active,
-            can_view,can_run,edge_count,
-            (SELECT jsonb_agg(detail) FROM
-              (SELECT DISTINCT jsonb_build_object('role',m.role_key,'source',m.source,
-                'group',m.group_key,'permission',m.permission_key,'resource',m.resource_key) AS detail
-               FROM matched m WHERE m.artifact_key=r.artifact_key AND m.user_id=r.user_id
-               LIMIT 200) d),grant_count>200
-          FROM ranked r WHERE edge_number<=201 ORDER BY edge_number
-        """,params).fetchall()
-    by_subject = {}
-    for key,title,artifact_active,uid,name,email,active,view,run,count,details,details_truncated in edges:
-        subject = uid if perspective == 'users' else key
-        by_subject.setdefault(subject,[]).append({'artifact_key':key,'artifact_name':title,
-          'artifact_active':artifact_active,'display_name':name,'username':email,'active':active,
-          'can_view':bool(view and active and artifact_active),'can_run':bool(run and active and artifact_active),
-          'assigned_view':view,'assigned_run':run,'details':details or [],'details_truncated':details_truncated,
-          'total_matches':count})
-    rows = []
-    for item in subjects:
-        matches = by_subject.get(item[0],[])
-        row = ({'display_name':item[1],'username':item[2],'active':item[3]} if perspective=='users'
-               else {'artifact_key':item[0],'display_name':item[1],'active':item[2]})
-        row.update(matches=matches[:200],matches_truncated=len(matches)>200,
-                   total_matches=matches[0]['total_matches'] if matches else 0)
-        rows.append(row)
-    return {'client_key':client_key,'as_of':now,'perspective':perspective,'audience':audience,'rows':rows,
-            'total':total,'offset':offset,'limit':50,'has_more':offset+len(subjects)<total}

@@ -1,18 +1,8 @@
-import importlib
 import json
-import sys
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from uuid import UUID
 
 import pytest
-
-sys.modules.setdefault("psycopg", SimpleNamespace(connect=None, Connection=object))
-sys.modules.setdefault("requests", SimpleNamespace(post=None))
-
-engine = importlib.import_module("app.engine")
-cache_module = importlib.import_module("app.cache")
+from app import cache as cache_module, engine
 
 
 ARTIFACT_ID = "11111111-1111-1111-1111-111111111111"
@@ -76,6 +66,8 @@ class FakeData:
         self.platform_corporate_roles = []
 
     def execute(self, sql, params=None):
+        if sql.startswith(("SET TRANSACTION", "SET LOCAL")):
+            return FakeResult()
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
@@ -162,113 +154,6 @@ def _patch_connections(monkeypatch, *, data=None):
     monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(meta))
     monkeypatch.setattr(engine, "get_data_conn", lambda: _yield(data))
     return meta, data
-
-
-def test_queue_artifact_execution_persists_immediate_status(monkeypatch):
-    meta, _ = _patch_connections(monkeypatch)
-
-    result = engine.queue_artifact_execution("srp", "visit-counts")
-
-    assert result["status"] == "queued"
-    assert result["client_key"] == "srp"
-    assert result["artifact_key"] == "visit-counts"
-    assert result["completed_at"] is None
-    assert meta.log_params[1] == ARTIFACT_ID
-    assert meta.log_params[5] == "queued"
-    assert meta.log_params[6] == "web"
-    assert meta.commits == 1
-
-
-def test_cancel_queue_is_exact_and_terminal(monkeypatch):
-    class CancelMeta:
-        def __init__(self):
-            self.commits = 0
-            self.update_params = None
-
-        def execute(self, sql, params=None):
-            if "SELECT count(*)" in sql:
-                return FakeResult(row=(2,))
-            if "UPDATE log.artifact_runs" in sql:
-                self.update_params = params
-                return FakeResult(rows=[("run-1",), ("run-2",)])
-            raise AssertionError(f"Unexpected metadata query: {sql}")
-
-        def commit(self):
-            self.commits += 1
-
-    meta = CancelMeta()
-    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(meta))
-
-    result = engine.cancel_queued_artifact_executions(
-        "srp",
-        [
-            "11111111-1111-1111-1111-111111111111",
-            "22222222-2222-2222-2222-222222222222",
-        ],
-        reason="Verified synchronous recovery delivered these reports",
-    )
-
-    assert result == {"status": "cancelled", "cancelled_count": 2}
-    assert meta.commits == 1
-    assert meta.update_params[1] == "srp"
-
-
-def test_cancel_queue_fails_closed_on_partial_match(monkeypatch):
-    class PartialCancelMeta:
-        def execute(self, sql, params=None):
-            if "SELECT count(*)" in sql:
-                return FakeResult(row=(1,))
-            raise AssertionError("Update must not run after a partial match")
-
-        def commit(self):
-            raise AssertionError("Partial match must not commit")
-
-    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(PartialCancelMeta()))
-
-    with pytest.raises(ValueError, match="target mismatch"):
-        engine.cancel_queued_artifact_executions(
-            "srp",
-            [
-                "11111111-1111-1111-1111-111111111111",
-                "22222222-2222-2222-2222-222222222222",
-            ],
-            reason="Verified synchronous recovery delivered these reports",
-        )
-
-
-def test_get_run_normalizes_database_uuid_for_api_contract(monkeypatch):
-    run_id = UUID("33333333-3333-3333-3333-333333333333")
-    started_at = datetime.now(tz=timezone.utc)
-
-    class FakeRunMeta:
-        def execute(self, sql, params=None):
-            if "FROM log.artifact_runs r" in sql:
-                return FakeResult(
-                    row=(
-                        run_id,
-                        "srp",
-                        "visit-counts",
-                        "completed",
-                        started_at,
-                        started_at,
-                        None,
-                    )
-                )
-            if "FROM log.artifact_outputs" in sql:
-                return FakeResult(rows=[])
-            if "CREATE TABLE IF NOT EXISTS log.artifact_outputs" in sql:
-                return FakeResult()
-            if "CREATE INDEX IF NOT EXISTS artifact_outputs_" in sql:
-                return FakeResult()
-            raise AssertionError(f"Unexpected metadata query: {sql}")
-
-    monkeypatch.setattr(engine, "get_metadata_conn", lambda: _yield(FakeRunMeta()))
-
-    result = engine.get_run(str(run_id))
-
-    assert result is not None
-    assert result["run_id"] == str(run_id)
-    assert isinstance(result["run_id"], str)
 
 
 def test_redis_disabled_preserves_display_execution(monkeypatch):
@@ -409,26 +294,6 @@ def test_redis_read_failure_falls_back_to_normal_execution(monkeypatch):
     assert data.calls == 1
 
 
-def test_delivery_execution_does_not_use_cache(monkeypatch):
-    _, data = _patch_connections(monkeypatch)
-    monkeypatch.setattr(
-        cache_module,
-        "get_cache_settings",
-        lambda: cache_module.CacheSettings(enabled=True),
-    )
-    monkeypatch.setattr(
-        cache_module,
-        "get_artifact_cache",
-        lambda settings: pytest.fail("Delivery executions should not create Redis cache"),
-    )
-
-    result = engine.execute_artifact("srp", "visit-counts", behavior="deliver")
-
-    assert result["status"] == "success"
-    assert result["preview_html"] is None
-    assert data.calls == 1
-
-
 def test_query_function_name_follows_the_render_view_contract():
     assert engine._query_function_name(
         "public.rag_pricing_first_artifact_rows"
@@ -445,6 +310,8 @@ class FakeQueryData(FakeData):
         self.query_payloads = []
 
     def execute(self, sql, params=None):
+        if sql.startswith(("SET TRANSACTION", "SET LOCAL")):
+            return FakeResult()
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
@@ -766,16 +633,6 @@ def test_artifact_query_requires_database_contract(monkeypatch):
             "visit-counts",
             query={"operation": "summary"},
         )
-
-def test_server_config_binds_platform_admin_role_to_transaction(monkeypatch):
-    monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
-    monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "uat")
-    data = FakeData()
-    engine._set_authorization_context(data, "srp", "fixture-subject", ["srpqa_admin"])
-    assert data.platform_admin_roles == ["srpqa_admin"]
-    assert data.platform_corporate_roles == ["uat"]
-    assert data.authorized_roles == ['["srpqa_admin"]']
-
 
 def test_generic_analytics_roles_bind_to_transaction_without_srp_names(monkeypatch):
     monkeypatch.setenv("ANALYTICS_REPORTING_CLIENT_KEY", "rf")

@@ -27,14 +27,9 @@ def test_partial_generic_reporting_config_fails_closed(monkeypatch):
     assert incomplete.value.status_code == 503
 
 
-def test_srp_legacy_role_names_remain_an_explicit_compatibility_path(monkeypatch):
-    monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "srpqa_admin")
-    monkeypatch.setenv("SRP_CORPORATE_ANALYTICS_ROLE", "srpqa_analytics")
-
-    config = get_analytics_reporting_config("srp")
-    assert config.admin_role == "srpqa_admin"
-    assert config.client_reporting_role == "srpqa_analytics"
-    assert config.audiences == {"all", "srp", "bicycle"}
+def test_legacy_role_names_do_not_supply_policy(monkeypatch):
+    monkeypatch.setenv("SRP_BICYCLE_ADMIN_ROLE", "old_admin")
+    assert get_analytics_reporting_config("srp", required=False) is None
 
 
 def test_optional_context_never_reuses_another_clients_roles(monkeypatch):
