@@ -61,6 +61,7 @@ class FakeData:
         self.fail_on_execute = fail_on_execute
         self.freshness_timestamp = freshness_timestamp
         self.authenticated_subjects = []
+        self.authenticated_emails = []
         self.authorized_roles = []
         self.platform_admin_roles = []
         self.platform_corporate_roles = []
@@ -70,6 +71,9 @@ class FakeData:
             return FakeResult()
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
+            return FakeResult(row=("",))
+        if "set_config('bci.authenticated_email'" in sql:
+            self.authenticated_emails.append(params[0])
             return FakeResult(row=("",))
         if "set_config('bci.authorized_roles'" in sql:
             self.authorized_roles.append(params[0])
@@ -315,6 +319,9 @@ class FakeQueryData(FakeData):
         if "set_config('bci.authenticated_subject'" in sql:
             self.authenticated_subjects.append(params[0])
             return FakeResult(row=("",))
+        if "set_config('bci.authenticated_email'" in sql:
+            self.authenticated_emails.append(params[0])
+            return FakeResult(row=("",))
         if "set_config('bci.authorized_roles'" in sql:
             self.authorized_roles.append(params[0])
             return FakeResult(row=("",))
@@ -372,12 +379,14 @@ def test_artifact_query_passes_opaque_json_to_database(monkeypatch):
         "visit-counts",
         query=query,
         authenticated_subject="user-1",
+        authenticated_email="reader@example.test",
         authorized_roles=["scope-a"],
     )
 
     assert result == {"dashboard": {"summary": {"total": 7}}}
     assert json.loads(data.query_payloads[0]) == query
     assert data.authenticated_subjects == ["user-1"]
+    assert data.authenticated_emails == ["reader@example.test"]
     assert data.authorized_roles == ['["scope-a"]']
 
 

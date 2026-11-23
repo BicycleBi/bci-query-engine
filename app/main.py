@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, Response
+from psycopg.errors import InsufficientPrivilege
 
 from .usage_access import require_analytics_reporting_access
 from .access import permitted_roles
@@ -111,6 +112,14 @@ def authenticated_subject(identity: dict[str, Any]) -> str:
     if not isinstance(subject, str) or not subject.strip():
         raise HTTPException(status_code=403, detail="Internal token is missing subject identity")
     return subject.strip()
+
+
+def authenticated_email(identity: dict[str, Any]) -> str:
+    # Only accept the Security-issued claim from the verified internal token.
+    email = identity.get("email")
+    if not isinstance(email, str) or identity.get("email_verified") is False:
+        return ""
+    return email.strip()
 
 
 def artifact_roles(identity, client_key, artifact_key, permission):
@@ -295,9 +304,12 @@ def get_artifact_data(
             artifact_key,
             query=query,
             authenticated_subject=authenticated_subject(identity),
+            authenticated_email=authenticated_email(identity),
             authorized_roles=roles,
             check_reference=lambda key: artifact_roles(identity, client_key, key, "artifact:execute"),
         )
+    except InsufficientPrivilege:
+        raise HTTPException(status_code=403, detail="Artifact access denied") from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -423,8 +435,11 @@ def get_artifact_metadata(
             query=query,
             authorize_query=authorize_query,
             authenticated_subject=subject,
+            authenticated_email=authenticated_email(identity),
             authorized_roles=roles,
         )
+    except InsufficientPrivilege:
+        raise HTTPException(status_code=403, detail="Artifact access denied") from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

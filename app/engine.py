@@ -161,11 +161,17 @@ def _set_authorization_context(
     client_key: str,
     authenticated_subject: Optional[str],
     authorized_roles: Optional[list[str]],
+    *,
+    authenticated_email: Optional[str] = None,
 ) -> None:
-    """Bind the trusted Security subject and freshly resolved roles to the transaction."""
+    """Bind trusted Security identity and resolved roles to the transaction."""
     data.execute(
         "SELECT set_config('bci.authenticated_subject', %s, true)",
         (authenticated_subject or "",),
+    )
+    data.execute(
+        "SELECT set_config('bci.authenticated_email', %s, true)",
+        (authenticated_email or "",),
     )
     data.execute(
         "SELECT set_config('bci.authorized_roles', %s, true)",
@@ -273,6 +279,7 @@ def _artifact_query_cache_params(
     cache_scope: str,
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
+    authenticated_email: Optional[str] = None,
 ) -> dict[str, Any]:
     if cache_scope == "shared":
         return {
@@ -281,13 +288,16 @@ def _artifact_query_cache_params(
             "data_freshness_timestamp": freshness,
             "query": query,
         }
-    return {
+    params = {
         "cache_version": 2,
         "data_freshness_timestamp": freshness,
         "authenticated_subject_hash": _subject_hash(authenticated_subject),
         "authorization_context_hash": _authorization_context_hash(authorized_roles),
         "query": query,
     }
+    if authenticated_email:
+        params["authenticated_email_hash"] = _subject_hash(authenticated_email)
+    return params
 
 
 def _execute_artifact_query_contract(data, view_name: str, serialized_query: str) -> Any:
@@ -355,6 +365,7 @@ def execute_artifact_query(
     query: dict[str, Any],
     authenticated_subject: Optional[str] = None,
     authorized_roles: Optional[list[str]] = None,
+    authenticated_email: Optional[str] = None,
     check_reference: Optional[Callable[[str], None]] = None,
 ) -> Any:
     """Execute a database-owned artifact query without interpreting its payload."""
@@ -372,7 +383,10 @@ def execute_artifact_query(
     cache_settings = get_cache_settings()
     with get_data_conn() as data:
         _begin_data_read(data)
-        _set_authorization_context(data, client_key, authenticated_subject, authorized_roles)
+        _set_authorization_context(
+            data, client_key, authenticated_subject, authorized_roles,
+            authenticated_email=authenticated_email,
+        )
         policy = _artifact_query_cache_policy(data, view_name, cache_settings.ttl_seconds)
         cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
         cache = get_artifact_cache(cache_settings) if cache_settings.enabled else None
@@ -393,6 +407,7 @@ def execute_artifact_query(
             cache_scope=cache_scope,
             authenticated_subject=authenticated_subject,
             authorized_roles=authorized_roles,
+            authenticated_email=authenticated_email,
         )
         cache_key = cache.build_key(
             client_key, artifact_key, _query_cache_type(generation), cache_params
@@ -433,6 +448,7 @@ def execute_artifact_metadata_query(
     authorize_query: Callable[[str], bool],
     authenticated_subject: str,
     authorized_roles: list[str],
+    authenticated_email: Optional[str] = None,
 ) -> Any:
     """Run an explicitly registered report function on the Metadata connection."""
     serialized_query = _serialized_artifact_query(query)
@@ -468,7 +484,10 @@ def execute_artifact_metadata_query(
         if "." not in function_name:
             raise ValueError("Metadata query function must be schema-qualified")
         function_name = _safe_view_name(function_name)
-        _set_authorization_context(meta, client_key, authenticated_subject, authorized_roles)
+        _set_authorization_context(
+            meta, client_key, authenticated_subject, authorized_roles,
+            authenticated_email=authenticated_email,
+        )
         return _execute_registered_query(meta, function_name, serialized_query)
 
 

@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
+from psycopg.errors import InsufficientPrivilege
 
 
 def fake_grants(client, artifact, permission, subject, identity):
@@ -212,6 +213,7 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
             "iss": "bci-security",
             "roles": ["stale-token-role"],
             "sub": "user-1",
+            "email": "reader@example.test",
         }
     )
 
@@ -219,6 +221,7 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
         "/artifacts/srp/pricing-insights/data",
         headers={
             **_auth_headers(token),
+            "X-Identity-Email": "other@example.test",
             "X-Identity-Roles": "srp_scope_b,srp_scope_a",
         },
         json={
@@ -233,7 +236,20 @@ def test_artifact_data_route_passes_trusted_authorization_context(monkeypatch):
         "filters": {"type": "Vehicles & Transport"},
     }
     assert captured["authenticated_subject"] == "user-1"
+    assert captured["authenticated_email"] == "reader@example.test"
     assert captured["authorized_roles"] == ["stale-token-role"]
+
+    def deny(*_args, **_kwargs):
+        raise InsufficientPrivilege("private database detail")
+
+    monkeypatch.setattr(main, "execute_artifact_query", deny)
+    denied = client.post(
+        "/artifacts/srp/pricing-insights/data",
+        headers=_auth_headers(token),
+        json={"operation": "details"},
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "Artifact access denied"}
 
 
 def test_artifact_query_cache_prewarm_requires_service_token(monkeypatch):
