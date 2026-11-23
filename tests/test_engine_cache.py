@@ -305,13 +305,15 @@ def test_query_function_name_follows_the_render_view_contract():
 
 
 class FakeQueryData(FakeData):
-    def __init__(self, *, contract_exists=True, cache_scope=None, cache_policy=None, result=None, **kwargs):
+    def __init__(self, *, contract_exists=True, cache_scope=None, cache_policy=None, result=None, query_timeout=None, **kwargs):
         super().__init__(**kwargs)
         self.contract_exists = contract_exists
         self.cache_scope = cache_scope
         self.cache_policy = cache_policy
         self.result = result if result is not None else {"rows": [], "total_count": 0}
         self.query_payloads = []
+        self.query_timeout = query_timeout
+        self.applied_timeouts = []
 
     def execute(self, sql, params=None):
         if sql.startswith(("SET TRANSACTION", "SET LOCAL")):
@@ -336,6 +338,8 @@ class FakeQueryData(FakeData):
         if "public.bci_artifact_cache_freshness" in sql:
             return FakeResult(row=(self.freshness_timestamp,))
         if "SELECT to_regprocedure(%s)" in sql:
+            if str(params[0]).endswith("_query_timeout_seconds()"):
+                return FakeResult(row=(params[0] if self.query_timeout is not None else None,))
             if str(params[0]).endswith("_query_cache_policy()"):
                 return FakeResult(
                     row=("rpt.visit_counts_query_cache_policy()",)
@@ -353,6 +357,11 @@ class FakeQueryData(FakeData):
             return FakeResult(row=(self.cache_scope,))
         if "SELECT rpt.visit_counts_query_cache_policy" in sql:
             return FakeResult(row=(self.cache_policy,))
+        if "SELECT rpt.visit_counts_query_timeout_seconds()" in sql:
+            return FakeResult(row=(self.query_timeout,))
+        if "set_config('statement_timeout'" in sql:
+            self.applied_timeouts.append(params[0])
+            return FakeResult()
         if "SELECT rpt.visit_counts_query" in sql:
             self.calls += 1
             self.query_payloads.append(params[0])
@@ -361,7 +370,7 @@ class FakeQueryData(FakeData):
 
 
 def test_artifact_query_passes_opaque_json_to_database(monkeypatch):
-    data = FakeQueryData(result={"dashboard": {"summary": {"total": 7}}})
+    data = FakeQueryData(result={"dashboard": {"summary": {"total": 7}}}, query_timeout=75)
     _patch_connections(monkeypatch, data=data)
     monkeypatch.setattr(
         cache_module,
@@ -387,6 +396,7 @@ def test_artifact_query_passes_opaque_json_to_database(monkeypatch):
     assert json.loads(data.query_payloads[0]) == query
     assert data.authenticated_subjects == ["user-1"]
     assert data.authenticated_emails == ["reader@example.test"]
+    assert data.applied_timeouts == ["75s"]
     assert data.authorized_roles == ['["scope-a"]']
 
 

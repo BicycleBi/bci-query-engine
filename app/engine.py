@@ -268,6 +268,16 @@ def _artifact_query_cache_policy(data, view_name: str, default_ttl_seconds: int)
     return {"refresh_mode": refresh_mode, "ttl_seconds": ttl_seconds}
 
 
+def _apply_artifact_query_timeout(data, view_name: str) -> None:
+    timeout_function = _safe_view_name(f"{view_name}_query_timeout_seconds")
+    if data.execute("SELECT to_regprocedure(%s)", (f"{timeout_function}()",)).fetchone()[0] is None:
+        return
+    seconds = data.execute(f"SELECT {timeout_function}()").fetchone()[0]  # noqa: S608
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 120:
+        raise ValueError("Artifact query timeout must be an integer from 1 to 120 seconds")
+    data.execute("SELECT set_config('statement_timeout', %s, true)", (f"{seconds}s",))
+
+
 def _query_cache_type(generation: Optional[str]) -> str:
     return "artifact-query" if generation is None else f"artifact-query-generation:{generation}"
 
@@ -421,6 +431,7 @@ def execute_artifact_query(
                 cache = None
 
         try:
+            _apply_artifact_query_timeout(data, view_name)
             result = _execute_artifact_query_contract(data, view_name, serialized_query)
         except ValueError as exc:
             if str(exc) == "Artifact has no database query contract":
@@ -529,6 +540,7 @@ def prewarm_artifact_query_cache(
             if policy["refresh_mode"] == "prewarm_swap"
             else _artifact_cache_freshness_timestamp(data, client_key, artifact_key)
         )
+        _apply_artifact_query_timeout(data, view_name)
         for serialized_query, query in serialized_queries:
             cache_scope = _artifact_query_cache_scope(data, view_name, serialized_query)
             if cache_scope != "shared":
